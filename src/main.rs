@@ -1,7 +1,10 @@
 mod app;
+mod doc;
+mod keymap;
 mod repo;
 mod session;
 mod store;
+mod ui;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -9,12 +12,16 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+use doc::Doc;
 use repo::Repo;
 use session::{Input, Session};
 use store::Store;
 
 #[derive(Parser)]
-#[command(name = "mrg", about = "Review code changes and discuss them with agents")]
+#[command(
+    name = "mrg",
+    about = "Review code changes and discuss them with agents"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -52,25 +59,36 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let repo = Repo::open()?;
+    let mut repo = Repo::open()?;
     let store = Store::open(&repo.key())?;
     match cli.cmd {
         None => bail!("`mrg` without arguments is not implemented yet; use `mrg start RANGE`"),
-        Some(Cmd::Start { range, comments, on_quit }) => {
+        Some(Cmd::Start {
+            range,
+            comments,
+            on_quit,
+        }) => {
             let (base, end) = repo.resolve(&range)?;
             let session = Session::new(store.new_id(), range, base, end, on_quit);
-            open(&store, session, comments)
+            open(&store, &mut repo, session, comments)
         }
-        Some(Cmd::Resume { session, comments, on_quit }) => {
+        Some(Cmd::Resume {
+            session,
+            comments,
+            on_quit,
+        }) => {
             let mut session = store.load(&session)?;
             repo.verify(&session.base, &session.end)?;
             if on_quit.is_some() {
                 session.on_quit = on_quit;
             }
-            open(&store, session, comments)
+            open(&store, &mut repo, session, comments)
         }
         Some(Cmd::Show { session }) => {
-            println!("{}", serde_json::to_string_pretty(&store.load(&session)?.view())?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&store.load(&session)?.view(&mut repo)?)?
+            );
             Ok(())
         }
         Some(Cmd::List) => {
@@ -93,14 +111,22 @@ fn main() -> Result<()> {
     }
 }
 
-fn open(store: &Store, mut session: Session, comments: Option<PathBuf>) -> Result<()> {
+fn open(
+    store: &Store,
+    repo: &mut Repo,
+    mut session: Session,
+    comments: Option<PathBuf>,
+) -> Result<()> {
     if let Some(path) = comments {
-        let text = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        let input: Input = serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-        session.apply(input)?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let input: Input =
+            serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+        session.apply(input, repo)?;
     }
     store.save(&session)?;
-    app::run(&session)?;
+    let doc = Doc::new(repo.diff(&session.base, &session.end)?);
+    app::run(&session, &doc)?;
     if let Some(cmd) = &session.on_quit {
         let status = Command::new("sh")
             .arg("-c")

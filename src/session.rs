@@ -1,6 +1,8 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::repo::Repo;
 
 #[derive(Serialize, Deserialize)]
 pub struct Session {
@@ -19,6 +21,9 @@ pub struct Thread {
     pub id: String,
     pub status: Status,
     pub anchor: Anchor,
+    /// The anchored lines when the thread was created, for `lines` anchors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     pub messages: Vec<Message>,
 }
 
@@ -40,8 +45,12 @@ pub enum Anchor {
         start: u32,
         end: u32,
     },
-    File { file: String },
-    Commit { commit: String },
+    File {
+        file: String,
+    },
+    Commit {
+        commit: String,
+    },
     Session,
 }
 
@@ -68,33 +77,67 @@ pub struct NewComment {
 }
 
 impl Session {
-    pub fn new(id: String, range: String, base: String, end: String, on_quit: Option<String>) -> Session {
-        Session { id, range, base, end, on_quit, threads: Vec::new() }
+    pub fn new(
+        id: String,
+        range: String,
+        base: String,
+        end: String,
+        on_quit: Option<String>,
+    ) -> Session {
+        Session {
+            id,
+            range,
+            base,
+            end,
+            on_quit,
+            threads: Vec::new(),
+        }
     }
 
-    pub fn apply(&mut self, input: Input) -> Result<()> {
+    pub fn apply(&mut self, input: Input, repo: &mut Repo) -> Result<()> {
         for c in input.comments {
             match (c.reply_to, c.anchor) {
                 (Some(id), None) => self.reply(&id, &input.from, c.body)?,
-                (None, Some(anchor)) => self.comment(anchor, &input.from, c.body)?,
+                (None, Some(anchor)) => self.comment(anchor, &input.from, c.body, repo)?,
                 _ => bail!("each comment needs exactly one of reply_to or anchor"),
             }
         }
         Ok(())
     }
 
-    pub fn comment(&mut self, mut anchor: Anchor, from: &str, body: String) -> Result<()> {
-        if let Anchor::Lines { rev, start, end, .. } = &mut anchor {
+    pub fn comment(
+        &mut self,
+        mut anchor: Anchor,
+        from: &str,
+        body: String,
+        repo: &mut Repo,
+    ) -> Result<()> {
+        let mut text = None;
+        if let Anchor::Lines {
+            rev,
+            file,
+            start,
+            end,
+        } = &mut anchor
+        {
             if *start == 0 || start > end {
                 bail!("invalid line range {start}-{end}");
             }
-            rev.get_or_insert_with(|| self.end.clone());
+            let rev = rev.get_or_insert_with(|| self.end.clone());
+            text = Some(
+                snippet(repo, rev, file, *start, *end)?
+                    .with_context(|| format!("{file}:{start}-{end} not found at {rev}"))?,
+            );
         }
         self.threads.push(Thread {
             id: format!("t{}", self.threads.len() + 1),
             status: Status::Open,
             anchor,
-            messages: vec![Message { from: from.to_string(), body }],
+            text,
+            messages: vec![Message {
+                from: from.to_string(),
+                body,
+            }],
         });
         Ok(())
     }
@@ -105,12 +148,18 @@ impl Session {
             bail!("no thread {id}");
         };
         t.status = Status::Open;
-        t.messages.push(Message { from: from.to_string(), body });
+        t.messages.push(Message {
+            from: from.to_string(),
+            body,
+        });
         Ok(())
     }
 
     pub fn open_count(&self) -> usize {
-        self.threads.iter().filter(|t| t.status == Status::Open).count()
+        self.threads
+            .iter()
+            .filter(|t| t.status == Status::Open)
+            .count()
     }
 
     pub fn waiting_on_user_count(&self) -> usize {
@@ -121,13 +170,28 @@ impl Session {
     }
 
     /// The session as JSON, with derived fields added to each thread.
-    /// `waiting_on` is null for resolved threads.
-    pub fn view(&self) -> Value {
-        let mut v = serde_json::to_value(self).expect("session serializes");
-        for (t, tv) in self.threads.iter().zip(v["threads"].as_array_mut().expect("threads array")) {
+    /// `waiting_on` is null for resolved threads; `outdated` means the anchored
+    /// lines no longer match the stored `text`.
+    pub fn view(&self, repo: &mut Repo) -> Result<Value> {
+        let mut v = serde_json::to_value(self)?;
+        for (t, tv) in self
+            .threads
+            .iter()
+            .zip(v["threads"].as_array_mut().expect("threads array"))
+        {
             tv["waiting_on"] = (t.status == Status::Open).then(|| t.waiting_on()).into();
+            let outdated = match &t.anchor {
+                Anchor::Lines {
+                    rev: Some(rev),
+                    file,
+                    start,
+                    end,
+                } if t.text.is_some() => snippet(repo, rev, file, *start, *end)? != t.text,
+                _ => false,
+            };
+            tv["outdated"] = outdated.into();
         }
-        v
+        Ok(v)
     }
 }
 
@@ -139,4 +203,15 @@ impl Thread {
             _ => "user",
         }
     }
+}
+
+/// Lines `start..=end` of `file` at `rev`; None if the file or lines are absent.
+fn snippet(repo: &mut Repo, rev: &str, file: &str, start: u32, end: u32) -> Result<Option<String>> {
+    let Some(content) = repo.read(rev, file)? else {
+        return Ok(None);
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    Ok(lines
+        .get(start as usize - 1..end as usize)
+        .map(|l| l.join("\n")))
 }

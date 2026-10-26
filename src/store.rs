@@ -16,7 +16,8 @@ impl Store {
     pub fn open(repo_key: &str) -> Result<Store> {
         let state = match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
             Some(v) => PathBuf::from(v),
-            None => PathBuf::from(std::env::var_os("HOME").context("HOME not set")?).join(".local/state"),
+            None => PathBuf::from(std::env::var_os("HOME").context("HOME not set")?)
+                .join(".local/state"),
         };
         let dir = state.join("marginalia").join(repo_key);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
@@ -25,7 +26,10 @@ impl Store {
 
     pub fn new_id(&self) -> String {
         loop {
-            let id = format!("{:04x}", RandomState::new().hash_one(SystemTime::now()) & 0xffff);
+            let id = format!(
+                "{:04x}",
+                RandomState::new().hash_one(SystemTime::now()) & 0xffff
+            );
             if !self.path(&id).exists() {
                 return id;
             }
@@ -57,7 +61,10 @@ impl Store {
                 continue;
             }
             let id = path.file_stem().unwrap().to_string_lossy();
-            let updated = fs::metadata(&path)?.modified()?.duration_since(UNIX_EPOCH)?.as_secs();
+            let updated = fs::metadata(&path)?
+                .modified()?
+                .duration_since(UNIX_EPOCH)?
+                .as_secs();
             out.push((self.load(&id)?, updated));
         }
         out.sort_by(|a, b| b.1.cmp(&a.1));
