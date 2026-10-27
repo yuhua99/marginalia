@@ -236,7 +236,8 @@ impl Repo {
         Ok(tree)
     }
 
-    fn commit(&self, rev: &str) -> Result<String> {
+    /// Full sha of commit `rev`.
+    pub fn commit(&self, rev: &str) -> Result<String> {
         run(&mut self.git(&[
             "rev-parse",
             "--verify",

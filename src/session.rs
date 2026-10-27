@@ -34,7 +34,7 @@ pub enum Status {
     Resolved,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Anchor {
     Lines {
@@ -124,10 +124,16 @@ impl Session {
                 bail!("invalid line range {start}-{end}");
             }
             let rev = rev.get_or_insert_with(|| self.end.clone());
+            if !matches!(rev.as_str(), "HEAD" | "staged" | "unstaged") {
+                *rev = repo.commit(rev)?;
+            }
             text = Some(
                 snippet(repo, rev, file, *start, *end)?
                     .with_context(|| format!("{file}:{start}-{end} not found at {rev}"))?,
             );
+        }
+        if let Anchor::Commit { commit } = &mut anchor {
+            *commit = repo.commit(commit)?;
         }
         self.threads.push(Thread {
             id: format!("t{}", self.threads.len() + 1),
@@ -174,24 +180,81 @@ impl Session {
     /// lines no longer match the stored `text`.
     pub fn view(&self, repo: &mut Repo) -> Result<Value> {
         let mut v = serde_json::to_value(self)?;
-        for (t, tv) in self
+        let outdated = self.outdated(repo)?;
+        for ((t, tv), outdated) in self
             .threads
             .iter()
             .zip(v["threads"].as_array_mut().expect("threads array"))
+            .zip(outdated)
         {
             tv["waiting_on"] = (t.status == Status::Open).then(|| t.waiting_on()).into();
-            let outdated = match &t.anchor {
+            tv["outdated"] = outdated.into();
+        }
+        Ok(v)
+    }
+
+    /// Per thread: the anchored lines no longer match the stored `text`.
+    pub fn outdated(&self, repo: &mut Repo) -> Result<Vec<bool>> {
+        self.threads
+            .iter()
+            .map(|t| match &t.anchor {
                 Anchor::Lines {
                     rev: Some(rev),
                     file,
                     start,
                     end,
-                } if t.text.is_some() => snippet(repo, rev, file, *start, *end)? != t.text,
-                _ => false,
-            };
-            tv["outdated"] = outdated.into();
+                } if t.text.is_some() => Ok(snippet(repo, rev, file, *start, *end)? != t.text),
+                _ => Ok(false),
+            })
+            .collect()
+    }
+
+    /// Where a thread is anchored, e.g. `src/a.rs:3-5`, plus `@rev` when not the range end.
+    pub fn location(&self, anchor: &Anchor) -> String {
+        match anchor {
+            Anchor::Lines {
+                rev,
+                file,
+                start,
+                end,
+            } => {
+                let mut s = if start == end {
+                    format!("{file}:{start}")
+                } else {
+                    format!("{file}:{start}-{end}")
+                };
+                if let Some(rev) = rev
+                    && *rev != self.end
+                {
+                    s.push_str(&format!(" @{}", short(rev)));
+                }
+                s
+            }
+            Anchor::File { file } => file.clone(),
+            Anchor::Commit { commit } => format!("commit {}", short(commit)),
+            Anchor::Session => "session".into(),
         }
-        Ok(v)
+    }
+
+    /// Open threads waiting on the agent, in `order`, as markdown; None if there are none.
+    pub fn markdown(&self, order: &[usize]) -> Option<String> {
+        let mut out = format!("# mrg review {} · {}\n", self.id, self.range);
+        let mut any = false;
+        for t in order.iter().map(|&i| &self.threads[i]) {
+            if t.status != Status::Open || t.waiting_on() != "agent" {
+                continue;
+            }
+            any = true;
+            out.push_str(&format!("\n## {} · {}\n", t.id, self.location(&t.anchor)));
+            for m in &t.messages {
+                out.push_str(&format!(
+                    "- **{}**: {}\n",
+                    m.from,
+                    m.body.replace('\n', "\n  ")
+                ));
+            }
+        }
+        any.then_some(out)
     }
 }
 
@@ -202,6 +265,15 @@ impl Thread {
             Some(m) if m.from == "user" => "agent",
             _ => "user",
         }
+    }
+}
+
+/// A commit sha shortened for display; other revs as is.
+fn short(rev: &str) -> &str {
+    if rev.len() >= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        &rev[..7]
+    } else {
+        rev
     }
 }
 

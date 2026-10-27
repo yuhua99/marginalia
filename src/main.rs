@@ -6,10 +6,13 @@ mod session;
 mod store;
 mod ui;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 
 use doc::Doc;
@@ -70,7 +73,7 @@ fn main() -> Result<()> {
         }) => {
             let (base, end) = repo.resolve(&range)?;
             let session = Session::new(store.new_id(), range, base, end, on_quit);
-            open(&store, &mut repo, session, comments)
+            open(store, repo, session, comments)
         }
         Some(Cmd::Resume {
             session,
@@ -82,7 +85,7 @@ fn main() -> Result<()> {
             if on_quit.is_some() {
                 session.on_quit = on_quit;
             }
-            open(&store, &mut repo, session, comments)
+            open(store, repo, session, comments)
         }
         Some(Cmd::Show { session }) => {
             println!(
@@ -112,8 +115,8 @@ fn main() -> Result<()> {
 }
 
 fn open(
-    store: &Store,
-    repo: &mut Repo,
+    store: Store,
+    mut repo: Repo,
     mut session: Session,
     comments: Option<PathBuf>,
 ) -> Result<()> {
@@ -122,11 +125,31 @@ fn open(
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let input: Input =
             serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-        session.apply(input, repo)?;
+        session.apply(input, &mut repo)?;
     }
     store.save(&session)?;
-    let doc = Doc::new(repo.diff(&session.base, &session.end)?);
-    app::run(&session, &doc)?;
+    let files = repo.diff(&session.base, &session.end)?;
+    let mut doc = Doc::new(session.base.clone(), session.end.clone(), files);
+    let outdated = session.outdated(&mut repo)?;
+    doc.set_threads(&session.threads);
+    let mut ctx = app::Ctx {
+        session,
+        repo,
+        store,
+        doc,
+        outdated,
+        copy: false,
+    };
+    app::run(&mut ctx)?;
+    let session = &ctx.session;
+    if ctx.copy
+        && let Some(md) = session.markdown(&ctx.doc.thread_order())
+    {
+        // OSC 52: the terminal sets its clipboard, which outlives this process.
+        print!("\x1b]52;c;{}\x07", STANDARD.encode(md));
+        std::io::stdout().flush()?;
+        eprintln!("sent threads waiting on the agent to the terminal clipboard (OSC 52)");
+    }
     if let Some(cmd) = &session.on_quit {
         let status = Command::new("sh")
             .arg("-c")
