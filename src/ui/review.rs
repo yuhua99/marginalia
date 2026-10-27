@@ -34,7 +34,7 @@ const HELP: &[help::Entry] = &[
     ),
     (&["check"], "check commits for Enter to show together"),
     (&["select"], "select lines"),
-    (&["cancel"], "clear the selection or checks"),
+    (&["cancel"], "clear the selection"),
     (&["comment"], "comment; on a thread, reply"),
     (&["resolve"], "resolve or reopen the thread"),
     (
@@ -82,6 +82,7 @@ impl Component for Review {
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
         };
+        let focus = self.focus;
         match action {
             "focus_left" => self.focus = self.focus.saturating_sub(1),
             "focus_right" => self.focus = (self.focus + 1).min(DIFF),
@@ -101,10 +102,6 @@ impl Component for Review {
                 return Ok(Outcome::Quit);
             }
             _ if self.focus != DIFF => {
-                // Checks live in the commits box; Esc clears them from either box.
-                if action == "cancel" {
-                    self.commits.take_checked();
-                }
                 let list = if self.focus == FILES {
                     &mut self.files
                 } else {
@@ -112,12 +109,13 @@ impl Component for Review {
                 };
                 match (action, list.entry(ctx)) {
                     ("open", Entry::View(view)) => {
-                        let mut range = self.commits.take_checked().unwrap_or((view, view));
+                        let mut range = self.commits.checked().unwrap_or((view, view));
                         // Every row is all.
                         if range == (1, ctx.views.len() - 1) {
                             range = (0, 0);
                         }
                         ctx.show(range)?;
+                        self.commits.focus(ctx, true);
                         self.diff = DiffView::default();
                     }
                     ("open", Entry::File(file)) => {
@@ -139,6 +137,9 @@ impl Component for Review {
                 }
             }
             _ => return self.diff.act(action, ctx),
+        }
+        if (focus == COMMITS) != (self.focus == COMMITS) {
+            self.commits.focus(ctx, self.focus == COMMITS);
         }
         Ok(Outcome::Consumed)
     }
