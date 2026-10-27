@@ -122,7 +122,7 @@ fn slot_theme() -> Theme {
             ..ThemeSettings::default()
         },
         scopes: vec![
-            item("comment", Slot::Dim),
+            item("comment", Slot::Comment),
             item("string", Slot::Green),
             item("constant", Slot::Peach),
             item("keyword, storage", Slot::Mauve),
