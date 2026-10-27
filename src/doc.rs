@@ -14,6 +14,8 @@ pub struct Doc {
     right_rev: String,
     /// (old_path, new_path) per file.
     paths: Vec<(String, String)>,
+    /// Per file, added or deleted: only one side has lines.
+    one_sided: Vec<bool>,
     rows: Vec<Row>,
     /// One whole file in one column (`Doc::file`), showing only the threads on it.
     single: bool,
@@ -69,7 +71,9 @@ impl Doc {
     pub fn new(left_rev: String, right_rev: String, files: Vec<FileDiff>) -> Doc {
         let mut rows = vec![Row::Session];
         let mut paths = Vec::new();
+        let mut one_sided = Vec::new();
         for (file, f) in files.into_iter().enumerate() {
+            one_sided.push(matches!(f.status, 'A' | 'D'));
             let path = if f.old_path == f.new_path {
                 f.new_path.clone()
             } else {
@@ -176,6 +180,7 @@ impl Doc {
             left_rev,
             right_rev,
             paths,
+            one_sided,
             rows,
             single: false,
         }
@@ -203,13 +208,14 @@ impl Doc {
             left_rev: rev.clone(),
             right_rev: rev,
             paths: vec![(path.clone(), path)],
+            one_sided: vec![true],
             rows: [header].into_iter().chain(lines).collect(),
             single: true,
         }
     }
 
-    pub fn single(&self) -> bool {
-        self.single
+    pub fn one_sided(&self, file: usize) -> bool {
+        self.one_sided[file]
     }
 
     /// The row of right-side line `line`, or the last row.
