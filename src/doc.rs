@@ -381,6 +381,11 @@ impl Doc {
         Ok(row - (top - self.top_threads()))
     }
 
+    /// Whether `row` is in the top thread group, away from what it anchors to.
+    pub fn at_top(&self, row: usize) -> bool {
+        !self.single && row <= self.top_threads()
+    }
+
     /// Number of thread rows in the top group.
     fn top_threads(&self) -> usize {
         self.rows[1..]
