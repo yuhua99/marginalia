@@ -307,10 +307,15 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
             let colors = |side: &Option<Side>, rev, path| {
                 side.as_ref().and_then(|_| ctx.highlighter.get(rev, path))
             };
-            if doc.single() {
+            // Added and deleted files, and the file view, take the full width.
+            if doc.one_sided(*file) {
+                let (side, colors) = match right {
+                    Some(_) => (right, colors(right, right_rev, new_path)),
+                    None => (left, colors(left, left_rev, old_path)),
+                };
                 let (lines, style) = code_lines(
-                    right.as_ref(),
-                    colors(right, right_rev, new_path),
+                    side.as_ref(),
+                    colors,
                     width as usize,
                     selected,
                     theme,
@@ -354,19 +359,18 @@ fn code_lines(
     let Some(s) = side else {
         return (Vec::new(), Style::new());
     };
-    // Changes show in the gutter color; changed words are reversed in it.
-    let (sign, color, bg, emph) = match s.kind {
-        Kind::Ctx => (' ', theme.dim, theme.bg, theme.bg),
-        Kind::Del => ('-', theme.red, theme.del_bg, theme.del_emph),
-        Kind::Add => ('+', theme.green, theme.add_bg, theme.add_emph),
+    // Changes show in the line background and number color; changed words in `emph`.
+    let (color, bg, emph) = match s.kind {
+        Kind::Ctx => (theme.dim, theme.bg, theme.bg),
+        Kind::Del => (theme.red, theme.del_bg, theme.del_emph),
+        Kind::Add => (theme.green, theme.add_bg, theme.add_emph),
     };
     let mut gutter = Style::new().fg(color);
     if selected {
         gutter = gutter.fg(theme.on_accent).bg(theme.accent);
     }
     let number = format!("{:>4} ", s.lineno);
-    // Line number and sign.
-    let gutter_width = number.len() + 1;
+    let gutter_width = number.len();
     let text_width = width.saturating_sub(gutter_width).max(1);
     let mut runs = colors
         .and_then(|c| c.get(s.lineno as usize - 1))
@@ -375,10 +379,7 @@ fn code_lines(
     let (mut run_end, mut fg) = (0, None);
 
     let mut lines = Vec::new();
-    let mut spans = vec![
-        Span::styled(number, gutter),
-        Span::styled(sign.to_string(), Style::new().fg(color)),
-    ];
+    let mut spans = vec![Span::styled(number, gutter)];
     let (mut chunk, mut chunk_style, mut col) = (String::new(), Style::new(), 0);
     for (at, g) in s.text.grapheme_indices(true) {
         while at >= run_end {
