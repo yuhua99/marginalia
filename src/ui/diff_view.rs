@@ -86,8 +86,11 @@ impl DiffView {
         }
     }
 
+    /// Moves the cursor to `row` at the top of the screen.
     pub fn jump(&mut self, row: usize) {
         self.cursor = row;
+        self.top = row;
+        self.off = 0;
         self.mark = None;
     }
 
@@ -118,7 +121,7 @@ impl DiffView {
             }
             "next_file" | "prev_file" => {
                 if let Some(i) = self.doc(ctx).next_file(self.cursor, action == "next_file") {
-                    self.cursor = i;
+                    self.jump(i);
                 }
             }
             "open" => {

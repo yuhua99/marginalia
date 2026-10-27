@@ -141,6 +141,8 @@ pub enum Outcome {
 pub trait Component {
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx);
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
+    /// Pasted text; only text boxes take it.
+    fn paste(&mut self, _text: &str) {}
 }
 
 const HINTS: &str = " c comment/reply  r resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
@@ -168,17 +170,19 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
                 continue 'draw;
             }
         }
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match layers.last_mut().unwrap().handle_key(key, ctx)? {
-                Outcome::Consumed => {}
-                Outcome::Push(layer) => layers.push(layer),
-                Outcome::Close => {
-                    layers.pop();
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                match layers.last_mut().unwrap().handle_key(key, ctx)? {
+                    Outcome::Consumed => {}
+                    Outcome::Push(layer) => layers.push(layer),
+                    Outcome::Close => {
+                        layers.pop();
+                    }
+                    Outcome::Quit => return Ok(()),
                 }
-                Outcome::Quit => return Ok(()),
             }
+            Event::Paste(text) => layers.last_mut().unwrap().paste(&text),
+            _ => {}
         }
     }
 }

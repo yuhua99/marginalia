@@ -9,7 +9,8 @@ use crate::app::{Component, Ctx, Outcome};
 use crate::session::{Anchor, Session};
 use crate::ui::clear;
 
-/// Text box for a new comment, a reply or an edit. `Ctrl-s` sends, `Esc` cancels.
+/// Text box for a new comment, a reply or an edit. `Enter` sends, `Shift-Enter` or
+/// `Ctrl-j` breaks the line, `Esc` cancels.
 pub struct Input {
     target: Target,
     title: String,
@@ -64,8 +65,11 @@ impl Input {
 
 impl Component for Input {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
+        // Shift-Enter needs a terminal reporting it apart from Enter; Ctrl-j works anywhere.
+        let newline = (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT))
+            || (key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL));
         match key.code {
-            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Enter if !newline => {
                 let body = self.text.lines().join("\n");
                 if body.trim().is_empty() {
                     return Ok(Outcome::Consumed);
@@ -101,10 +105,21 @@ impl Component for Input {
             _ => {
                 self.discarding = false;
                 self.error = None;
-                self.text.input(key);
+                if newline {
+                    self.text.insert_newline();
+                } else {
+                    self.text.input(key);
+                }
                 Ok(Outcome::Consumed)
             }
         }
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.discarding = false;
+        self.error = None;
+        self.text
+            .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
@@ -117,7 +132,7 @@ impl Component for Input {
         let hint = match &self.error {
             _ if self.discarding => "Esc again to discard".to_string(),
             Some(e) => format!("error: {e}"),
-            None => "Ctrl-s send / Esc cancel".to_string(),
+            None => "Enter send / Shift-Enter or Ctrl-j newline / Esc cancel".to_string(),
         };
         self.text.set_block(
             Block::bordered()

@@ -55,11 +55,18 @@ pub fn run(
     p.right = p.sessions.is_empty();
     loop {
         terminal.draw(|f| p.render(f, theme))?;
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && let Some(done) = p.key(key, store, repo, theme, wrap)?
-        {
-            return Ok(done);
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if let Some(done) = p.key(key, store, repo, theme, wrap)? {
+                    return Ok(done);
+                }
+            }
+            Event::Paste(text) if p.typing => {
+                let pane = p.pane();
+                p.filter[pane].push_str(text.lines().next().unwrap_or(""));
+                p.cursor[pane] = 0;
+            }
+            _ => {}
         }
     }
 }

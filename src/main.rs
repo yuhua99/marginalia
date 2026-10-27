@@ -13,6 +13,12 @@ use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+use ratatui::crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
+use ratatui::crossterm::execute;
+
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -177,6 +183,13 @@ fn tui(
     let (mut theme, mut wrap) = (theme::find(&settings.theme), settings.wrap);
     loop {
         let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
+            // Pasted newlines must not send; Shift-Enter must differ from Enter. The key
+            // flags end with the alternate screen; bracketed paste is turned off below.
+            execute!(
+                std::io::stdout(),
+                EnableBracketedPaste,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?;
             let session = match session {
                 Some(session) => session,
                 None => {
@@ -190,7 +203,9 @@ fn tui(
             ctx.on_quit = on_quit.take();
             app::run(terminal, &mut ctx)?;
             Ok(Some(ctx))
-        })?;
+        });
+        execute!(std::io::stdout(), DisableBracketedPaste)?;
+        let ctx = ctx?;
         let Some(ctx) = ctx else {
             return Ok(());
         };
