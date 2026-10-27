@@ -2,16 +2,17 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::{Ctx, View};
 use crate::session::{Anchor, Thread};
-use crate::ui::check;
+use crate::ui::{boxed, check};
 
-/// The views (all, each commit, uncommitted), then the files of the shown diff as a tree.
-/// Space checks a run of commits to view together.
+/// A box left of the diff: the views (all, each commit, uncommitted), where Space checks
+/// a run of commits to view together; or the files of the shown diff as a tree.
 #[derive(Default)]
 pub struct Sidebar {
+    files: bool,
     cursor: usize,
     top: usize,
     height: usize,
@@ -23,7 +24,7 @@ pub struct Sidebar {
 pub enum Entry {
     View(usize),
     File(usize),
-    /// A directory or the gap between views and files.
+    /// A directory.
     Other,
 }
 
@@ -52,8 +53,23 @@ struct Item {
 }
 
 impl Sidebar {
+    pub fn files() -> Sidebar {
+        Sidebar {
+            files: true,
+            ..Sidebar::default()
+        }
+    }
+
+    fn items(&self, ctx: &Ctx) -> Vec<Item> {
+        if self.files {
+            files(ctx)
+        } else {
+            views(ctx, self.checked)
+        }
+    }
+
     pub fn entry(&self, ctx: &Ctx) -> Entry {
-        items(ctx, self.checked)
+        self.items(ctx)
             .get(self.cursor)
             .map_or(Entry::Other, |i| i.entry)
     }
@@ -63,7 +79,7 @@ impl Sidebar {
     }
 
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
-        let last = items(ctx, self.checked).len() - 1;
+        let last = self.items(ctx).len().saturating_sub(1);
         match action {
             // `all` (view 0) is not a commit to check.
             "check" => {
@@ -94,9 +110,9 @@ impl Sidebar {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, focused: bool) {
-        let items = items(ctx, self.checked);
-        self.height = area.height as usize;
-        self.cursor = self.cursor.min(items.len() - 1);
+        let items = self.items(ctx);
+        self.height = area.height.saturating_sub(2) as usize;
+        self.cursor = self.cursor.min(items.len().saturating_sub(1));
         self.top = self.top.min(self.cursor);
         if self.cursor >= self.top + self.height {
             self.top = self.cursor + 1 - self.height;
@@ -128,17 +144,17 @@ impl Sidebar {
                 Line::from(spans)
             })
             .collect();
+        let title = if self.files { " Files " } else { " Commits " };
         f.render_widget(
-            Paragraph::new(lines).block(Block::new().borders(Borders::RIGHT)),
+            Paragraph::new(lines).block(boxed(title, focused, ctx.theme)),
             area,
         );
     }
 }
 
-fn items(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
+fn views(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
     let threads = &ctx.session.threads;
-    let mut items: Vec<Item> = ctx
-        .views
+    ctx.views
         .iter()
         .enumerate()
         .map(|(v, view)| {
@@ -175,12 +191,12 @@ fn items(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
                 waiting,
             }
         })
-        .collect();
-    items.push(Item {
-        entry: Entry::Other,
-        text: String::new(),
-        waiting: 0,
-    });
+        .collect()
+}
+
+fn files(ctx: &Ctx) -> Vec<Item> {
+    let threads = &ctx.session.threads;
+    let mut items = Vec::new();
     // Files come in path order, so a directory's files are contiguous.
     let waiting = ctx.doc.waiting_per_file(threads);
     let mut prev: Vec<&str> = Vec::new();
@@ -191,13 +207,13 @@ fn items(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
         for (depth, dir) in dirs.iter().enumerate().skip(same) {
             items.push(Item {
                 entry: Entry::Other,
-                text: format!("{}{dir}/", "  ".repeat(depth + 1)),
+                text: format!("{}{dir}/", "  ".repeat(depth)),
                 waiting: 0,
             });
         }
         items.push(Item {
             entry: Entry::File(file),
-            text: format!("{}{name}", "  ".repeat(dirs.len() + 1)),
+            text: format!("{}{name}", "  ".repeat(dirs.len())),
             waiting: waiting[file],
         });
         prev = dirs;

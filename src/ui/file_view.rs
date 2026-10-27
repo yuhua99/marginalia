@@ -6,6 +6,7 @@ use ratatui::layout::Rect;
 use crate::app::{Component, Ctx, Outcome};
 use crate::doc::Doc;
 use crate::keymap::{Feed, Keymap};
+use crate::ui::boxed;
 use crate::ui::clear;
 use crate::ui::diff_view::DiffView;
 use crate::ui::help::{Entry, Help};
@@ -66,7 +67,11 @@ impl Component for FileView {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         clear(f, area, ctx.theme);
-        self.view.render(f, area, ctx);
+        let file = ctx.file.as_ref().expect("file view without ctx.file");
+        let block = boxed(format!(" {} ", file.paths()[0].1), true, ctx.theme);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        self.view.render(f, inner, ctx);
     }
 }
 

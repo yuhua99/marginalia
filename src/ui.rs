@@ -13,9 +13,18 @@ pub mod sidebar;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::Clear;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Clear};
 
 use crate::theme::Theme;
+
+/// A bordered box; the focused one in the accent color.
+pub fn boxed<'a>(title: impl Into<Line<'a>>, focused: bool, theme: &Theme) -> Block<'a> {
+    let color = if focused { theme.accent } else { theme.dim };
+    Block::bordered()
+        .title(title)
+        .border_style(Style::new().fg(color))
+}
 
 /// Blanks `area` to the theme's background and default text.
 pub fn clear(f: &mut Frame, area: Rect, theme: &Theme) {

@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
@@ -136,43 +136,13 @@ pub trait Component {
 const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  q quit";
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
-    let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];
+    let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::new())];
     'draw: loop {
         ctx.highlighter.receive();
         terminal.draw(|f| {
             ui::clear(f, f.area(), ctx.theme);
-            let [head, body, foot] = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Fill(1),
-                Constraint::Length(1),
-            ])
-            .areas(f.area());
-            let s = &ctx.session;
-            let mut header = format!(
-                "mrg  {} / {} / {} open / {} waiting on you",
-                s.range,
-                s.id,
-                s.open_count(),
-                s.waiting_on_user_count()
-            );
-            let label = |v: usize| match &ctx.views[v] {
-                View::All => "all",
-                View::Commit { sha, .. } => &sha[..7],
-                View::Uncommitted => &s.end,
-            };
-            match ctx.view {
-                (0, 0) => {}
-                (first, last) if first == last => {
-                    header.push_str(&format!(" / viewing {}", label(first)))
-                }
-                (first, last) => {
-                    header.push_str(&format!(" / viewing {}..{}", label(first), label(last)))
-                }
-            }
-            f.render_widget(
-                Paragraph::new(header).style(Style::new().add_modifier(Modifier::BOLD)),
-                head,
-            );
+            let [body, foot] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
             f.render_widget(
                 Paragraph::new(HINTS).style(Style::new().fg(ctx.theme.dim)),
                 foot,

@@ -3,7 +3,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
 use unicode_width::UnicodeWidthStr;
@@ -16,7 +16,7 @@ use crate::theme::Theme;
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{check, clear};
+use crate::ui::{boxed, check, clear};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -317,11 +317,10 @@ impl Picker {
                     ])
                 })
                 .collect();
-            let border = if focused { theme.accent } else { theme.dim };
-            let block = Block::bordered()
-                .title(title)
-                .border_style(Style::new().fg(border));
-            f.render_widget(Paragraph::new(lines).block(block), area);
+            f.render_widget(
+                Paragraph::new(lines).block(boxed(title, focused, theme)),
+                area,
+            );
         }
         let (text, style) = if let Some(e) = &self.error {
             (e.clone(), Style::new().fg(theme.red))
