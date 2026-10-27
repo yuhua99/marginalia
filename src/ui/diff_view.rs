@@ -13,13 +13,15 @@ use crate::app::{Component, Ctx, Outcome};
 use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::Kind;
-use crate::session::{Status, Thread};
+use crate::session::{Anchor, Status, Thread};
 use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView};
 use crate::ui::input::Input;
 
 const TAB: &str = "    ";
+/// Threads start where code text does, after the line numbers.
+const INDENT: usize = 5;
 
 /// Side-by-side diff with a row cursor. Rows wrap; the screen starts `off` lines
 /// into row `top`, which only happens for a cursor row taller than the screen.
@@ -297,8 +299,8 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
         }
         Row::Thread { idx } => {
             return Drawn::Full(
-                thread_lines(ctx, *idx, at_cursor, width as usize),
-                Style::new(),
+                thread_lines(ctx, *idx, at_cursor, !doc.at_top(i), width as usize),
+                Style::new().bg(theme.surface),
             );
         }
         Row::Code { file, left, right } => {
@@ -369,7 +371,7 @@ fn code_lines(
     if selected {
         gutter = gutter.fg(theme.on_accent).bg(theme.accent);
     }
-    let number = format!("{:>4} ", s.lineno);
+    let number = format!("{:>1$} ", s.lineno, INDENT - 1);
     let gutter_width = number.len();
     let text_width = width.saturating_sub(gutter_width).max(1);
     let mut runs = colors
@@ -428,34 +430,49 @@ fn code_lines(
     (lines, Style::new().bg(bg))
 }
 
-/// A thread: header, then each message wrapped to `width`; resolved threads collapse to the header.
-fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Line<'static>> {
+/// A thread as a card: header, then each message wrapped to `width`;
+/// resolved threads collapse to the header. `inline` threads sit under what they
+/// anchor to, so their header leaves out the path.
+fn thread_lines(
+    ctx: &Ctx,
+    idx: usize,
+    at_cursor: bool,
+    inline: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let outdated = ctx.outdated[idx];
     let t: &Thread = &ctx.session.threads[idx];
     let open = t.status == Status::Open;
     let waiting_on_user = t.waiting_on_user();
-    let bar_color = if waiting_on_user {
-        theme.accent
-    } else {
-        theme.dim
+    let line = |spans: Vec<Span<'static>>| {
+        Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
-    let bar = || Span::styled("┃ ", Style::new().fg(bar_color));
+    let inner = width.saturating_sub(INDENT);
     let state = match (open, waiting_on_user) {
         (false, _) => "resolved",
         (true, true) => "waiting on you",
         (true, false) => "waiting on agent",
     };
-    let mut header = format!("{} / {} / {state}", t.id, ctx.session.location(&t.anchor));
+    let location = ctx.session.location(&t.anchor);
+    let place = match (&t.anchor, inline) {
+        (Anchor::Lines { file, .. }, true) => location.replacen(&format!("{file}:"), "L", 1),
+        (Anchor::File { .. }, true) => "file".into(),
+        _ => location,
+    };
+    let mut header = format!("{}  {place}  {state}", t.id);
     if outdated {
-        header.push_str(" / outdated");
+        header.push_str("  outdated");
     }
     let mut header_style = Style::new().add_modifier(Modifier::BOLD);
+    if waiting_on_user {
+        header_style = header_style.fg(theme.accent);
+    }
     if !open {
         header_style = Style::new().fg(theme.dim);
         if let Some(m) = t.messages.first() {
             header.push_str(&format!(
-                " / {}: {}",
+                "  {}: {}",
                 m.from,
                 m.body.lines().next().unwrap_or("")
             ));
@@ -464,18 +481,15 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
     if at_cursor {
         header_style = header_style.add_modifier(Modifier::REVERSED);
     }
-    let mut lines = vec![Line::from(vec![bar(), Span::styled(header, header_style)])];
+    let mut lines = vec![line(vec![Span::styled(header, header_style)])];
     if !open {
         return lines;
     }
     if outdated && let Some(text) = &t.text {
         let dim = Style::new().fg(theme.dim);
-        lines.push(Line::from(vec![bar(), Span::styled("was:", dim)]));
+        lines.push(line(vec![Span::styled("was:", dim)]));
         for l in text.lines() {
-            lines.push(Line::from(vec![
-                bar(),
-                Span::styled(format!("  {}", clean(l)), dim),
-            ]));
+            lines.push(line(vec![Span::styled(format!("  {}", clean(l)), dim)]));
         }
     }
     for m in &t.messages {
@@ -485,7 +499,7 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
             theme.mauve
         });
         let indent = m.from.width() + 2;
-        let body_width = width.saturating_sub(2 + indent).max(10);
+        let body_width = inner.saturating_sub(indent).max(10);
         let mut first = true;
         for l in m.body.lines() {
             for part in textwrap::wrap(&clean(l), body_width) {
@@ -495,8 +509,7 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
                     " ".repeat(indent)
                 };
                 first = false;
-                lines.push(Line::from(vec![
-                    bar(),
+                lines.push(line(vec![
                     Span::styled(prefix, who),
                     Span::raw(part.into_owned()),
                 ]));

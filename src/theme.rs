@@ -56,6 +56,8 @@ pub struct Theme {
     pub mauve: Color,
     pub teal: Color,
     pub peach: Color,
+    /// Background of threads.
+    pub surface: Color,
     /// Backgrounds of deleted / added lines, and of the changed words in them.
     pub del_bg: Color,
     pub add_bg: Color,
@@ -99,6 +101,7 @@ static THEMES: &[Theme] = &[
         mauve: Color::Magenta,
         teal: Color::Cyan,
         peach: Color::Yellow,
+        surface: Color::Reset,
         del_bg: Color::Red,
         add_bg: Color::Green,
         del_emph: Color::LightRed,
@@ -449,6 +452,7 @@ const fn palette(name: &'static str, p: Palette) -> Theme {
         mauve: rgb(p.mauve),
         teal: rgb(p.teal),
         peach: rgb(p.peach),
+        surface: rgb(mix(p.text, p.bg, 8)),
         del_bg: rgb(mix(p.red, p.bg, 15)),
         add_bg: rgb(mix(p.green, p.bg, 15)),
         del_emph: rgb(mix(p.red, p.bg, 45)),
