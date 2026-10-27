@@ -7,7 +7,7 @@ mod session;
 mod store;
 mod ui;
 
-use std::io::Write;
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -32,22 +32,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a session for RANGE (A..<commit>|HEAD|staged|unstaged) and open the TUI
-    Start {
+    /// Create a session for RANGE (A..<commit>|HEAD|staged|unstaged) and print its id
+    New {
         range: String,
-        /// JSON file with comments to add
-        #[arg(long)]
-        comments: Option<PathBuf>,
-        /// Shell command run on quit, with $MRG_SESSION set
+        /// Shell command run on quitting the TUI, with $MRG_SESSION set
         #[arg(long)]
         on_quit: Option<String>,
     },
-    /// Reopen an existing session
+    /// Add comments from a JSON file (`-` for stdin) to a session
+    Comment {
+        #[arg(long)]
+        session: String,
+        file: PathBuf,
+    },
+    /// Open a session in the TUI
     Resume {
         #[arg(long)]
         session: String,
-        #[arg(long)]
-        comments: Option<PathBuf>,
+        /// Replaces the saved on-quit hook
         #[arg(long)]
         on_quit: Option<String>,
     },
@@ -65,27 +67,40 @@ fn main() -> Result<()> {
     let mut repo = Repo::open()?;
     let store = Store::open(&repo.key())?;
     match cli.cmd {
-        None => bail!("`mrg` without arguments is not implemented yet; use `mrg start RANGE`"),
-        Some(Cmd::Start {
-            range,
-            comments,
-            on_quit,
-        }) => {
+        None => bail!("`mrg` without arguments is not implemented yet; use `mrg new RANGE`"),
+        Some(Cmd::New { range, on_quit }) => {
             let (base, end) = repo.resolve(&range)?;
             let session = Session::new(store.new_id(), range, base, end, on_quit);
-            open(store, repo, session, comments)
+            store.save(&session)?;
+            println!("{}", session.id);
+            Ok(())
         }
-        Some(Cmd::Resume {
-            session,
-            comments,
-            on_quit,
-        }) => {
+        Some(Cmd::Comment { session, file }) => {
+            let mut session = store.load(&session)?;
+            let mut text = String::new();
+            if file.as_os_str() == "-" {
+                std::io::stdin()
+                    .read_to_string(&mut text)
+                    .context("read stdin")?;
+            } else {
+                text = std::fs::read_to_string(&file)
+                    .with_context(|| format!("read {}", file.display()))?;
+            }
+            let input: Input = serde_json::from_str(&text).context("parse comments")?;
+            session.apply(input, &mut repo)?;
+            store.save(&session)
+        }
+        Some(Cmd::Resume { session, on_quit }) => {
+            if !std::io::stdout().is_terminal() {
+                bail!("mrg resume needs a terminal");
+            }
             let mut session = store.load(&session)?;
             repo.verify(&session.base, &session.end)?;
             if on_quit.is_some() {
                 session.on_quit = on_quit;
+                store.save(&session)?;
             }
-            open(store, repo, session, comments)
+            open(store, repo, session)
         }
         Some(Cmd::Show { session }) => {
             println!(
@@ -114,20 +129,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn open(
-    store: Store,
-    mut repo: Repo,
-    mut session: Session,
-    comments: Option<PathBuf>,
-) -> Result<()> {
-    if let Some(path) = comments {
-        let text =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-        let input: Input =
-            serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-        session.apply(input, &mut repo)?;
-    }
-    store.save(&session)?;
+fn open(store: Store, repo: Repo, session: Session) -> Result<()> {
     let mut ctx = app::Ctx::new(session, repo, store)?;
     app::run(&mut ctx)?;
     let session = &ctx.session;

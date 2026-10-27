@@ -60,7 +60,7 @@ pub struct Message {
     pub body: String,
 }
 
-/// The `--comments` file format.
+/// The `mrg comment` input format.
 #[derive(Deserialize)]
 pub struct Input {
     pub from: String,
