@@ -9,7 +9,7 @@ use crate::doc::Doc;
 use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
-use crate::ui::diff_view::DiffView;
+use crate::ui::review::Review;
 
 /// State shared by all layers; layers keep only their own UI state.
 pub struct Ctx {
@@ -21,9 +21,51 @@ pub struct Ctx {
     pub outdated: Vec<bool>,
     /// Copy the threads waiting on the agent to the clipboard after quitting.
     pub copy: bool,
+    /// What the diff can show: the whole range, each commit, then uncommitted changes.
+    pub views: Vec<View>,
+    /// Index into `views` of the diff shown.
+    pub view: usize,
+}
+
+pub enum View {
+    /// `base end`.
+    All,
+    /// `C^ C`.
+    Commit { sha: String, subject: String },
+    /// `HEAD staged` or `HEAD unstaged`.
+    Uncommitted,
 }
 
 impl Ctx {
+    pub fn new(session: Session, mut repo: Repo, store: Store) -> Result<Ctx> {
+        let outdated = session.outdated(&mut repo)?;
+        let mut views = vec![View::All];
+        for (sha, subject) in repo.commits(&session.base, &session.end)? {
+            views.push(View::Commit { sha, subject });
+        }
+        if matches!(session.end.as_str(), "staged" | "unstaged") {
+            views.push(View::Uncommitted);
+        }
+        let doc = load(&mut repo, &session, &views[0])?;
+        Ok(Ctx {
+            session,
+            repo,
+            store,
+            doc,
+            outdated,
+            copy: false,
+            views,
+            view: 0,
+        })
+    }
+
+    /// Switches the diff to `views[view]`.
+    pub fn show(&mut self, view: usize) -> Result<()> {
+        self.doc = load(&mut self.repo, &self.session, &self.views[view])?;
+        self.view = view;
+        Ok(())
+    }
+
     /// Saves the session and refreshes the thread rows after threads changed.
     pub fn threads_changed(&mut self) -> Result<()> {
         self.outdated.resize(self.session.threads.len(), false);
@@ -31,6 +73,18 @@ impl Ctx {
         self.doc.set_threads(&self.session.threads);
         Ok(())
     }
+}
+
+fn load(repo: &mut Repo, session: &Session, view: &View) -> Result<Doc> {
+    let (left, right) = match view {
+        View::All => (session.base.clone(), session.end.clone()),
+        View::Commit { sha, .. } => (repo.parent(sha)?, sha.clone()),
+        View::Uncommitted => (repo.commit("HEAD")?, session.end.clone()),
+    };
+    let files = repo.diff(&left, &right)?;
+    let mut doc = Doc::new(left, right, files);
+    doc.set_threads(&session.threads);
+    Ok(doc)
 }
 
 pub enum Outcome {
@@ -46,10 +100,10 @@ pub trait Component {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
 }
 
-const HINTS: &str = " c comment  r reply  x resolve  n/N next waiting  v select  q quit";
+const HINTS: &str = " c comment  r reply  x resolve  n/N next waiting  v select  J/K file  h/l focus  Enter open  q quit";
 
 pub fn run(ctx: &mut Ctx) -> Result<()> {
-    let mut layers: Vec<Box<dyn Component>> = vec![Box::new(DiffView::default())];
+    let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];
     ratatui::run(|terminal| {
         loop {
             terminal.draw(|f| {
@@ -60,13 +114,20 @@ pub fn run(ctx: &mut Ctx) -> Result<()> {
                 ])
                 .areas(f.area());
                 let s = &ctx.session;
-                let header = format!(
+                let mut header = format!(
                     "mrg  {} · {} · {} open · {} 等你",
                     s.range,
                     s.id,
                     s.open_count(),
                     s.waiting_on_user_count()
                 );
+                match &ctx.views[ctx.view] {
+                    View::All => {}
+                    View::Commit { sha, .. } => {
+                        header.push_str(&format!(" · viewing {}", &sha[..7]))
+                    }
+                    View::Uncommitted => header.push_str(&format!(" · viewing {}", s.end)),
+                }
                 f.render_widget(
                     Paragraph::new(header).style(Style::new().add_modifier(Modifier::BOLD)),
                     head,

@@ -124,7 +124,8 @@ impl Session {
                 bail!("invalid line range {start}-{end}");
             }
             let rev = rev.get_or_insert_with(|| self.end.clone());
-            if !matches!(rev.as_str(), "HEAD" | "staged" | "unstaged") {
+            // Commits become shas; only the range end and the worktree states stay symbolic.
+            if *rev != self.end && !matches!(rev.as_str(), "staged" | "unstaged") {
                 *rev = repo.commit(rev)?;
             }
             text = Some(
@@ -169,10 +170,7 @@ impl Session {
     }
 
     pub fn waiting_on_user_count(&self) -> usize {
-        self.threads
-            .iter()
-            .filter(|t| t.status == Status::Open && t.waiting_on() == "user")
-            .count()
+        self.threads.iter().filter(|t| t.waiting_on_user()).count()
     }
 
     /// The session as JSON, with derived fields added to each thread.
@@ -260,6 +258,10 @@ impl Session {
 
 impl Thread {
     /// The last speaker being `user` means the agent should answer, otherwise the user.
+    pub fn waiting_on_user(&self) -> bool {
+        self.status == Status::Open && self.waiting_on() == "user"
+    }
+
     pub fn waiting_on(&self) -> &'static str {
         match self.messages.last() {
             Some(m) if m.from == "user" => "agent",

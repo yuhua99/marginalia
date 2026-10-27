@@ -23,6 +23,11 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("G", "bottom"),
     ("n", "next_waiting"),
     ("N", "prev_waiting"),
+    ("J", "next_file"),
+    ("K", "prev_file"),
+    ("h", "focus_left"),
+    ("l", "focus_right"),
+    ("Enter", "open"),
     ("v", "select"),
     ("Esc", "cancel"),
     ("c", "comment"),
@@ -70,10 +75,12 @@ impl Keymap {
     }
 }
 
-/// `x`, `G`, `C-x` or `Esc`.
+/// `x`, `G`, `C-x`, `Esc` or `Enter`.
 fn parse(key: &str) -> Key {
-    if key == "Esc" {
-        return (KeyCode::Esc, KeyModifiers::NONE);
+    match key {
+        "Esc" => return (KeyCode::Esc, KeyModifiers::NONE),
+        "Enter" => return (KeyCode::Enter, KeyModifiers::NONE),
+        _ => {}
     }
     match key.strip_prefix("C-") {
         Some(k) => (

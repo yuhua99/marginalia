@@ -2,21 +2,18 @@ use std::ops::RangeInclusive;
 
 use anyhow::Result;
 use ratatui::Frame;
-use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{Component, Ctx, Outcome};
+use crate::app::{Ctx, Outcome};
 use crate::doc::{Row, Side};
-use crate::keymap::{Feed, Keymap};
 use crate::repo::Kind;
 use crate::session::{Status, Thread};
 use crate::ui::input::Input;
-use crate::ui::quit_prompt::QuitPrompt;
 
-/// Side-by-side diff with a row cursor; the bottom layer.
+/// Side-by-side diff with a row cursor.
 #[derive(Default)]
 pub struct DiffView {
     cursor: usize,
@@ -24,7 +21,6 @@ pub struct DiffView {
     height: usize,
     /// Start of a `v` selection.
     mark: Option<usize>,
-    keymap: Keymap,
 }
 
 impl DiffView {
@@ -41,11 +37,13 @@ impl DiffView {
     }
 }
 
-impl Component for DiffView {
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        let Feed::Action(action) = self.keymap.feed(key) else {
-            return Ok(Outcome::Consumed);
-        };
+impl DiffView {
+    pub fn jump(&mut self, row: usize) {
+        self.cursor = row;
+        self.mark = None;
+    }
+
+    pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
         let last = ctx.doc.len() - 1;
         let half = (self.height / 2).max(1);
         match action {
@@ -63,6 +61,20 @@ impl Component for DiffView {
                 ) {
                     self.cursor = i;
                 }
+            }
+            "next_file" | "prev_file" => {
+                if let Some(i) = ctx.doc.next_file(self.cursor, action == "next_file") {
+                    self.cursor = i;
+                }
+            }
+            "open" => {
+                let row = ctx
+                    .doc
+                    .expand(self.cursor, &ctx.session.threads, |rev, path| {
+                        ctx.repo.read(rev, path)
+                    })?;
+                self.cursor = row.min(ctx.doc.len() - 1);
+                self.mark = None;
             }
             "select" => {
                 self.mark = if self.mark.is_some() {
@@ -96,21 +108,14 @@ impl Component for DiffView {
                     ctx.threads_changed()?;
                 }
             }
-            "quit" => {
-                if ctx.session.on_quit.is_none()
-                    && ctx.session.markdown(&ctx.doc.thread_order()).is_some()
-                {
-                    return Ok(Outcome::Push(Box::new(QuitPrompt)));
-                }
-                return Ok(Outcome::Quit);
-            }
             _ => {}
         }
         Ok(Outcome::Consumed)
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         let doc = &ctx.doc;
+        self.cursor = self.cursor.min(doc.len() - 1);
         self.height = area.height as usize;
         let height = |i: usize| match &doc.window(i, 1)[0] {
             Row::Thread { idx } => thread_lines(ctx, *idx, false).len(),
@@ -172,10 +177,11 @@ impl Component for DiffView {
                 }
                 Row::Fold { hidden, .. } => {
                     let style = mark(Style::new().fg(Color::DarkGray));
-                    f.render_widget(
-                        Paragraph::new(format!("  ··· {hidden} unchanged lines ···")).style(style),
-                        full,
-                    );
+                    let text = match hidden {
+                        Some(n) => format!("  ··· {n} unchanged lines ···"),
+                        None => "  ··· more lines ···".to_string(),
+                    };
+                    f.render_widget(Paragraph::new(text).style(style), full);
                 }
                 Row::Code { left, right, .. } => {
                     let selected = selection.contains(&i);

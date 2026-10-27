@@ -77,10 +77,7 @@ impl Repo {
 
     /// Fails when `base` is no longer an ancestor of the range tip (history rewritten).
     pub fn verify(&self, base: &str, end: &str) -> Result<()> {
-        let tip = match end {
-            "staged" | "unstaged" => "HEAD",
-            _ => end,
-        };
+        let tip = tip(end);
         let ok = self
             .git(&["merge-base", "--is-ancestor", base, tip])
             .status()
@@ -105,6 +102,8 @@ impl Repo {
             "--no-textconv",
             "--no-relative",
             "--submodule=short",
+            "-U3",
+            "-O/dev/null",
             "--raw",
             "-z",
             "--patch",
@@ -114,6 +113,7 @@ impl Repo {
         let mut files = parse::parse(&out)?;
         if end == "unstaged" {
             files.extend(self.skipped.iter().map(|p| FileDiff::skipped(p)));
+            files.sort_by(|a, b| a.new_path.cmp(&b.new_path));
         }
         Ok(files)
     }
@@ -236,6 +236,35 @@ impl Repo {
         Ok(tree)
     }
 
+    /// Commits in `base..end`, oldest first, as (sha, subject).
+    pub fn commits(&self, base: &str, end: &str) -> Result<Vec<(String, String)>> {
+        let out = run(&mut self.git(&[
+            "log",
+            "--first-parent",
+            "--reverse",
+            "--format=%H %s",
+            &format!("{base}..{}", tip(end)),
+        ]))?;
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .map(|l| {
+                let (sha, subject) = l.split_once(' ').unwrap_or((l, ""));
+                (sha.to_string(), subject.to_string())
+            })
+            .collect())
+    }
+
+    /// The first parent of `commit`, or the empty tree for a root commit.
+    pub fn parent(&self, commit: &str) -> Result<String> {
+        let parents = text(run(&mut self.git(&["log", "-1", "--format=%P", commit]))?)?;
+        if let Some(parent) = parents.split(' ').next().filter(|p| !p.is_empty()) {
+            return Ok(parent.to_string());
+        }
+        text(run(self
+            .git(&["hash-object", "-t", "tree", "--stdin"])
+            .stdin(Stdio::null()))?)
+    }
+
     /// Full sha of commit `rev`.
     pub fn commit(&self, rev: &str) -> Result<String> {
         run(&mut self.git(&[
@@ -252,6 +281,14 @@ impl Repo {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.root).args(args);
         cmd
+    }
+}
+
+/// The commit an end stands on: `staged` / `unstaged` stand on HEAD.
+fn tip(end: &str) -> &str {
+    match end {
+        "staged" | "unstaged" => "HEAD",
+        _ => end,
     }
 }
 

@@ -15,7 +15,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 
-use doc::Doc;
 use repo::Repo;
 use session::{Input, Session};
 use store::Store;
@@ -128,18 +127,7 @@ fn open(
         session.apply(input, &mut repo)?;
     }
     store.save(&session)?;
-    let files = repo.diff(&session.base, &session.end)?;
-    let mut doc = Doc::new(session.base.clone(), session.end.clone(), files);
-    let outdated = session.outdated(&mut repo)?;
-    doc.set_threads(&session.threads);
-    let mut ctx = app::Ctx {
-        session,
-        repo,
-        store,
-        doc,
-        outdated,
-        copy: false,
-    };
+    let mut ctx = app::Ctx::new(session, repo, store)?;
     app::run(&mut ctx)?;
     let session = &ctx.session;
     if ctx.copy
