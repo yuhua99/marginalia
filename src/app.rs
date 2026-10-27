@@ -28,6 +28,8 @@ pub struct Ctx {
     pub copy: bool,
     /// Quitting goes back to the picker.
     pub back: bool,
+    /// Run on quitting; given to `mrg resume` for this run only.
+    pub on_quit: Option<String>,
     /// What the diff can show: the whole range, each commit, then uncommitted changes.
     pub views: Vec<View>,
     /// First and last of the `views` shown together (oldest to newest).
@@ -74,6 +76,7 @@ impl Ctx {
             outdated,
             copy: false,
             back: false,
+            on_quit: None,
             views,
             view: (0, 0),
             highlighter: Highlighter::new(),

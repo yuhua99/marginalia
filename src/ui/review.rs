@@ -92,8 +92,7 @@ impl Component for Review {
             // Leaving for the picker ends the session like quitting does.
             "quit" | "back" => {
                 ctx.back = action == "back";
-                if ctx.session.on_quit.is_none()
-                    && ctx.session.markdown(&ctx.doc.thread_order()).is_some()
+                if ctx.on_quit.is_none() && ctx.session.markdown(&ctx.doc.thread_order()).is_some()
                 {
                     return Ok(Outcome::Push(Box::new(QuitPrompt)));
                 }
