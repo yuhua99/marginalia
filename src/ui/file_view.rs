@@ -23,7 +23,6 @@ const HELP: &[Entry] = &[
     (&["open"], "follow a thread's link"),
     (&["select"], "select lines"),
     (&["comment"], "comment; on a thread, reply"),
-    (&["reply"], "reply to the thread"),
     (&["resolve"], "resolve or reopen the thread"),
     (
         &["edit", "delete"],

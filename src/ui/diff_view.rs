@@ -152,18 +152,16 @@ impl DiffView {
                 }
             }
             "cancel" => self.mark = None,
-            "comment" | "reply" => {
+            "comment" => {
                 if let Some(idx) = self.thread_at_cursor(ctx) {
                     return Ok(Outcome::Push(Box::new(Input::reply(idx, &ctx.session))));
                 }
-                if action == "comment" {
-                    let anchor = self.doc(ctx).anchor_at(self.selection());
-                    self.mark = None;
-                    return Ok(Outcome::Push(Box::new(Input::comment(
-                        anchor,
-                        &ctx.session,
-                    ))));
-                }
+                let anchor = self.doc(ctx).anchor_at(self.selection());
+                self.mark = None;
+                return Ok(Outcome::Push(Box::new(Input::comment(
+                    anchor,
+                    &ctx.session,
+                ))));
             }
             // Only the user's last message of an open thread, before the agent answers it.
             "edit" | "delete" => {

@@ -36,7 +36,6 @@ const HELP: &[help::Entry] = &[
     (&["select"], "select lines"),
     (&["cancel"], "clear the selection or checks"),
     (&["comment"], "comment; on a thread, reply"),
-    (&["reply"], "reply to the thread"),
     (&["resolve"], "resolve or reopen the thread"),
     (
         &["edit", "delete"],
