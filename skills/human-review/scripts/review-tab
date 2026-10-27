@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# review-tab SESSION: open an mrg session in a herdr tab or tmux window beside this agent.
+# On quit, the hook (review-tab --notify PANE) tells the agent pane how the review ended.
+set -euo pipefail
+
+die() { echo "error: $*" >&2; exit 1; }
+
+if [ "${HERDR_ENV:-}" = 1 ]; then
+    mux=herdr
+    agent_pane="${HERDR_PANE_ID:?HERDR_PANE_ID unset}"
+elif [ -n "${TMUX:-}" ]; then
+    mux=tmux
+    agent_pane="${TMUX_PANE:?TMUX_PANE unset}"
+else
+    die "not in herdr or tmux; restart the agent inside one."
+fi
+
+# Runs CMD in a new focused tab named review, in the current directory; the tab closes when CMD
+# exits, after Enter if it failed so its error stays readable.
+mux_open() {
+    local cmd="$1 || { echo 'mrg failed; Enter closes'; read -r _; }"
+    if [ "$mux" = herdr ]; then
+        local tab
+        tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label review --cwd "$PWD" --focus)"
+        herdr pane run "$(jq -r '.result.root_pane.pane_id' <<<"$tab")" \
+            "$cmd; herdr tab close $(jq -r '.result.tab.tab_id' <<<"$tab")" >/dev/null
+    else
+        tmux new-window -a -n review -c "$PWD" "$cmd"
+    fi
+}
+
+# Types TEXT into PANE; with a third argument, submits it too.
+mux_send() {
+    local pane="$1" text="$2" submit="${3:-}"
+    if [ "$mux" = herdr ]; then
+        if [ -n "$submit" ]; then
+            # Typed only when the agent cannot take a prompt (e.g. blocked), so the text is not lost.
+            herdr agent prompt "$pane" "$text" >/dev/null 2>&1 || herdr pane send-text "$pane" "$text" >/dev/null
+        else
+            herdr pane send-text "$pane" "$text" >/dev/null
+        fi
+    else
+        tmux send-keys -t "$pane" -l "$text"
+        [ -z "$submit" ] || tmux send-keys -t "$pane" Enter
+    fi
+}
+
+# Approved (no open threads) sends nothing.
+notify() {
+    local open waiting
+    if ! read -r open waiting < <(mrg list | jq -r --arg id "$MRG_SESSION" '.[] | select(.id == $id) | "\(.open) \(.waiting_on_agent)"'); then
+        mux_send "$1" "mrg $MRG_SESSION: quit, but reading its state failed; run mrg show" submit
+        return
+    fi
+    if [ "$waiting" -gt 0 ]; then
+        mux_send "$1" "mrg $MRG_SESSION: $waiting threads waiting on agent" submit
+    elif [ "$open" -gt 0 ]; then
+        mux_send "$1" "mrg $MRG_SESSION: quit with $open threads open"
+    fi
+}
+
+case "${1:-}" in
+    --notify) notify "$2" ;;
+    "" | -*) die "usage: review-tab SESSION" ;;
+    *)
+        # A bad id fails here, where the agent sees it.
+        mrg show --session "$1" >/dev/null
+        hook="$(printf '%q --notify %q' "$(realpath "$0")" "$agent_pane")"
+        mux_open "$(printf 'mrg resume --session %q --on-quit %q' "$1" "$hook")"
+        ;;
+esac
