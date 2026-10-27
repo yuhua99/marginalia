@@ -16,8 +16,9 @@ pub struct Sidebar {
     cursor: usize,
     top: usize,
     height: usize,
-    /// Checked views, first..=last.
-    checked: Option<(usize, usize)>,
+    /// While the commits box has focus: the checked views first..=last, or None for none.
+    /// Outside it (None) the box marks the views shown.
+    checked: Option<Option<(usize, usize)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -74,24 +75,31 @@ impl Sidebar {
             .map_or(Entry::Other, |i| i.entry)
     }
 
-    pub fn take_checked(&mut self) -> Option<(usize, usize)> {
-        self.checked.take()
+    pub fn checked(&self) -> Option<(usize, usize)> {
+        self.checked.flatten()
+    }
+
+    /// Entering the commits box checks the views shown; leaving it drops the checks.
+    pub fn focus(&mut self, ctx: &Ctx, focused: bool) {
+        let shown = match ctx.view {
+            (0, 0) => (1, ctx.views.len() - 1),
+            view => view,
+        };
+        self.checked = focused.then_some(Some(shown));
     }
 
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
         let last = self.items(ctx).len().saturating_sub(1);
-        match action {
-            "check" => {
-                if let Entry::View(v) = self.entry(ctx) {
-                    self.checked = check(self.checked, v);
-                    if self.checked.is_some() {
-                        self.cursor = (self.cursor + 1).min(last);
-                    }
+        if action == "check" {
+            if let Entry::View(v) = self.entry(ctx)
+                && let Some(checked) = &mut self.checked
+            {
+                *checked = check(*checked, v);
+                if checked.is_some() {
+                    self.cursor = (self.cursor + 1).min(last);
                 }
-                return;
             }
-            "cancel" => self.checked = None,
-            _ => {}
+            return;
         }
         let half = (self.height / 2).max(1);
         self.cursor = match action {
@@ -157,7 +165,7 @@ impl Sidebar {
     }
 }
 
-fn views(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
+fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
     let threads = &ctx.session.threads;
     let within = |range: (usize, usize), v| (range.0..=range.1).contains(&v);
     // View 0, all, is every row checked.
@@ -166,9 +174,9 @@ fn views(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
         .enumerate()
         .skip(1)
         .map(|(v, view)| {
-            // Checking shows the checks until Enter shows them or Esc drops them.
+            // The checks while the box has focus, else the views shown.
             let on = match checked {
-                Some(range) => within(range, v),
+                Some(range) => range.is_some_and(|range| within(range, v)),
                 None => ctx.view == (0, 0) || within(ctx.view, v),
             };
             let check = if on { "[x]" } else { "[ ]" };
