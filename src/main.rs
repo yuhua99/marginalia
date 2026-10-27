@@ -140,43 +140,51 @@ fn need_terminal() -> Result<()> {
 }
 
 /// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
-fn tui(store: Store, mut repo: Repo, session: Option<Session>) -> Result<()> {
+/// `Q` in the review does the same and goes back to the picker.
+fn tui(mut store: Store, mut repo: Repo, mut session: Option<Session>) -> Result<()> {
     let settings = settings::Settings::load()?;
     let (mut theme, mut wrap) = (theme::find(&settings.theme), settings.wrap);
-    let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
-        let session = match session {
-            Some(session) => session,
-            None => match ui::picker::run(terminal, &store, &mut repo, &mut theme, &mut wrap)? {
+    loop {
+        let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
+            let session = match session {
                 Some(session) => session,
-                None => return Ok(None),
-            },
+                None => {
+                    match ui::picker::run(terminal, &store, &mut repo, &mut theme, &mut wrap)? {
+                        Some(session) => session,
+                        None => return Ok(None),
+                    }
+                }
+            };
+            let mut ctx = app::Ctx::new(session, repo, store, theme, wrap)?;
+            app::run(terminal, &mut ctx)?;
+            Ok(Some(ctx))
+        })?;
+        let Some(ctx) = ctx else {
+            return Ok(());
         };
-        let mut ctx = app::Ctx::new(session, repo, store, theme, wrap)?;
-        app::run(terminal, &mut ctx)?;
-        Ok(Some(ctx))
-    })?;
-    let Some(ctx) = ctx else {
-        return Ok(());
-    };
-    let session = &ctx.session;
-    if ctx.copy
-        && let Some(md) = session.markdown(&ctx.doc.thread_order())
-    {
-        // OSC 52: the terminal sets its clipboard, which outlives this process.
-        print!("\x1b]52;c;{}\x07", STANDARD.encode(md));
-        std::io::stdout().flush()?;
-        eprintln!("sent threads waiting on the agent to the terminal clipboard (OSC 52)");
-    }
-    if let Some(cmd) = &session.on_quit {
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(cmd)
-            .env("MRG_SESSION", &session.id)
-            .status()
-            .context("run on-quit hook")?;
-        if !status.success() {
-            bail!("on-quit hook failed: {status}");
+        let s = &ctx.session;
+        if ctx.copy
+            && let Some(md) = s.markdown(&ctx.doc.thread_order())
+        {
+            // OSC 52: the terminal sets its clipboard, which outlives this process.
+            print!("\x1b]52;c;{}\x07", STANDARD.encode(md));
+            std::io::stdout().flush()?;
+            eprintln!("sent threads waiting on the agent to the terminal clipboard (OSC 52)");
         }
+        if let Some(cmd) = &s.on_quit {
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .env("MRG_SESSION", &s.id)
+                .status()
+                .context("run on-quit hook")?;
+            if !status.success() {
+                bail!("on-quit hook failed: {status}");
+            }
+        }
+        if !ctx.back {
+            return Ok(());
+        }
+        (store, repo, session, theme, wrap) = (ctx.store, ctx.repo, None, ctx.theme, ctx.wrap);
     }
-    Ok(())
 }

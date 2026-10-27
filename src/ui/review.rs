@@ -44,6 +44,7 @@ const HELP: &[help::Entry] = &[
     ),
     (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
+    (&["back"], "back to the picker"),
     (&["quit"], "quit"),
 ];
 
@@ -88,7 +89,9 @@ impl Component for Review {
                     ctx.theme, ctx.wrap,
                 ))));
             }
-            "quit" => {
+            // Leaving for the picker ends the session like quitting does.
+            "quit" | "back" => {
+                ctx.back = action == "back";
                 if ctx.session.on_quit.is_none()
                     && ctx.session.markdown(&ctx.doc.thread_order()).is_some()
                 {

@@ -37,6 +37,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("e", "edit"),
     ("d", "delete"),
     ("q", "quit"),
+    ("Q", "back"),
     ("?", "help"),
     ("s", "settings"),
     ("/", "filter"),

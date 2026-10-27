@@ -26,6 +26,8 @@ pub struct Ctx {
     pub outdated: Vec<bool>,
     /// Copy the threads waiting on the agent to the clipboard after quitting.
     pub copy: bool,
+    /// Quitting goes back to the picker.
+    pub back: bool,
     /// What the diff can show: the whole range, each commit, then uncommitted changes.
     pub views: Vec<View>,
     /// First and last of the `views` shown together (oldest to newest).
@@ -71,6 +73,7 @@ impl Ctx {
             doc,
             outdated,
             copy: false,
+            back: false,
             views,
             view: (0, 0),
             highlighter: Highlighter::new(),
@@ -137,7 +140,7 @@ pub trait Component {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
 }
 
-const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  q quit";
+const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::new())];
