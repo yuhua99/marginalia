@@ -9,7 +9,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::doc::Doc;
 use crate::highlight::Highlighter;
-use crate::repo::Repo;
+use crate::repo::{Commit, Repo};
 use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
@@ -46,7 +46,7 @@ pub enum View {
     /// `base end`.
     All,
     /// `C^ C`.
-    Commit { sha: String, subject: String },
+    Commit(Commit),
     /// `HEAD staged` or `HEAD unstaged`.
     Uncommitted,
 }
@@ -61,8 +61,8 @@ impl Ctx {
     ) -> Result<Ctx> {
         let outdated = session.outdated(&mut repo)?;
         let mut views = vec![View::All];
-        for (sha, subject) in repo.commits(&session.base, &session.end)? {
-            views.push(View::Commit { sha, subject });
+        for commit in repo.commits(&session.base, &session.end)? {
+            views.push(View::Commit(commit));
         }
         if matches!(session.end.as_str(), "staged" | "unstaged") {
             views.push(View::Uncommitted);
@@ -114,7 +114,7 @@ fn load(
 ) -> Result<Doc> {
     let left = match &views[first] {
         View::All => session.base.clone(),
-        View::Commit { sha, .. } => match repo.parent(sha)? {
+        View::Commit(c) => match repo.parent(&c.sha)? {
             Some(parent) => parent,
             None => repo.empty_tree()?,
         },
@@ -122,7 +122,7 @@ fn load(
     };
     let right = match &views[last] {
         View::All | View::Uncommitted => session.end.clone(),
-        View::Commit { sha, .. } => sha.clone(),
+        View::Commit(c) => c.sha.clone(),
     };
     let files = repo.diff(&left, &right)?;
     let mut doc = Doc::new(left, right, files);

@@ -184,7 +184,7 @@ fn header(ctx: &Ctx) -> String {
         s.waiting_on_user_count()
     );
     let label = |v: usize| match &ctx.views[v] {
-        View::Commit { sha, .. } => &sha[..7],
+        View::Commit(c) => &c.sha[..7],
         _ => &s.end,
     };
     match ctx.view {

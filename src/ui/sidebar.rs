@@ -6,6 +6,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{Ctx, View};
 use crate::session::{Anchor, Thread};
+use crate::ui::commit_row::{Columns, mark};
 use crate::ui::{boxed, check};
 
 /// A box: the commits (and uncommitted changes), `[x]` on those shown, where Space checks
@@ -34,8 +35,8 @@ impl Entry {
     pub fn anchor(self, ctx: &Ctx) -> Option<Anchor> {
         match self {
             Entry::View(v) => Some(match &ctx.views[v] {
-                View::Commit { sha, .. } => Anchor::Commit {
-                    commit: sha.clone(),
+                View::Commit(c) => Anchor::Commit {
+                    commit: c.sha.clone(),
                 },
                 _ => Anchor::Session,
             }),
@@ -49,6 +50,8 @@ impl Entry {
 
 struct Item {
     entry: Entry,
+    /// `[x]` or `[ ]` on a view.
+    checked: Option<bool>,
     text: String,
     waiting: usize,
 }
@@ -137,6 +140,12 @@ impl Sidebar {
         if shown >= self.top + self.height {
             self.top = shown + 1 - self.height;
         }
+        let columns = Columns::new(ctx.views.iter().filter_map(|v| match v {
+            View::Commit(c) => Some(c),
+            _ => None,
+        }));
+        // Inside the borders, after the mark.
+        let width = (area.width as usize).saturating_sub(2 + 4);
         let lines: Vec<Line> = items
             .iter()
             .enumerate()
@@ -147,7 +156,18 @@ impl Sidebar {
                 if Some(i) == marked {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
-                let mut spans = vec![Span::styled(item.text.clone(), style)];
+                let mut spans: Vec<Span> = item
+                    .checked
+                    .map(|on| mark(on, ctx.theme))
+                    .into_iter()
+                    .collect();
+                if let Entry::View(v) = item.entry
+                    && let View::Commit(c) = &ctx.views[v]
+                {
+                    spans.extend(columns.row(c, item.waiting, width, style, ctx.theme));
+                    return Line::from(spans);
+                }
+                spans.push(Span::styled(item.text.clone(), style));
                 if item.waiting > 0 {
                     spans.push(Span::styled(
                         format!(" ({})", item.waiting),
@@ -179,12 +199,9 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
                 Some(range) => range.is_some_and(|range| within(range, v)),
                 None => ctx.view == (0, 0) || within(ctx.view, v),
             };
-            let check = if on { "[x]" } else { "[ ]" };
             let (text, waiting) = match view {
-                View::Commit { sha, subject } => (
-                    format!("{} {subject}", &sha[..7]),
-                    count(threads, |rev| rev == sha),
-                ),
+                // Drawn by `Columns::row`.
+                View::Commit(c) => (String::new(), count(threads, |rev| rev == c.sha)),
                 _ => (
                     ctx.session.end.clone(),
                     count(threads, |rev| rev == ctx.session.end),
@@ -192,7 +209,8 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
             };
             Item {
                 entry: Entry::View(v),
-                text: format!("{check} {text}"),
+                checked: Some(on),
+                text,
                 waiting,
             }
         })
@@ -212,12 +230,14 @@ fn files(ctx: &Ctx) -> Vec<Item> {
         for (depth, dir) in dirs.iter().enumerate().skip(same) {
             items.push(Item {
                 entry: Entry::Other,
+                checked: None,
                 text: format!("{}{dir}/", "  ".repeat(depth)),
                 waiting: 0,
             });
         }
         items.push(Item {
             entry: Entry::File(file),
+            checked: None,
             text: format!("{}{name}", "  ".repeat(dirs.len())),
             waiting: waiting[file],
         });

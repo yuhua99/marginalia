@@ -25,6 +25,15 @@ pub struct Repo {
     cat: Option<CatFile>,
 }
 
+/// A commit of `git log`.
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+    pub author: String,
+    /// Relative author date, as "3 days ago".
+    pub when: String,
+}
+
 struct CatFile {
     _child: Child,
     stdin: ChildStdin,
@@ -243,27 +252,33 @@ impl Repo {
         Ok(tree)
     }
 
-    /// Commits in `base..end`, oldest first, as (sha, subject).
-    pub fn commits(&self, base: &str, end: &str) -> Result<Vec<(String, String)>> {
+    /// Commits in `base..end`, oldest first.
+    pub fn commits(&self, base: &str, end: &str) -> Result<Vec<Commit>> {
         // A tree as base (before the root) is ignored by git log, listing all history.
         self.log(&["--reverse", &format!("{base}..{}", tip(end))])
     }
 
-    /// Up to `n` commits back from HEAD, newest first, as (sha, subject).
-    pub fn recent(&self, n: usize) -> Result<Vec<(String, String)>> {
+    /// Up to `n` first-parent commits back from HEAD, newest first.
+    pub fn recent(&self, n: usize) -> Result<Vec<Commit>> {
         self.log(&["-n", &n.to_string(), "HEAD"])
     }
 
-    /// First-parent `git log` as (sha, subject).
-    fn log(&self, args: &[&str]) -> Result<Vec<(String, String)>> {
-        let mut log = vec!["log", "--first-parent", "--format=%H %s"];
+    /// First-parent `git log`.
+    fn log(&self, args: &[&str]) -> Result<Vec<Commit>> {
+        let mut log = vec!["log", "--first-parent", "--format=%H%x1f%an%x1f%ar%x1f%s"];
         log.extend(args);
         let out = run(&mut self.git(&log))?;
         Ok(String::from_utf8_lossy(&out)
             .lines()
             .map(|l| {
-                let (sha, subject) = l.split_once(' ').unwrap_or((l, ""));
-                (sha.to_string(), subject.to_string())
+                let mut fields = l.splitn(4, '\x1f').map(str::to_string);
+                let mut next = || fields.next().unwrap_or_default();
+                Commit {
+                    sha: next(),
+                    author: next(),
+                    when: next(),
+                    subject: next(),
+                }
             })
             .collect())
     }

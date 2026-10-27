@@ -9,10 +9,11 @@ use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
 use crate::keymap::{Feed, Keymap};
-use crate::repo::Repo;
+use crate::repo::{Commit, Repo};
 use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
+use crate::ui::commit_row::{Columns, mark};
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
 use crate::ui::settings::SettingsPopup;
@@ -20,6 +21,9 @@ use crate::ui::{boxed, check, clear};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
+
+/// The rows of the range pane above the commits.
+const UNCOMMITTED: [&str; 2] = ["unstaged", "staged"];
 
 const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  s settings  ? help  q quit";
 
@@ -74,7 +78,7 @@ pub fn run(
 #[derive(Default)]
 struct Picker {
     sessions: Vec<(Session, u64)>,
-    commits: Vec<(String, String)>,
+    commits: Vec<Commit>,
     /// Focus on the range pane.
     right: bool,
     /// Per pane, into its shown rows.
@@ -105,8 +109,8 @@ impl Picker {
             let commits = self
                 .commits
                 .iter()
-                .map(|(sha, subject)| (format!("{} {subject}", &sha[..7]), sha.clone()));
-            return ["unstaged", "staged"]
+                .map(|c| (format!("{} {}", &c.sha[..7], c.subject), c.sha.clone()));
+            return UNCOMMITTED
                 .map(|s| (s.to_string(), s.to_string()))
                 .into_iter()
                 .chain(commits)
@@ -302,6 +306,9 @@ impl Picker {
             let cursor = self.cursor[pane];
             let skip = (cursor + 1).saturating_sub(height);
             let all = self.all(pane);
+            let columns = Columns::new(&self.commits);
+            // Inside the borders, after the mark.
+            let width = (area.width as usize).saturating_sub(2 + 4);
             let lines: Vec<Line> = self
                 .shown(pane)
                 .into_iter()
@@ -314,16 +321,18 @@ impl Picker {
                     } else {
                         Style::new()
                     };
-                    let text = Span::styled(all[i].0.clone(), style);
                     if pane == 0 {
-                        return Line::from(text);
+                        return Line::from(Span::styled(all[i].0.clone(), style));
                     }
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
-                    let mark = if checked { "[x] " } else { "[ ] " };
-                    Line::from(vec![
-                        Span::styled(mark, Style::new().fg(theme.accent)),
-                        text,
-                    ])
+                    let mut spans = vec![mark(checked, theme)];
+                    match i.checked_sub(UNCOMMITTED.len()) {
+                        Some(c) => {
+                            spans.extend(columns.row(&self.commits[c], 0, width, style, theme))
+                        }
+                        None => spans.push(Span::styled(all[i].0.clone(), style)),
+                    }
+                    Line::from(spans)
                 })
                 .collect();
             f.render_widget(
