@@ -2,7 +2,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
@@ -12,14 +12,16 @@ use crate::keymap::{Feed, Keymap};
 use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
+use crate::ui::check;
 
-/// Commits offered as range ends and starts.
+/// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-const HINTS: &str = " j/k move  h/l pane  Enter pick  / filter  X delete session  Esc back  q quit";
+const HINTS: &str =
+    " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  q quit";
 
 /// What `mrg` shows first: sessions to resume on the left, a new range on the right
-/// (pick the end, then the start A). Returns the session to open, or None to quit.
+/// (rows checked with Space, or the cursor row). Returns the session to open, or None to quit.
 pub fn run(
     terminal: &mut DefaultTerminal,
     store: &Store,
@@ -48,13 +50,13 @@ struct Picker {
     commits: Vec<(String, String)>,
     /// Focus on the range pane.
     right: bool,
-    /// Per pane.
+    /// Per pane, into its shown rows.
     cursor: [usize; 2],
     filter: [String; 2],
     /// Keys go to the filter of the focused pane.
     typing: bool,
-    /// The end picked in the first step.
-    end: Option<String>,
+    /// Checked rows of the range pane, top..=bottom into all its rows.
+    checked: Option<(usize, usize)>,
     /// Waiting for y/n to delete the session at the cursor.
     deleting: bool,
     error: Option<String>,
@@ -66,43 +68,44 @@ impl Picker {
         self.right as usize
     }
 
-    /// (text, value) of a pane, filtered.
-    fn items(&self, pane: usize) -> Vec<(String, String)> {
-        let all: Vec<(String, String)> = if pane == 0 {
-            let width = self.sessions.iter().map(|(s, _)| s.range.width()).max();
-            self.sessions
-                .iter()
-                .map(|(s, _)| {
-                    let pad = " ".repeat(width.unwrap_or(0) - s.range.width());
-                    let text = format!(
-                        "{}  {}{pad}  {:>3} open  {:>3} waiting on you",
-                        s.id,
-                        s.range,
-                        s.open_count(),
-                        s.waiting_on_user_count()
-                    );
-                    (text, s.id.clone())
-                })
-                .collect()
-        } else {
+    /// (text, value) of every row of a pane: session ids, or unstaged, staged and commit shas.
+    fn all(&self, pane: usize) -> Vec<(String, String)> {
+        if pane == 1 {
             let commits = self
                 .commits
                 .iter()
                 .map(|(sha, subject)| (format!("{} {subject}", &sha[..7]), sha.clone()));
-            match &self.end {
-                None => ["unstaged", "staged"]
-                    .map(|s| (s.to_string(), s.to_string()))
-                    .into_iter()
-                    .chain(commits)
-                    .collect(),
-                Some(end) if matches!(end.as_str(), "staged" | "unstaged") => commits.collect(),
-                // A comes after (below) the end.
-                Some(end) => commits.skip_while(|c| c.1 != *end).skip(1).collect(),
-            }
-        };
+            return ["unstaged", "staged"]
+                .map(|s| (s.to_string(), s.to_string()))
+                .into_iter()
+                .chain(commits)
+                .collect();
+        }
+        let width = self.sessions.iter().map(|(s, _)| s.range.width()).max();
+        self.sessions
+            .iter()
+            .map(|(s, _)| {
+                let pad = " ".repeat(width.unwrap_or(0) - s.range.width());
+                let text = format!(
+                    "{}  {}{pad}  {:>3} open  {:>3} waiting on you",
+                    s.id,
+                    s.range,
+                    s.open_count(),
+                    s.waiting_on_user_count()
+                );
+                (text, s.id.clone())
+            })
+            .collect()
+    }
+
+    /// Indices into `all(pane)` that pass the filter.
+    fn shown(&self, pane: usize) -> Vec<usize> {
         let filter = self.filter[pane].to_lowercase();
-        all.into_iter()
-            .filter(|(text, _)| text.to_lowercase().contains(&filter))
+        self.all(pane)
+            .iter()
+            .enumerate()
+            .filter(|(_, (text, _))| text.to_lowercase().contains(&filter))
+            .map(|(i, _)| i)
             .collect()
     }
 
@@ -114,14 +117,16 @@ impl Picker {
     ) -> Result<Option<Option<Session>>> {
         self.error = None;
         let pane = self.pane();
+        let shown = self.shown(pane);
+        let at = shown.get(self.cursor[pane]).copied();
         if self.deleting {
             self.deleting = false;
             if key.code == KeyCode::Char('y')
-                && let Some((_, id)) = self.items(0).get(self.cursor[0])
+                && let Some(i) = at
             {
-                store.delete(id)?;
+                store.delete(&self.sessions[i].0.id)?;
                 self.sessions = store.list()?;
-                self.cursor[0] = self.cursor[0].min(self.items(0).len().saturating_sub(1));
+                self.cursor[0] = self.cursor[0].min(self.shown(0).len().saturating_sub(1));
             }
             return Ok(None);
         }
@@ -147,7 +152,7 @@ impl Picker {
                 return Ok(None);
             }
             KeyCode::Char('X') if !self.right => {
-                self.deleting = !self.items(0).is_empty();
+                self.deleting = at.is_some();
                 return Ok(None);
             }
             _ => {}
@@ -155,8 +160,7 @@ impl Picker {
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(None);
         };
-        let items = self.items(pane);
-        let last = items.len().saturating_sub(1);
+        let last = shown.len().saturating_sub(1);
         let cursor = self.cursor[pane];
         self.cursor[pane] = match action {
             "down" => (cursor + 1).min(last),
@@ -168,22 +172,28 @@ impl Picker {
             _ => cursor,
         };
         match action {
+            "check" if self.right => {
+                if let Some(i) = at {
+                    self.checked = check(self.checked, i);
+                    if self.checked.is_some() {
+                        self.cursor[1] = (cursor + 1).min(last);
+                    }
+                }
+            }
             "focus_left" => self.right = false,
             "focus_right" => self.right = true,
             "quit" => return Ok(Some(None)),
             "cancel" => {
-                if self.right && self.end.is_some() {
-                    self.end = None;
-                    self.filter[1].clear();
-                    self.cursor[1] = 0;
+                if self.right && self.checked.is_some() {
+                    self.checked = None;
                 } else {
                     self.filter[pane].clear();
                     self.cursor[pane] = 0;
                 }
             }
             "open" => {
-                if let Some((_, value)) = items.into_iter().nth(cursor) {
-                    return self.pick(value, store, repo);
+                if let Some(i) = at {
+                    return self.open(i, store, repo);
                 }
             }
             _ => {}
@@ -191,30 +201,39 @@ impl Picker {
         Ok(None)
     }
 
-    /// Opens a session, takes the end, or makes a session from A and the end.
-    fn pick(
+    /// Enter on row `i`: resumes that session, or makes a session of the checked rows
+    /// (or row `i` alone): from the parent of the bottom commit to the top row.
+    fn open(
         &mut self,
-        value: String,
+        i: usize,
         store: &Store,
         repo: &mut Repo,
     ) -> Result<Option<Option<Session>>> {
         if !self.right {
-            let session = store.load(&value)?;
+            let session = store.load(&self.sessions[i].0.id)?;
             if let Err(e) = repo.verify(&session.base, &session.end) {
                 self.error = Some(format!("{e:#}"));
                 return Ok(None);
             }
             return Ok(Some(Some(session)));
         }
-        let Some(end) = &self.end else {
-            self.end = Some(value);
-            self.filter[1].clear();
-            self.cursor[1] = 0;
-            return Ok(None);
+        let (top, bottom) = self.checked.unwrap_or((i, i));
+        let all = self.all(1);
+        let (end, bottom) = (&all[top].1, &all[bottom].1);
+        let base = if matches!(bottom.as_str(), "staged" | "unstaged") {
+            "HEAD".to_string()
+        } else {
+            match repo.parent(bottom)? {
+                Some(parent) => parent,
+                None => {
+                    self.error = Some("the root commit can't be in a range yet".to_string());
+                    return Ok(None);
+                }
+            }
         };
-        let range = format!("{}..{}", short(&value), short(end));
-        match repo.resolve(&format!("{value}..{end}")) {
+        match repo.resolve(&format!("{base}..{end}")) {
             Ok((base, end)) => {
+                let range = format!("{}..{}", short(&base), short(&end));
                 let session = Session::new(store.new_id(), range, base, end, None);
                 store.save(&session)?;
                 Ok(Some(Some(session)))
@@ -234,30 +253,36 @@ impl Picker {
                 .areas(body);
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
-            let mut title = match (pane, &self.end) {
-                (0, _) => " Sessions ".to_string(),
-                (_, None) => " New review: pick the end ".to_string(),
-                (_, Some(end)) => format!(" New review: pick the start A of ..{} ", short(end)),
-            };
+            let mut title = [" Sessions ", " New review "][pane].to_string();
             if !self.filter[pane].is_empty() || (focused && self.typing) {
                 title.push_str(&format!("/{} ", self.filter[pane]));
             }
             let height = area.height.saturating_sub(2) as usize;
             let cursor = self.cursor[pane];
             let skip = (cursor + 1).saturating_sub(height);
+            let all = self.all(pane);
             let lines: Vec<Line> = self
-                .items(pane)
+                .shown(pane)
                 .into_iter()
                 .enumerate()
                 .skip(skip)
                 .take(height)
-                .map(|(i, (text, _))| {
-                    let style = match (i == cursor, focused) {
+                .map(|(row, i)| {
+                    let style = match (row == cursor, focused) {
                         (true, true) => Style::new().add_modifier(Modifier::REVERSED),
                         (true, false) => Style::new().bg(Color::Rgb(50, 50, 50)),
                         _ => Style::new(),
                     };
-                    Line::styled(text, style)
+                    let text = Span::styled(all[i].0.clone(), style);
+                    if pane == 0 {
+                        return Line::from(text);
+                    }
+                    let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
+                    let mark = if checked { "▌▣ " } else { " ▢ " };
+                    Line::from(vec![
+                        Span::styled(mark, Style::new().fg(Color::Yellow)),
+                        text,
+                    ])
                 })
                 .collect();
             let border = if focused {
@@ -284,7 +309,7 @@ impl Picker {
     }
 }
 
-/// A commit sha shortened for a range; `staged` / `unstaged` as is.
+/// A commit sha shortened for a range label; other revs as is.
 fn short(rev: &str) -> &str {
     if rev.len() == 40 { &rev[..7] } else { rev }
 }

@@ -260,12 +260,18 @@ impl Repo {
             .collect())
     }
 
-    /// The first parent of `commit`, or the empty tree for a root commit.
-    pub fn parent(&self, commit: &str) -> Result<String> {
+    /// The first parent of `commit`; None for a root commit.
+    pub fn parent(&self, commit: &str) -> Result<Option<String>> {
         let parents = text(run(&mut self.git(&["log", "-1", "--format=%P", commit]))?)?;
-        if let Some(parent) = parents.split(' ').next().filter(|p| !p.is_empty()) {
-            return Ok(parent.to_string());
-        }
+        Ok(parents
+            .split(' ')
+            .next()
+            .filter(|p| !p.is_empty())
+            .map(str::to_string))
+    }
+
+    /// The empty tree, to diff a root commit against.
+    pub fn empty_tree(&self) -> Result<String> {
         text(run(self
             .git(&["hash-object", "-t", "tree", "--stdin"])
             .stdin(Stdio::null()))?)

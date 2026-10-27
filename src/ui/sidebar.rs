@@ -6,13 +6,17 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{Ctx, View};
 use crate::session::{Anchor, Thread};
+use crate::ui::check;
 
 /// The views (all, each commit, uncommitted), then the files of the shown diff as a tree.
+/// Space checks a run of commits to view together.
 #[derive(Default)]
 pub struct Sidebar {
     cursor: usize,
     top: usize,
     height: usize,
+    /// Checked views, first..=last.
+    checked: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy)]
@@ -49,13 +53,33 @@ struct Item {
 
 impl Sidebar {
     pub fn entry(&self, ctx: &Ctx) -> Entry {
-        items(ctx)
+        items(ctx, self.checked)
             .get(self.cursor)
             .map_or(Entry::Other, |i| i.entry)
     }
 
+    pub fn take_checked(&mut self) -> Option<(usize, usize)> {
+        self.checked.take()
+    }
+
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
-        let last = items(ctx).len() - 1;
+        let last = items(ctx, self.checked).len() - 1;
+        match action {
+            // `all` (view 0) is not a commit to check.
+            "check" => {
+                if let Entry::View(v) = self.entry(ctx)
+                    && v > 0
+                {
+                    self.checked = check(self.checked, v);
+                    if self.checked.is_some() {
+                        self.cursor = (self.cursor + 1).min(ctx.views.len() - 1);
+                    }
+                }
+                return;
+            }
+            "cancel" => self.checked = None,
+            _ => {}
+        }
         let half = (self.height / 2).max(1);
         self.cursor = match action {
             "down" => self.cursor + 1,
@@ -70,7 +94,7 @@ impl Sidebar {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, focused: bool) {
-        let items = items(ctx);
+        let items = items(ctx, self.checked);
         self.height = area.height as usize;
         self.cursor = self.cursor.min(items.len() - 1);
         self.top = self.top.min(self.cursor);
@@ -84,7 +108,7 @@ impl Sidebar {
             .take(self.height)
             .map(|(i, item)| {
                 let mut style = Style::new();
-                if matches!(item.entry, Entry::View(v) if v == ctx.view) {
+                if matches!(item.entry, Entry::View(v) if (ctx.view.0..=ctx.view.1).contains(&v)) {
                     style = style.add_modifier(Modifier::BOLD);
                 }
                 if i == self.cursor {
@@ -111,14 +135,23 @@ impl Sidebar {
     }
 }
 
-fn items(ctx: &Ctx) -> Vec<Item> {
+fn items(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
     let threads = &ctx.session.threads;
     let mut items: Vec<Item> = ctx
         .views
         .iter()
         .enumerate()
         .map(|(v, view)| {
-            let mark = if v == ctx.view { '▸' } else { ' ' };
+            let mark = if (ctx.view.0..=ctx.view.1).contains(&v) {
+                '▸'
+            } else {
+                ' '
+            };
+            let check = if checked.is_some_and(|(first, last)| (first..=last).contains(&v)) {
+                '▣'
+            } else {
+                ' '
+            };
             let (text, waiting) = match view {
                 View::All => (
                     "all".to_string(),
@@ -137,7 +170,7 @@ fn items(ctx: &Ctx) -> Vec<Item> {
             };
             Item {
                 entry: Entry::View(v),
-                text: format!("{mark} {text}"),
+                text: format!("{mark}{check} {text}"),
                 waiting,
             }
         })

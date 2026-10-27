@@ -26,8 +26,8 @@ pub struct Ctx {
     pub copy: bool,
     /// What the diff can show: the whole range, each commit, then uncommitted changes.
     pub views: Vec<View>,
-    /// Index into `views` of the diff shown.
-    pub view: usize,
+    /// First and last of the `views` shown together (oldest to newest).
+    pub view: (usize, usize),
     pub highlighter: Highlighter,
     /// The doc of the file view layer while it is open.
     pub file: Option<Doc>,
@@ -52,7 +52,7 @@ impl Ctx {
         if matches!(session.end.as_str(), "staged" | "unstaged") {
             views.push(View::Uncommitted);
         }
-        let doc = load(&mut repo, &session, &views[0])?;
+        let doc = load(&mut repo, &session, &views, (0, 0))?;
         Ok(Ctx {
             session,
             repo,
@@ -61,15 +61,15 @@ impl Ctx {
             outdated,
             copy: false,
             views,
-            view: 0,
+            view: (0, 0),
             highlighter: Highlighter::new(),
             file: None,
         })
     }
 
-    /// Switches the diff to `views[view]`.
-    pub fn show(&mut self, view: usize) -> Result<()> {
-        self.doc = load(&mut self.repo, &self.session, &self.views[view])?;
+    /// Switches the diff to `views[first..=last]` as one diff.
+    pub fn show(&mut self, view: (usize, usize)) -> Result<()> {
+        self.doc = load(&mut self.repo, &self.session, &self.views, view)?;
         self.view = view;
         Ok(())
     }
@@ -86,11 +86,24 @@ impl Ctx {
     }
 }
 
-fn load(repo: &mut Repo, session: &Session, view: &View) -> Result<Doc> {
-    let (left, right) = match view {
-        View::All => (session.base.clone(), session.end.clone()),
-        View::Commit { sha, .. } => (repo.parent(sha)?, sha.clone()),
-        View::Uncommitted => (repo.commit("HEAD")?, session.end.clone()),
+/// The diff from the left side of the first view to the right side of the last.
+fn load(
+    repo: &mut Repo,
+    session: &Session,
+    views: &[View],
+    (first, last): (usize, usize),
+) -> Result<Doc> {
+    let left = match &views[first] {
+        View::All => session.base.clone(),
+        View::Commit { sha, .. } => match repo.parent(sha)? {
+            Some(parent) => parent,
+            None => repo.empty_tree()?,
+        },
+        View::Uncommitted => repo.commit("HEAD")?,
+    };
+    let right = match &views[last] {
+        View::All | View::Uncommitted => session.end.clone(),
+        View::Commit { sha, .. } => sha.clone(),
     };
     let files = repo.diff(&left, &right)?;
     let mut doc = Doc::new(left, right, files);
@@ -111,7 +124,7 @@ pub trait Component {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
 }
 
-const HINTS: &str = " c comment  r reply  x resolve  n/N next waiting  v select  J/K file  h/l focus  Enter open  q quit";
+const HINTS: &str = " c comment  r reply  x resolve  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  q quit";
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];
@@ -132,10 +145,19 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
                 s.open_count(),
                 s.waiting_on_user_count()
             );
-            match &ctx.views[ctx.view] {
-                View::All => {}
-                View::Commit { sha, .. } => header.push_str(&format!(" · viewing {}", &sha[..7])),
-                View::Uncommitted => header.push_str(&format!(" · viewing {}", s.end)),
+            let label = |v: usize| match &ctx.views[v] {
+                View::All => "all",
+                View::Commit { sha, .. } => &sha[..7],
+                View::Uncommitted => &s.end,
+            };
+            match ctx.view {
+                (0, 0) => {}
+                (first, last) if first == last => {
+                    header.push_str(&format!(" · viewing {}", label(first)))
+                }
+                (first, last) => {
+                    header.push_str(&format!(" · viewing {} – {}", label(first), label(last)))
+                }
             }
             f.render_widget(
                 Paragraph::new(header).style(Style::new().add_modifier(Modifier::BOLD)),

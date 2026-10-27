@@ -28,6 +28,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("h", "focus_left"),
     ("l", "focus_right"),
     ("Enter", "open"),
+    ("Space", "check"),
     ("v", "select"),
     ("Esc", "cancel"),
     ("c", "comment"),
@@ -75,11 +76,12 @@ impl Keymap {
     }
 }
 
-/// `x`, `G`, `C-x`, `Esc` or `Enter`.
+/// `x`, `G`, `C-x`, `Esc`, `Enter` or `Space`.
 fn parse(key: &str) -> Key {
     match key {
         "Esc" => return (KeyCode::Esc, KeyModifiers::NONE),
         "Enter" => return (KeyCode::Enter, KeyModifiers::NONE),
+        "Space" => return (KeyCode::Char(' '), KeyModifiers::NONE),
         _ => {}
     }
     match key.strip_prefix("C-") {

@@ -37,7 +37,7 @@ impl Component for Review {
             }
             _ if self.sidebar_focused => match (action, self.sidebar.entry(ctx)) {
                 ("open", Entry::View(view)) => {
-                    ctx.show(view)?;
+                    ctx.show(self.sidebar.take_checked().unwrap_or((view, view)))?;
                     self.diff = DiffView::default();
                 }
                 ("open", Entry::File(file)) => {
