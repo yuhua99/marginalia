@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use crate::app::{Component, Ctx, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::settings::Settings;
-use crate::theme::{THEMES, Theme};
+use crate::theme::{Theme, themes};
 use crate::ui::popup::Popup;
 
 /// `s`: the settings. The theme row opens a list that previews the theme under the
@@ -44,7 +44,7 @@ impl SettingsPopup {
                 "cancel" | "quit" | "focus_left" => *theme = *original,
                 _ => {
                     popup.act(action);
-                    *theme = &THEMES[popup.cursor];
+                    *theme = &themes()[popup.cursor];
                     return false;
                 }
             }
@@ -60,12 +60,15 @@ impl SettingsPopup {
                 self.list.cursor = 1;
             }
             "open" | "focus_right" => {
-                let rows = THEMES
+                let rows = themes()
                     .iter()
                     .map(|t| (t.name.to_string(), String::new()))
                     .collect();
                 let mut popup = Popup::new("Theme", rows);
-                popup.cursor = THEMES.iter().position(|t| ptr::eq(t, *theme)).unwrap_or(0);
+                popup.cursor = themes()
+                    .iter()
+                    .position(|t| ptr::eq(t, *theme))
+                    .unwrap_or(0);
                 self.themes = Some((popup, *theme));
             }
             "settings" | "cancel" | "quit" | "focus_left" => return true,

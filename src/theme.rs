@@ -1,4 +1,8 @@
+use std::sync::OnceLock;
+
 use ratatui::style::Color;
+
+mod system;
 
 /// A palette color by role. Syntax tokens are stored as slots, so switching
 /// themes needs no re-coloring.
@@ -30,6 +34,7 @@ impl Slot {
 }
 
 /// Colors of the UI and of syntax tokens.
+#[derive(Clone)]
 pub struct Theme {
     pub name: &'static str,
     /// The screen background.
@@ -75,10 +80,12 @@ impl Theme {
 }
 
 /// Built-in themes; the first is the default. Palettes as in herdr.
-/// ansi, then the dark themes, then the light ones.
-pub static THEMES: &[Theme] = &[
+/// system, then the dark themes, then the light ones.
+static THEMES: &[Theme] = &[
+    // The terminal draws its ANSI colors; `themes()` replaces it when the terminal
+    // reports its colors.
     Theme {
-        name: "ansi",
+        name: "system",
         bg: Color::Reset,
         text: Color::Reset,
         dim: Color::DarkGray,
@@ -388,9 +395,23 @@ pub static THEMES: &[Theme] = &[
     ),
 ];
 
+/// The built-in themes, `system` from the terminal's colors when it reports them.
+/// The first call asks the terminal, so it comes before the TUI starts.
+pub fn themes() -> &'static [Theme] {
+    static ALL: OnceLock<Vec<Theme>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all = THEMES.to_vec();
+        if let Some(system) = system::query() {
+            all[0] = system;
+        }
+        all
+    })
+}
+
 /// The theme named `name`, or the default.
 pub fn find(name: &str) -> &'static Theme {
-    THEMES.iter().find(|t| t.name == name).unwrap_or(&THEMES[0])
+    let themes = themes();
+    themes.iter().find(|t| t.name == name).unwrap_or(&themes[0])
 }
 
 type Rgb = (u8, u8, u8);
@@ -428,10 +449,10 @@ const fn palette(name: &'static str, p: Palette) -> Theme {
         mauve: rgb(p.mauve),
         teal: rgb(p.teal),
         peach: rgb(p.peach),
-        del_bg: mix(p.red, p.bg, 15),
-        add_bg: mix(p.green, p.bg, 15),
-        del_emph: mix(p.red, p.bg, 45),
-        add_emph: mix(p.green, p.bg, 45),
+        del_bg: rgb(mix(p.red, p.bg, 15)),
+        add_bg: rgb(mix(p.green, p.bg, 15)),
+        del_emph: rgb(mix(p.red, p.bg, 45)),
+        add_emph: rgb(mix(p.green, p.bg, 45)),
     }
 }
 
@@ -440,11 +461,11 @@ const fn rgb(c: Rgb) -> Color {
 }
 
 /// `pct` percent of `a` over `b`.
-const fn mix(a: Rgb, b: Rgb, pct: u16) -> Color {
+const fn mix(a: Rgb, b: Rgb, pct: u16) -> Rgb {
     const fn channel(a: u8, b: u8, pct: u16) -> u8 {
         ((a as u16 * pct + b as u16 * (100 - pct)) / 100) as u8
     }
-    Color::Rgb(
+    (
         channel(a.0, b.0, pct),
         channel(a.1, b.1, pct),
         channel(a.2, b.2, pct),
