@@ -201,11 +201,8 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
             };
             let (text, waiting) = match view {
                 // Drawn by `Columns::row`.
-                View::Commit(c) => (String::new(), count(threads, |rev| rev == c.sha)),
-                _ => (
-                    ctx.session.end.clone(),
-                    count(threads, |rev| rev == ctx.session.end),
-                ),
+                View::Commit(c) => (String::new(), count(threads, &c.sha)),
+                _ => (ctx.session.end.clone(), count(threads, &ctx.session.end)),
             };
             Item {
                 entry: Entry::View(v),
@@ -246,15 +243,10 @@ fn files(ctx: &Ctx) -> Vec<Item> {
     items
 }
 
-/// Threads waiting on the user anchored at a rev (lines) or commit matching `f`.
-fn count(threads: &[Thread], f: impl Fn(&str) -> bool) -> usize {
+/// Threads of `commit` waiting on the user.
+fn count(threads: &[Thread], commit: &str) -> usize {
     threads
         .iter()
-        .filter(|t| t.waiting_on_user())
-        .filter(|t| match &t.anchor {
-            Anchor::Lines { rev: Some(rev), .. } => f(rev),
-            Anchor::Commit { commit } => f(commit),
-            _ => false,
-        })
+        .filter(|t| t.waiting_on_user() && t.anchor.commit() == Some(commit))
         .count()
 }

@@ -5,7 +5,7 @@ use anyhow::Result;
 use similar::{ChangeTag, TextDiff};
 
 use crate::repo::{FileDiff, Kind};
-use crate::session::{Anchor, Thread};
+use crate::session::{Anchor, Owner, Thread};
 
 /// The logical rows of a side-by-side diff, with threads placed under what they anchor to.
 pub struct Doc {
@@ -19,6 +19,10 @@ pub struct Doc {
     rows: Vec<Row>,
     /// One whole file in one column (`Doc::file`), showing only the threads on it.
     single: bool,
+    /// The commits shown, oldest first: shas, or the range end for uncommitted changes.
+    /// Empty for the whole range, which places lines by their rev and shows every thread;
+    /// otherwise lines go by their owner, and threads of other commits are left out.
+    commits: Vec<String>,
 }
 
 pub enum Row {
@@ -43,8 +47,8 @@ pub enum Row {
         new: u32,
         hidden: Option<u32>,
     },
-    /// Index into the session threads. Threads that have no place in the diff
-    /// (session, commit, other revs, lines outside hunks) come right after `Session`.
+    /// Index into the session threads. Threads that have no row in the diff
+    /// (session, commits, lines in folds or of other revs) come right after `Session`.
     Thread { idx: usize },
 }
 
@@ -62,13 +66,21 @@ type Ranges = Vec<Range<usize>>;
 #[derive(Hash, PartialEq, Eq)]
 enum Spot {
     Top,
+    /// At the top in every view: the session, a commit shown, or its lines that have no
+    /// side here.
+    Whole,
     File(usize),
     /// File, right side, last anchored line.
     Line(usize, bool, u32),
 }
 
 impl Doc {
-    pub fn new(left_rev: String, right_rev: String, files: Vec<FileDiff>) -> Doc {
+    pub fn new(
+        left_rev: String,
+        right_rev: String,
+        files: Vec<FileDiff>,
+        commits: Vec<String>,
+    ) -> Doc {
         let mut rows = vec![Row::Session];
         let mut paths = Vec::new();
         let mut one_sided = Vec::new();
@@ -183,6 +195,7 @@ impl Doc {
             one_sided,
             rows,
             single: false,
+            commits,
         }
     }
 
@@ -211,6 +224,7 @@ impl Doc {
             one_sided: vec![true],
             rows: [header].into_iter().chain(lines).collect(),
             single: true,
+            commits: Vec::new(),
         }
     }
 
@@ -251,7 +265,12 @@ impl Doc {
             }
         }
         if !self.single {
-            let mut rest: Vec<usize> = at.into_values().flatten().collect();
+            // Left over are threads in folds, `Whole` ones, and `Top` ones (whole range only).
+            let mut rest: Vec<usize> = at
+                .into_iter()
+                .filter(|(spot, _)| self.commits.is_empty() || *spot != Spot::Top)
+                .flat_map(|(_, idx)| idx)
+                .collect();
             rest.sort();
             rows.splice(1..1, rest.into_iter().map(thread_row));
         }
@@ -261,6 +280,23 @@ impl Doc {
     fn spot(&self, anchor: &Anchor) -> Spot {
         let find = |f: &dyn Fn(&(String, String)) -> bool| self.paths.iter().position(f);
         match anchor {
+            Anchor::Lines { owner, .. } if !self.commits.is_empty() => {
+                let Some(o) = owner else {
+                    return Spot::Top;
+                };
+                let Some(i) = self.commits.iter().position(|c| *c == o.commit) else {
+                    return Spot::Top;
+                };
+                // A side shows deleted lines of the oldest commit, the others of the newest.
+                if i != if o.deleted { 0 } else { self.commits.len() - 1 } {
+                    return Spot::Whole;
+                }
+                let right = !o.deleted;
+                match find(&|p| if right { p.1 == o.file } else { p.0 == o.file }) {
+                    Some(f) => Spot::Line(f, right, o.line),
+                    None => Spot::Whole,
+                }
+            }
             Anchor::Lines {
                 rev: Some(rev),
                 file,
@@ -280,6 +316,8 @@ impl Doc {
                 Some(i) => Spot::File(i),
                 None => Spot::Top,
             },
+            Anchor::Session => Spot::Whole,
+            Anchor::Commit { commit } if self.commits.contains(commit) => Spot::Whole,
             _ => Spot::Top,
         }
     }
@@ -301,7 +339,8 @@ impl Doc {
                 .clone()
                 .filter_map(|c| c.2.as_ref().map(|s| s.lineno))
                 .collect();
-            let (rev, path, lines) = if right.is_empty() {
+            let deleted = right.is_empty();
+            let (rev, path, lines) = if deleted {
                 let left = code
                     .filter_map(|c| c.1.as_ref().map(|s| s.lineno))
                     .collect();
@@ -309,11 +348,23 @@ impl Doc {
             } else {
                 (&self.right_rev, &self.paths[file].1, right)
             };
+            let end = *lines.iter().max().unwrap();
+            // A commit's own view knows whose lines these are, context lines too.
+            let owner = match &self.commits[..] {
+                [commit] => Some(Owner {
+                    commit: commit.clone(),
+                    deleted,
+                    file: path.clone(),
+                    line: end,
+                }),
+                _ => None,
+            };
             return Anchor::Lines {
                 rev: Some(rev.clone()),
                 file: path.clone(),
                 start: *lines.iter().min().unwrap(),
-                end: *lines.iter().max().unwrap(),
+                end,
+                owner,
             };
         }
         match rows.first() {
@@ -454,15 +505,19 @@ impl Doc {
         n
     }
 
-    /// Thread indices in row order.
-    pub fn thread_order(&self) -> Vec<usize> {
-        self.rows
+    /// Thread indices in row order, then those hidden in this view.
+    pub fn thread_order(&self, threads: usize) -> Vec<usize> {
+        let mut order: Vec<usize> = self
+            .rows
             .iter()
             .filter_map(|r| match r {
                 Row::Thread { idx } => Some(*idx),
                 _ => None,
             })
-            .collect()
+            .collect();
+        let hidden: Vec<usize> = (0..threads).filter(|i| !order.contains(i)).collect();
+        order.extend(hidden);
+        order
     }
 
     pub fn len(&self) -> usize {

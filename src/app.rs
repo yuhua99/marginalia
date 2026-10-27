@@ -53,12 +53,15 @@ pub enum View {
 
 impl Ctx {
     pub fn new(
-        session: Session,
+        mut session: Session,
         mut repo: Repo,
         store: Store,
         theme: &'static Theme,
         wrap: bool,
     ) -> Result<Ctx> {
+        if session.migrate(&mut repo)? {
+            store.save(&session)?;
+        }
         let outdated = session.outdated(&mut repo)?;
         let mut views = vec![View::All];
         for commit in repo.commits(&session.base, &session.end)? {
@@ -125,7 +128,15 @@ fn load(
         View::Commit(c) => c.sha.clone(),
     };
     let files = repo.diff(&left, &right)?;
-    let mut doc = Doc::new(left, right, files);
+    let commits = views[first..=last]
+        .iter()
+        .filter_map(|v| match v {
+            View::All => None,
+            View::Commit(c) => Some(c.sha.clone()),
+            View::Uncommitted => Some(session.end.clone()),
+        })
+        .collect();
+    let mut doc = Doc::new(left, right, files, commits);
     doc.set_threads(&session.threads);
     Ok(doc)
 }

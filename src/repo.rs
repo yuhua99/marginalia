@@ -20,18 +20,29 @@ pub struct Repo {
     index: String,
     /// `staged` / `unstaged` -> tree id, computed once per process.
     trees: HashMap<String, String>,
+    /// `base..end` -> its commits, listed once per process.
+    ranges: HashMap<String, Vec<Commit>>,
     /// Untracked files over the size limit, left out of the unstaged tree.
     skipped: Vec<String>,
     cat: Option<CatFile>,
 }
 
 /// A commit of `git log`.
+#[derive(Clone)]
 pub struct Commit {
     pub sha: String,
     pub subject: String,
     pub author: String,
     /// Relative author date, as "3 days ago".
     pub when: String,
+}
+
+/// Where a line of `git blame` comes from.
+pub struct Blame {
+    /// The zero sha for lines not committed yet.
+    pub commit: String,
+    pub path: String,
+    pub line: u32,
 }
 
 struct CatFile {
@@ -42,7 +53,12 @@ struct CatFile {
 
 impl Repo {
     pub fn open() -> Result<Repo> {
-        let out = run(Command::new("git").args([
+        Repo::at(Path::new("."))
+    }
+
+    /// The repo containing `dir`.
+    pub fn at(dir: &Path) -> Result<Repo> {
+        let out = run(Command::new("git").arg("-C").arg(dir).args([
             "rev-parse",
             "--path-format=absolute",
             "--git-common-dir",
@@ -59,6 +75,7 @@ impl Repo {
             common_dir: common_dir.into(),
             index: index.into(),
             trees: HashMap::new(),
+            ranges: HashMap::new(),
             skipped: Vec::new(),
             cat: None,
         })
@@ -253,9 +270,14 @@ impl Repo {
     }
 
     /// Commits in `base..end`, oldest first.
-    pub fn commits(&self, base: &str, end: &str) -> Result<Vec<Commit>> {
+    pub fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
         // A tree as base (before the root) is ignored by git log, listing all history.
-        self.log(&["--reverse", &format!("{base}..{}", tip(end))])
+        let range = format!("{base}..{}", tip(end));
+        if !self.ranges.contains_key(&range) {
+            let commits = self.log(&["--reverse", &range])?;
+            self.ranges.insert(range.clone(), commits);
+        }
+        Ok(self.ranges[&range].clone())
     }
 
     /// Up to `n` first-parent commits back from HEAD, newest first.
@@ -293,6 +315,84 @@ impl Repo {
             .map(str::to_string))
     }
 
+    /// The commit (first parent) that last changed line `line` of `path` at `rev`;
+    /// `since` when that is no later than `since`.
+    pub fn blame(
+        &mut self,
+        rev: &str,
+        since: Option<&str>,
+        path: &str,
+        line: u32,
+    ) -> Result<Blame> {
+        let lines = format!("{line},{line}");
+        let not = since.map(|s| format!("^{s}"));
+        let mut args = vec![
+            "-c",
+            "core.quotePath=false",
+            "blame",
+            "--porcelain",
+            "--first-parent",
+            // Not the user's ignored revs: owners are who really changed a line.
+            "--no-ignore-revs-file",
+            "-L",
+            &lines,
+        ];
+        args.extend(not.as_deref());
+        let out = if matches!(rev, "staged" | "unstaged") {
+            let content = self
+                .read(rev, path)?
+                .with_context(|| format!("{path} not found at {rev}"))?;
+            // Blame needs the file in HEAD; a new one is all uncommitted.
+            if self.read("HEAD", path)?.is_none() {
+                return Ok(Blame {
+                    commit: "0".repeat(40),
+                    path: path.to_string(),
+                    line,
+                });
+            }
+            // On top of HEAD, as if `rev` were the worktree.
+            args.extend(["--contents", "-", "--", path]);
+            let mut child = self
+                .git(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("run git blame")?;
+            child.stdin.take().unwrap().write_all(content.as_bytes())?;
+            let out = child.wait_with_output()?;
+            if !out.status.success() {
+                bail!("git blame: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            out.stdout
+        } else {
+            args.extend([rev, "--", path]);
+            run(&mut self.git(&args))?
+        };
+        blame(&out)
+    }
+
+    /// The last commit in `from..to` (first parent) that still has line `line` of
+    /// `path` at `from`.
+    pub fn blame_reverse(&self, from: &str, to: &str, path: &str, line: u32) -> Result<Blame> {
+        let lines = format!("{line},{line}");
+        let range = format!("{from}..{to}");
+        blame(&run(&mut self.git(&[
+            "-c",
+            "core.quotePath=false",
+            "blame",
+            "--porcelain",
+            "--first-parent",
+            "--no-ignore-revs-file",
+            "--reverse",
+            "-L",
+            &lines,
+            &range,
+            "--",
+            path,
+        ]))?)
+    }
+
     /// The empty tree, to diff a root commit against.
     pub fn empty_tree(&self) -> Result<String> {
         text(run(self
@@ -325,6 +425,26 @@ fn tip(end: &str) -> &str {
         "staged" | "unstaged" => "HEAD",
         _ => end,
     }
+}
+
+/// The first line of `git blame --porcelain`: "<sha> <line there> <line here> <count>",
+/// then headers including "filename <path>".
+fn blame(out: &[u8]) -> Result<Blame> {
+    let out = String::from_utf8_lossy(out);
+    let mut lines = out.lines();
+    let head = lines.next().unwrap_or_default();
+    let mut fields = head.split(' ');
+    let (Some(commit), Some(Ok(line))) = (fields.next(), fields.next().map(str::parse)) else {
+        bail!("unexpected git blame output: {head:?}");
+    };
+    let path = lines
+        .find_map(|l| l.strip_prefix("filename "))
+        .context("git blame output without a filename")?;
+    Ok(Blame {
+        commit: commit.to_string(),
+        path: path.to_string(),
+        line,
+    })
 }
 
 fn run(cmd: &mut Command) -> Result<Vec<u8>> {

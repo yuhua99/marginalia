@@ -4,8 +4,13 @@ use serde_json::Value;
 
 use crate::repo::Repo;
 
+/// The session format; sessions before 1 have no line owners.
+const VERSION: u32 = 1;
+
 #[derive(Serialize, Deserialize)]
 pub struct Session {
+    #[serde(default)]
+    pub version: u32,
     pub id: String,
     /// The range as given by the user, for display.
     pub range: String,
@@ -42,6 +47,9 @@ pub enum Anchor {
         file: String,
         start: u32,
         end: u32,
+        /// The commit the lines belong to; None when the range left them alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<Owner>,
     },
     File {
         file: String,
@@ -50,6 +58,29 @@ pub enum Anchor {
         commit: String,
     },
     Session,
+}
+
+/// Where lines sit in the diff of the commit they belong to.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Owner {
+    /// A commit of the range, or `staged` / `unstaged` for lines not committed.
+    pub commit: String,
+    /// Lines the commit deleted, numbered in its parent; else numbered in the commit.
+    pub deleted: bool,
+    pub file: String,
+    /// The last anchored line there.
+    pub line: u32,
+}
+
+impl Anchor {
+    /// The commit the thread belongs to: the owner of lines, or the commit anchored.
+    pub fn commit(&self) -> Option<&str> {
+        match self {
+            Anchor::Lines { owner: Some(o), .. } => Some(&o.commit),
+            Anchor::Commit { commit } => Some(commit),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,6 +108,7 @@ pub struct NewComment {
 impl Session {
     pub fn new(id: String, range: String, base: String, end: String) -> Session {
         Session {
+            version: VERSION,
             id,
             range,
             base,
@@ -102,7 +134,11 @@ impl Session {
                             .expect("replied"),
                     );
                 }
-                (None, Some(anchor)) => {
+                (None, Some(mut anchor)) => {
+                    // Owners are worked out here, not taken from the agent.
+                    if let Anchor::Lines { owner, .. } = &mut anchor {
+                        *owner = None;
+                    }
                     self.comment(anchor, &input.from, c.body, repo)?;
                     touched.push(self.threads.len() - 1);
                 }
@@ -147,6 +183,7 @@ impl Session {
             file,
             start,
             end,
+            owner,
         } = &mut anchor
         {
             if *start == 0 || start > end {
@@ -161,6 +198,10 @@ impl Session {
                 snippet(repo, rev, file, *start, *end)?
                     .with_context(|| format!("{file}:{start}-{end} not found at {rev}"))?,
             );
+            if owner.is_none() {
+                let commits = self.commits(repo)?;
+                *owner = self.owner(repo, &commits, rev, file, *end)?;
+            }
         }
         if let Anchor::Commit { commit } = &mut anchor {
             *commit = repo.commit(commit)?;
@@ -183,6 +224,100 @@ impl Session {
             }],
         });
         Ok(())
+    }
+
+    /// Fills in the line owners a session from before them lacks; returns whether it did.
+    pub fn migrate(&mut self, repo: &mut Repo) -> Result<bool> {
+        if self.version >= VERSION {
+            return Ok(false);
+        }
+        let commits = self.commits(repo)?;
+        let owners: Vec<Option<Owner>> = self
+            .threads
+            .iter()
+            .map(|t| match &t.anchor {
+                // Lines gone from their rev stay unowned rather than keep the session shut.
+                Anchor::Lines {
+                    rev: Some(rev),
+                    file,
+                    end,
+                    ..
+                } => self.owner(repo, &commits, rev, file, *end).ok().flatten(),
+                _ => None,
+            })
+            .collect();
+        for (t, found) in self.threads.iter_mut().zip(owners) {
+            if let Anchor::Lines { owner, .. } = &mut t.anchor {
+                *owner = found;
+            }
+        }
+        self.version = VERSION;
+        Ok(true)
+    }
+
+    /// Shas of the range commits, oldest first.
+    fn commits(&self, repo: &mut Repo) -> Result<Vec<String>> {
+        Ok(repo
+            .commits(&self.base, &self.end)?
+            .into_iter()
+            .map(|c| c.sha)
+            .collect())
+    }
+
+    /// The owner of line `line` of `file` at `rev`: the commit that deletes it when a
+    /// later one of `commits` does, else the one that last changed it; None when that
+    /// is outside the range.
+    fn owner(
+        &self,
+        repo: &mut Repo,
+        commits: &[String],
+        rev: &str,
+        file: &str,
+        line: u32,
+    ) -> Result<Option<Owner>> {
+        let in_range = commits.iter().any(|c| c == rev);
+        // Only the base and the range commits but the tip can have lines a later one deletes.
+        // Reverse blame walks first parents, so a base merged in later is left out.
+        if let Some(tip) = commits.last()
+            && rev != tip
+            && (in_range || rev == self.base && repo.parent(&commits[0])?.as_deref() == Some(rev))
+        {
+            let b = repo.blame_reverse(rev, tip, file, line)?;
+            if b.commit != *tip {
+                // Deleted by the commit after the last one having it, the base or one in range.
+                let i = commits
+                    .iter()
+                    .position(|c| *c == b.commit)
+                    .map_or(0, |i| i + 1);
+                return Ok(Some(Owner {
+                    commit: commits[i].clone(),
+                    deleted: true,
+                    file: b.path,
+                    line: b.line,
+                }));
+            }
+        }
+        // Lines the base or an older rev has, kept, are not the range's. (Blaming a rev
+        // the base excludes would blame HEAD instead.)
+        if !in_range && rev != self.end && !matches!(rev, "staged" | "unstaged") {
+            return Ok(None);
+        }
+        // Stop at the base: older lines are not the range's, and need not be traced.
+        let since = (self.base != repo.empty_tree()?).then_some(self.base.as_str());
+        let b = repo.blame(rev, since, file, line)?;
+        let commit = if b.commit.bytes().all(|c| c == b'0') {
+            rev.to_string()
+        } else if commits.contains(&b.commit) {
+            b.commit
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(Owner {
+            commit,
+            deleted: false,
+            file: b.path,
+            line: b.line,
+        }))
     }
 
     /// Replying reopens a resolved thread.
@@ -258,6 +393,7 @@ impl Session {
                     file,
                     start,
                     end,
+                    ..
                 } if t.text.is_some() => Ok(snippet(repo, rev, file, *start, *end)? != t.text),
                 _ => Ok(false),
             })
@@ -272,6 +408,7 @@ impl Session {
                 file,
                 start,
                 end,
+                ..
             } => {
                 let mut s = if start == end {
                     format!("{file}:{start}")
@@ -345,4 +482,145 @@ fn snippet(repo: &mut Repo, rev: &str, file: &str, start: u32, end: u32) -> Resu
     Ok(lines
         .get(start as usize - 1..end as usize)
         .map(|l| l.join("\n")))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    use super::*;
+
+    /// A temporary repo committing each of `versions` of file `f` in turn; with its
+    /// directory and the shas, oldest first.
+    fn repo(name: &str, versions: &[&str]) -> (Repo, PathBuf, Vec<String>) {
+        let dir = std::env::temp_dir().join(format!("mrg-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        let mut shas = Vec::new();
+        for v in versions {
+            std::fs::write(dir.join("f"), v).unwrap();
+            git(&["add", "f"]);
+            git(&["commit", "-qm", "c"]);
+            shas.push(git(&["rev-parse", "HEAD"]));
+        }
+        (Repo::at(&dir).unwrap(), dir, shas)
+    }
+
+    /// The owner given to a comment on line `line` of `f` at `rev`, as (commit, deleted, line).
+    fn owner(
+        s: &mut Session,
+        repo: &mut Repo,
+        rev: &str,
+        line: u32,
+    ) -> Option<(String, bool, u32)> {
+        let anchor = Anchor::Lines {
+            rev: Some(rev.into()),
+            file: "f".into(),
+            start: line,
+            end: line,
+            owner: None,
+        };
+        s.comment(anchor, "agent", "x".into(), repo).unwrap();
+        match &s.threads.last().unwrap().anchor {
+            Anchor::Lines { owner, .. } => owner
+                .as_ref()
+                .map(|o| (o.commit.clone(), o.deleted, o.line)),
+            _ => unreachable!(),
+        }
+    }
+
+    // base a b c d; c1 adds X; c2 deletes c; c3 adds Y.
+    const VERSIONS: [&str; 4] = [
+        "a\nb\nc\nd\n",
+        "a\nX\nb\nc\nd\n",
+        "a\nX\nb\nd\n",
+        "Y\na\nX\nb\nd\n",
+    ];
+
+    #[test]
+    fn owners_of_committed_lines() {
+        let (mut repo, _, c) = repo("owners", &VERSIONS);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), c[3].clone());
+        let end = c[3].clone();
+        // Lines at the end belong to the commit that wrote them, numbered there.
+        assert_eq!(
+            owner(&mut s, &mut repo, &end, 3),
+            Some((c[1].clone(), false, 2))
+        );
+        assert_eq!(
+            owner(&mut s, &mut repo, &end, 1),
+            Some((c[3].clone(), false, 1))
+        );
+        // Untouched by the range.
+        assert_eq!(owner(&mut s, &mut repo, &end, 2), None);
+        // Deleted base lines belong to their deleter, numbered in its parent.
+        assert_eq!(
+            owner(&mut s, &mut repo, &c[0], 3),
+            Some((c[2].clone(), true, 4))
+        );
+        assert_eq!(owner(&mut s, &mut repo, &c[0], 1), None);
+        // Lines of a rev before the base are not the range's to delete.
+        let mut later = Session::new("2".into(), "r".into(), c[1].clone(), c[3].clone());
+        assert_eq!(owner(&mut later, &mut repo, &c[0], 3), None);
+        // A line kept from a middle commit belongs to whoever wrote it.
+        assert_eq!(
+            owner(&mut s, &mut repo, &c[1], 2),
+            Some((c[1].clone(), false, 2))
+        );
+    }
+
+    #[test]
+    fn owners_of_uncommitted_lines() {
+        let (mut repo, dir, c) = repo("uncommitted", &VERSIONS);
+        // The worktree is read once per process, so it changes before the first comment.
+        std::fs::write(dir.join("f"), "Y\na\nZ\nX\nb\nd\n").unwrap();
+        std::fs::write(dir.join("u"), "u\n").unwrap();
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "unstaged".into());
+        assert_eq!(
+            owner(&mut s, &mut repo, "unstaged", 3),
+            Some(("unstaged".into(), false, 3))
+        );
+        assert_eq!(
+            owner(&mut s, &mut repo, "unstaged", 4),
+            Some((c[1].clone(), false, 2))
+        );
+        // A file new to the worktree.
+        let anchor = Anchor::Lines {
+            rev: None,
+            file: "u".into(),
+            start: 1,
+            end: 1,
+            owner: None,
+        };
+        s.comment(anchor, "agent", "x".into(), &mut repo).unwrap();
+        assert_eq!(s.threads.last().unwrap().anchor.commit(), Some("unstaged"));
+    }
+
+    #[test]
+    fn migrate_fills_owners() {
+        let (mut repo, _, c) = repo("migrate", &VERSIONS);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), c[3].clone());
+        owner(&mut s, &mut repo, &c[3], 3);
+        if let Anchor::Lines { owner, .. } = &mut s.threads[0].anchor {
+            *owner = None;
+        }
+        s.version = 0;
+        assert!(s.migrate(&mut repo).unwrap());
+        assert_eq!(s.threads[0].anchor.commit(), Some(c[1].as_str()));
+        assert!(!s.migrate(&mut repo).unwrap());
+    }
 }
