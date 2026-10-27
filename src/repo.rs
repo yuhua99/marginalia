@@ -60,13 +60,18 @@ impl Repo {
         self.common_dir.replace('/', "%")
     }
 
-    /// Splits `A..end` into the base commit sha and the end
-    /// (a commit sha, or `HEAD` / `staged` / `unstaged` kept symbolic).
+    /// Splits `A..end` into the base commit sha (the empty tree when A is left out,
+    /// to start before the root commit) and the end (a commit sha, or `HEAD` /
+    /// `staged` / `unstaged` kept symbolic).
     pub fn resolve(&self, range: &str) -> Result<(String, String)> {
         let Some((base, end)) = range.split_once("..") else {
-            bail!("range must look like A..END, got {range:?}");
+            bail!("range must look like A..END or ..END, got {range:?}");
         };
-        let base = self.commit(base)?;
+        let base = if base.is_empty() {
+            self.empty_tree()?
+        } else {
+            self.commit(base)?
+        };
         let end = match end {
             "HEAD" | "staged" | "unstaged" => end.to_string(),
             _ => self.commit(end)?,
@@ -80,10 +85,12 @@ impl Repo {
         let tip = tip(end);
         let ok = self
             .git(&["merge-base", "--is-ancestor", base, tip])
+            .stderr(Stdio::null())
             .status()
             .context("run git")?
             .success();
-        if !ok {
+        // The empty tree (a range from before the root) is no commit; nothing to check.
+        if !ok && base != self.empty_tree()? {
             bail!("{base} is not an ancestor of {tip} (history rewritten?)");
         }
         Ok(())
@@ -238,6 +245,7 @@ impl Repo {
 
     /// Commits in `base..end`, oldest first, as (sha, subject).
     pub fn commits(&self, base: &str, end: &str) -> Result<Vec<(String, String)>> {
+        // A tree as base (before the root) is ignored by git log, listing all history.
         self.log(&["--reverse", &format!("{base}..{}", tip(end))])
     }
 

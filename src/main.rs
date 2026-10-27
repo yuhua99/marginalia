@@ -32,7 +32,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a session for RANGE (A..<commit>|HEAD|staged|unstaged) and print its id
+    /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged; no A starts before the root) and print its id
     New {
         range: String,
         /// Shell command run on quitting the TUI, with $MRG_SESSION set

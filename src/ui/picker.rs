@@ -202,7 +202,7 @@ impl Picker {
     }
 
     /// Enter on row `i`: resumes that session, or makes a session of the checked rows
-    /// (or row `i` alone): from the parent of the bottom commit to the top row.
+    /// (or row `i` alone): from the parent of the bottom commit (or before the root) to the top row.
     fn open(
         &mut self,
         i: usize,
@@ -223,18 +223,18 @@ impl Picker {
         let base = if matches!(bottom.as_str(), "staged" | "unstaged") {
             "HEAD".to_string()
         } else {
-            match repo.parent(bottom)? {
-                Some(parent) => parent,
-                None => {
-                    self.error = Some("the root commit can't be in a range yet".to_string());
-                    return Ok(None);
-                }
-            }
+            // Left out for the root commit: the range starts before it.
+            repo.parent(bottom)?.unwrap_or_default()
         };
         match repo.resolve(&format!("{base}..{end}")) {
-            Ok((base, end)) => {
-                let range = format!("{}..{}", short(&base), short(&end));
-                let session = Session::new(store.new_id(), range, base, end, None);
+            Ok((resolved, end)) => {
+                let from = if base.is_empty() {
+                    ""
+                } else {
+                    short(&resolved)
+                };
+                let range = format!("{from}..{}", short(&end));
+                let session = Session::new(store.new_id(), range, resolved, end, None);
                 store.save(&session)?;
                 Ok(Some(Some(session)))
             }
