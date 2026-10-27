@@ -11,15 +11,19 @@ pub struct Store {
     dir: PathBuf,
 }
 
+/// `$var/marginalia`, or `~/fallback/marginalia` when `var` is unset.
+pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
+    let base = match std::env::var_os(var).filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v),
+        None => PathBuf::from(std::env::var_os("HOME").context("HOME not set")?).join(fallback),
+    };
+    Ok(base.join("marginalia"))
+}
+
 impl Store {
     /// `$XDG_STATE_HOME/marginalia/<repo key>/`
     pub fn open(repo_key: &str) -> Result<Store> {
-        let state = match std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-            Some(v) => PathBuf::from(v),
-            None => PathBuf::from(std::env::var_os("HOME").context("HOME not set")?)
-                .join(".local/state"),
-        };
-        let dir = state.join("marginalia").join(repo_key);
+        let dir = xdg_dir("XDG_STATE_HOME", ".local/state")?.join(repo_key);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         Ok(Store { dir })
     }

@@ -13,6 +13,7 @@ use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
+use crate::ui;
 use crate::ui::review::Review;
 
 /// State shared by all layers; layers keep only their own UI state.
@@ -132,13 +133,14 @@ pub trait Component {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
 }
 
-const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  ? help  q quit";
+const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  q quit";
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];
     'draw: loop {
         ctx.highlighter.receive();
         terminal.draw(|f| {
+            ui::clear(f, f.area(), ctx.theme);
             let [head, body, foot] = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Fill(1),

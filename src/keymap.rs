@@ -38,6 +38,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("d", "delete"),
     ("q", "quit"),
     ("?", "help"),
+    ("s", "settings"),
     ("/", "filter"),
     ("X", "delete_session"),
 ];

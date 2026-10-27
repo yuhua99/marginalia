@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_segmentation::UnicodeSegmentation;
@@ -352,7 +352,7 @@ fn code_lines(
     };
     // Changes show in the gutter color; changed words are reversed in it.
     let (sign, color, bg, emph) = match s.kind {
-        Kind::Ctx => (' ', theme.dim, Color::Reset, Color::Reset),
+        Kind::Ctx => (' ', theme.dim, theme.bg, theme.bg),
         Kind::Del => ('-', theme.red, theme.del_bg, theme.del_emph),
         Kind::Add => ('+', theme.green, theme.add_bg, theme.add_emph),
     };

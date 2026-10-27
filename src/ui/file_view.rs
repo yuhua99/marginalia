@@ -2,13 +2,14 @@ use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::widgets::Clear;
 
 use crate::app::{Component, Ctx, Outcome};
 use crate::doc::Doc;
 use crate::keymap::{Feed, Keymap};
+use crate::ui::clear;
 use crate::ui::diff_view::DiffView;
 use crate::ui::help::{Entry, Help};
+use crate::ui::settings::SettingsPopup;
 
 const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
@@ -27,6 +28,7 @@ const HELP: &[Entry] = &[
         &["edit", "delete"],
         "edit / delete your last unanswered message",
     ),
+    (&["settings"], "settings: theme"),
     (&["help"], "this help"),
     (&["quit", "cancel"], "back to the diff"),
 ];
@@ -53,6 +55,7 @@ impl Component for FileView {
         };
         match action {
             "help" => Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "settings" => Ok(Outcome::Push(Box::new(SettingsPopup::new(ctx.theme)))),
             "quit" | "cancel" => {
                 ctx.file = None;
                 Ok(Outcome::Close)
@@ -62,7 +65,7 @@ impl Component for FileView {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        f.render_widget(Clear, area);
+        clear(f, area, ctx.theme);
         self.view.render(f, area, ctx);
     }
 }

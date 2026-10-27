@@ -7,7 +7,22 @@ pub mod picker;
 pub mod popup;
 pub mod quit_prompt;
 pub mod review;
+pub mod settings;
 pub mod sidebar;
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::widgets::Clear;
+
+use crate::theme::Theme;
+
+/// Blanks `area` to the theme's background and default text.
+pub fn clear(f: &mut Frame, area: Rect, theme: &Theme) {
+    f.render_widget(Clear, area);
+    f.buffer_mut()
+        .set_style(area, Style::new().fg(theme.text).bg(theme.bg));
+}
 
 /// Space on row `i` of a contiguous check: extends it to `i`, or clears it when `i` is in it.
 pub fn check(checked: Option<(usize, usize)>, i: usize) -> Option<(usize, usize)> {

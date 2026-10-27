@@ -2,16 +2,17 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
+use crate::ui::clear;
 
 /// A centered list of (label, text) rows with a cursor, for help and settings.
 pub struct Popup {
     title: String,
     rows: Vec<(String, String)>,
-    cursor: usize,
+    pub cursor: usize,
 }
 
 impl Popup {
@@ -74,7 +75,7 @@ impl Popup {
         let block = Block::bordered()
             .title(self.title.as_str())
             .border_style(Style::new().fg(theme.accent));
-        f.render_widget(Clear, rect);
+        clear(f, rect, theme);
         f.render_widget(Paragraph::new(lines).block(block), rect);
     }
 }

@@ -3,9 +3,10 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::{Component, Ctx, Outcome};
+use crate::ui::clear;
 
 /// `delete ...? y/n` for the user's last message of thread `.0`.
 pub struct DeletePrompt(pub usize);
@@ -31,7 +32,7 @@ impl Component for DeletePrompt {
             height: 1,
             ..area
         };
-        f.render_widget(Clear, rect);
+        clear(f, rect, ctx.theme);
         let t = &ctx.session.threads[self.0];
         let text = if t.messages.len() == 1 {
             format!("delete thread {}? y/n", t.id)

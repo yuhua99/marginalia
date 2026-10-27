@@ -13,14 +13,15 @@ use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
-use crate::ui::check;
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
+use crate::ui::settings::SettingsPopup;
+use crate::ui::{check, clear};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  ? help  q quit";
+const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  s settings  ? help  q quit";
 
 const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
@@ -32,6 +33,7 @@ const HELP: &[Entry] = &[
     (&["filter"], "filter; Enter ends typing, Esc clears"),
     (&["delete_session"], "delete the session"),
     (&["cancel"], "clear the checks, then the filter"),
+    (&["settings"], "settings: theme"),
     (&["help"], "this help"),
     (&["quit"], "quit"),
 ];
@@ -42,7 +44,7 @@ pub fn run(
     terminal: &mut DefaultTerminal,
     store: &Store,
     repo: &mut Repo,
-    theme: &Theme,
+    theme: &mut &'static Theme,
 ) -> Result<Option<Session>> {
     let mut p = Picker {
         sessions: store.list()?,
@@ -54,7 +56,7 @@ pub fn run(
         terminal.draw(|f| p.render(f, theme))?;
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Some(done) = p.key(key, store, repo)?
+            && let Some(done) = p.key(key, store, repo, theme)?
         {
             return Ok(done);
         }
@@ -76,6 +78,8 @@ struct Picker {
     checked: Option<(usize, usize)>,
     /// The `?` popup.
     help: Option<Popup>,
+    /// The `s` popup.
+    settings: Option<SettingsPopup>,
     /// Waiting for y/n to delete the session at the cursor.
     deleting: bool,
     error: Option<String>,
@@ -133,8 +137,15 @@ impl Picker {
         key: KeyEvent,
         store: &Store,
         repo: &mut Repo,
+        theme: &mut &'static Theme,
     ) -> Result<Option<Option<Session>>> {
         self.error = None;
+        if let Some(settings) = &mut self.settings {
+            if settings.key(key, theme) {
+                self.settings = None;
+            }
+            return Ok(None);
+        }
         let pane = self.pane();
         let shown = self.shown(pane);
         let at = shown.get(self.cursor[pane]).copied();
@@ -199,6 +210,7 @@ impl Picker {
             "filter" => self.typing = true,
             "delete_session" if !self.right => self.deleting = at.is_some(),
             "help" => self.help = Some(help::popup(HELP)),
+            "settings" => self.settings = Some(SettingsPopup::new(theme)),
             "focus_left" => self.right = false,
             "focus_right" => self.right = true,
             "quit" => return Ok(Some(None)),
@@ -265,6 +277,7 @@ impl Picker {
     }
 
     fn render(&self, f: &mut Frame, theme: &Theme) {
+        clear(f, f.area(), theme);
         let [body, foot] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
         let panes: [_; 2] =
@@ -323,6 +336,9 @@ impl Picker {
         f.render_widget(Paragraph::new(text).style(style), foot);
         if let Some(popup) = &self.help {
             popup.render(f, f.area(), theme);
+        }
+        if let Some(settings) = &self.settings {
+            settings.draw(f, f.area(), theme);
         }
     }
 }

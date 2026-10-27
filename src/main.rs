@@ -4,6 +4,7 @@ mod highlight;
 mod keymap;
 mod repo;
 mod session;
+mod settings;
 mod store;
 mod theme;
 mod ui;
@@ -140,11 +141,11 @@ fn need_terminal() -> Result<()> {
 
 /// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
 fn tui(store: Store, mut repo: Repo, session: Option<Session>) -> Result<()> {
-    let theme = &theme::ANSI;
+    let mut theme = theme::find(&settings::Settings::load()?.theme);
     let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
         let session = match session {
             Some(session) => session,
-            None => match ui::picker::run(terminal, &store, &mut repo, theme)? {
+            None => match ui::picker::run(terminal, &store, &mut repo, &mut theme)? {
                 Some(session) => session,
                 None => return Ok(None),
             },

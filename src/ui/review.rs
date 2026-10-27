@@ -9,6 +9,7 @@ use crate::ui::diff_view::DiffView;
 use crate::ui::help::{self, Help};
 use crate::ui::input::Input;
 use crate::ui::quit_prompt::QuitPrompt;
+use crate::ui::settings::SettingsPopup;
 use crate::ui::sidebar::{Entry, Sidebar};
 
 const HELP: &[help::Entry] = &[
@@ -35,6 +36,7 @@ const HELP: &[help::Entry] = &[
         &["edit", "delete"],
         "edit / delete your last unanswered message",
     ),
+    (&["settings"], "settings: theme"),
     (&["help"], "this help"),
     (&["quit"], "quit"),
 ];
@@ -57,6 +59,7 @@ impl Component for Review {
             "focus_left" => self.sidebar_focused = true,
             "focus_right" => self.sidebar_focused = false,
             "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "settings" => return Ok(Outcome::Push(Box::new(SettingsPopup::new(ctx.theme)))),
             "quit" => {
                 if ctx.session.on_quit.is_none()
                     && ctx.session.markdown(&ctx.doc.thread_order()).is_some()

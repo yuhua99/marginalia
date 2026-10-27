@@ -2,11 +2,12 @@ use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Clear};
+use ratatui::widgets::Block;
 use ratatui_textarea::{TextArea, WrapMode};
 
 use crate::app::{Component, Ctx, Outcome};
 use crate::session::{Anchor, Session};
+use crate::ui::clear;
 
 /// Text box for a new comment, a reply or an edit. `Ctrl-s` sends, `Esc` cancels.
 pub struct Input {
@@ -106,7 +107,7 @@ impl Component for Input {
         }
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, _ctx: &Ctx) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         let height = area.height.min(12);
         let rect = Rect {
             y: area.bottom() - height,
@@ -123,7 +124,7 @@ impl Component for Input {
                 .title(format!(" {} ", self.title))
                 .title_bottom(format!(" {hint} ")),
         );
-        f.render_widget(Clear, rect);
+        clear(f, rect, ctx.theme);
         f.render_widget(&self.text, rect);
     }
 }
