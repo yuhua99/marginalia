@@ -11,8 +11,6 @@ pub struct Session {
     pub range: String,
     pub base: String,
     pub end: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_quit: Option<String>,
     pub threads: Vec<Thread>,
 }
 
@@ -77,29 +75,60 @@ pub struct NewComment {
 }
 
 impl Session {
-    pub fn new(
-        id: String,
-        range: String,
-        base: String,
-        end: String,
-        on_quit: Option<String>,
-    ) -> Session {
+    pub fn new(id: String, range: String, base: String, end: String) -> Session {
         Session {
             id,
             range,
             base,
             end,
-            on_quit,
             threads: Vec::new(),
         }
     }
 
-    pub fn apply(&mut self, input: Input, repo: &mut Repo) -> Result<()> {
+    /// Adds agent comments; returns the index of the thread each one went to.
+    pub fn apply(&mut self, input: Input, repo: &mut Repo) -> Result<Vec<usize>> {
+        if input.from == "user" {
+            bail!("\"from\" names the agent; \"user\" is the human in the TUI");
+        }
+        let mut touched = Vec::new();
         for c in input.comments {
             match (c.reply_to, c.anchor) {
-                (Some(id), None) => self.reply(&id, &input.from, c.body)?,
-                (None, Some(anchor)) => self.comment(anchor, &input.from, c.body, repo)?,
+                (Some(id), None) => {
+                    self.reply(&id, &input.from, c.body)?;
+                    touched.push(
+                        self.threads
+                            .iter()
+                            .position(|t| t.id == id)
+                            .expect("replied"),
+                    );
+                }
+                (None, Some(anchor)) => {
+                    self.comment(anchor, &input.from, c.body, repo)?;
+                    touched.push(self.threads.len() - 1);
+                }
                 _ => bail!("each comment needs exactly one of reply_to or anchor"),
+            }
+        }
+        Ok(touched)
+    }
+
+    /// Resolves, or deletes, threads the agent started, such as outdated explanations.
+    /// Deleting also needs the user not to have replied.
+    pub fn close(&mut self, ids: &[String], delete: bool) -> Result<()> {
+        for id in ids {
+            let Some(i) = self.threads.iter().position(|t| t.id == *id) else {
+                bail!("no thread {id}");
+            };
+            let t = &mut self.threads[i];
+            if t.messages[0].from == "user" {
+                bail!("{id} was started by the user");
+            }
+            if !delete {
+                t.status = Status::Resolved;
+            } else if t.messages.iter().any(|m| m.from == "user") {
+                bail!("{id} has a reply from the user; resolve it instead");
+            } else {
+                self.threads.remove(i);
             }
         }
         Ok(())

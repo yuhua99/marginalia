@@ -267,7 +267,7 @@ impl Picker {
                     short(&resolved)
                 };
                 let range = format!("{from}..{}", short(&end));
-                let session = Session::new(store.new_id(), range, resolved, end, None);
+                let session = Session::new(store.new_id(), range, resolved, end);
                 store.save(&session)?;
                 Ok(Some(Some(session)))
             }

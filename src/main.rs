@@ -35,13 +35,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged; no A starts before the root) and print its id
-    New {
-        range: String,
-        /// Shell command run on quitting the TUI, with $MRG_SESSION set
-        #[arg(long)]
-        on_quit: Option<String>,
-    },
-    /// Add comments from a JSON file (`-` for stdin) to a session
+    New { range: String },
+    /// Add comments from a JSON file (`-` for stdin) to a session; prints {id, location} per comment
     Comment {
         #[arg(long)]
         session: String,
@@ -51,9 +46,23 @@ enum Cmd {
     Resume {
         #[arg(long)]
         session: String,
-        /// Replaces the saved on-quit hook
+        /// Shell command run on quitting this time, with $MRG_SESSION set; not saved
         #[arg(long)]
         on_quit: Option<String>,
+    },
+    /// Resolve threads the agent started
+    Resolve {
+        #[arg(long)]
+        session: String,
+        #[arg(required = true)]
+        threads: Vec<String>,
+    },
+    /// Delete threads the agent started that the user has not replied to
+    Delete {
+        #[arg(long)]
+        session: String,
+        #[arg(required = true)]
+        threads: Vec<String>,
     },
     /// Print a session as JSON
     Show {
@@ -71,11 +80,11 @@ fn main() -> Result<()> {
     match cli.cmd {
         None => {
             need_terminal()?;
-            tui(store, repo, None)
+            tui(store, repo, None, None)
         }
-        Some(Cmd::New { range, on_quit }) => {
+        Some(Cmd::New { range }) => {
             let (base, end) = repo.resolve(&range)?;
-            let session = Session::new(store.new_id(), range, base, end, on_quit);
+            let session = Session::new(store.new_id(), range, base, end);
             store.save(&session)?;
             println!("{}", session.id);
             Ok(())
@@ -92,18 +101,33 @@ fn main() -> Result<()> {
                     .with_context(|| format!("read {}", file.display()))?;
             }
             let input: Input = serde_json::from_str(&text).context("parse comments")?;
-            session.apply(input, &mut repo)?;
-            store.save(&session)
+            let touched = session.apply(input, &mut repo)?;
+            store.save(&session)?;
+            for i in touched {
+                let t = &session.threads[i];
+                let location = session.location(&t.anchor);
+                println!(
+                    "{}",
+                    serde_json::json!({ "id": t.id, "location": location })
+                );
+            }
+            Ok(())
         }
         Some(Cmd::Resume { session, on_quit }) => {
             need_terminal()?;
-            let mut session = store.load(&session)?;
+            let session = store.load(&session)?;
             repo.verify(&session.base, &session.end)?;
-            if on_quit.is_some() {
-                session.on_quit = on_quit;
-                store.save(&session)?;
-            }
-            tui(store, repo, Some(session))
+            tui(store, repo, Some(session), on_quit)
+        }
+        Some(Cmd::Resolve { session, threads }) => {
+            let mut session = store.load(&session)?;
+            session.close(&threads, false)?;
+            store.save(&session)
+        }
+        Some(Cmd::Delete { session, threads }) => {
+            let mut session = store.load(&session)?;
+            session.close(&threads, true)?;
+            store.save(&session)
         }
         Some(Cmd::Show { session }) => {
             println!(
@@ -123,6 +147,7 @@ fn main() -> Result<()> {
                         "updated": updated,
                         "open": s.open_count(),
                         "waiting_on_user": s.waiting_on_user_count(),
+                        "waiting_on_agent": s.open_count() - s.waiting_on_user_count(),
                     })
                 })
                 .collect();
@@ -140,8 +165,14 @@ fn need_terminal() -> Result<()> {
 }
 
 /// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
-/// `Q` in the review does the same and goes back to the picker.
-fn tui(mut store: Store, mut repo: Repo, mut session: Option<Session>) -> Result<()> {
+/// `Q` in the review does the same and goes back to the picker. `on_quit` is for the
+/// first session only.
+fn tui(
+    mut store: Store,
+    mut repo: Repo,
+    mut session: Option<Session>,
+    mut on_quit: Option<String>,
+) -> Result<()> {
     let settings = settings::Settings::load()?;
     let (mut theme, mut wrap) = (theme::find(&settings.theme), settings.wrap);
     loop {
@@ -156,6 +187,7 @@ fn tui(mut store: Store, mut repo: Repo, mut session: Option<Session>) -> Result
                 }
             };
             let mut ctx = app::Ctx::new(session, repo, store, theme, wrap)?;
+            ctx.on_quit = on_quit.take();
             app::run(terminal, &mut ctx)?;
             Ok(Some(ctx))
         })?;
@@ -171,7 +203,7 @@ fn tui(mut store: Store, mut repo: Repo, mut session: Option<Session>) -> Result
             std::io::stdout().flush()?;
             eprintln!("sent threads waiting on the agent to the terminal clipboard (OSC 52)");
         }
-        if let Some(cmd) = &s.on_quit {
+        if let Some(cmd) = &ctx.on_quit {
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
