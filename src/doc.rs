@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use anyhow::Result;
+use similar::{ChangeTag, TextDiff};
 
 use crate::repo::{FileDiff, Kind};
 use crate::session::{Anchor, Thread};
@@ -47,7 +48,11 @@ pub struct Side {
     pub lineno: u32,
     pub kind: Kind,
     pub text: String,
+    /// Byte ranges of `text` that differ from the paired line on the other side.
+    pub emph: Ranges,
 }
+
+type Ranges = Vec<Range<usize>>;
 
 /// Where a thread row goes.
 #[derive(Hash, PartialEq, Eq)]
@@ -117,6 +122,7 @@ impl Doc {
                                 lineno: old,
                                 kind: Kind::Del,
                                 text: line.text,
+                                emph: Vec::new(),
                             });
                             old += 1;
                         }
@@ -125,6 +131,7 @@ impl Doc {
                                 lineno: new,
                                 kind: Kind::Add,
                                 text: line.text,
+                                emph: Vec::new(),
                             });
                             new += 1;
                         }
@@ -134,11 +141,13 @@ impl Doc {
                                 lineno: old,
                                 kind: Kind::Ctx,
                                 text: line.text.clone(),
+                                emph: Vec::new(),
                             };
                             let right = Side {
                                 lineno: new,
                                 kind: Kind::Ctx,
                                 text: line.text,
+                                emph: Vec::new(),
                             };
                             rows.push(Row::Code {
                                 file,
@@ -293,6 +302,7 @@ impl Doc {
                 lineno,
                 kind: Kind::Ctx,
                 text: lines[k].to_string(),
+                emph: Vec::new(),
             };
             Row::Code {
                 file,
@@ -360,6 +370,11 @@ impl Doc {
             .unwrap_or(0)
     }
 
+    /// Revs of the left and right side.
+    pub fn revs(&self) -> (&str, &str) {
+        (&self.left_rev, &self.right_rev)
+    }
+
     /// (old_path, new_path) per file.
     pub fn paths(&self) -> &[(String, String)] {
         &self.paths
@@ -407,10 +422,48 @@ fn pair(rows: &mut Vec<Row>, file: usize, dels: &mut Vec<Side>, adds: &mut Vec<S
     let mut dels = dels.drain(..);
     let mut adds = adds.drain(..);
     loop {
-        let (left, right) = (dels.next(), adds.next());
+        let (mut left, mut right) = (dels.next(), adds.next());
         if left.is_none() && right.is_none() {
             return;
         }
+        if let (Some(l), Some(r)) = (&mut left, &mut right)
+            && let Some((old, new)) = word_diff(&l.text, &r.text)
+        {
+            l.emph = old;
+            r.emph = new;
+        }
         rows.push(Row::Code { file, left, right });
     }
+}
+
+/// Changed word ranges of a paired old and new line; None when the lines are long
+/// or mostly different, where highlighting words would only add noise.
+fn word_diff(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
+    if old.len() > 1000 || new.len() > 1000 {
+        return None;
+    }
+    let diff = TextDiff::from_unicode_words(old, new);
+    if diff.ratio() < 0.5 {
+        return None;
+    }
+    let (mut o, mut n) = (Vec::new(), Vec::new());
+    let (mut oi, mut ni) = (0, 0);
+    for change in diff.iter_all_changes() {
+        let len = change.value().len();
+        match change.tag() {
+            ChangeTag::Equal => {
+                oi += len;
+                ni += len;
+            }
+            ChangeTag::Delete => {
+                o.push(oi..oi + len);
+                oi += len;
+            }
+            ChangeTag::Insert => {
+                n.push(ni..ni + len);
+                ni += len;
+            }
+        }
+    }
+    Some((o, n))
 }

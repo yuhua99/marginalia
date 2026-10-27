@@ -6,21 +6,46 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Ctx, Outcome};
 use crate::doc::{Row, Side};
+use crate::highlight::Colors;
 use crate::repo::Kind;
 use crate::session::{Status, Thread};
 use crate::ui::input::Input;
 
-/// Side-by-side diff with a row cursor.
+const TAB: &str = "    ";
+
+/// Side-by-side diff with a row cursor. Rows wrap; the screen starts `off` lines
+/// into row `top`, which only happens for a cursor row taller than the screen.
 #[derive(Default)]
 pub struct DiffView {
     cursor: usize,
     top: usize,
+    off: usize,
     height: usize,
+    /// The cursor row goes on below the screen.
+    overflow: bool,
     /// Start of a `v` selection.
     mark: Option<usize>,
+}
+
+/// What a row draws: full width, or the two halves of a code row with their styles.
+enum Drawn {
+    Full(Vec<Line<'static>>, Style),
+    Split([(Vec<Line<'static>>, Style); 2]),
+}
+
+impl Drawn {
+    fn height(&self) -> usize {
+        match self {
+            Drawn::Full(lines, _) => lines.len(),
+            Drawn::Split([l, r]) => l.0.len().max(r.0.len()),
+        }
+        .max(1)
+    }
 }
 
 impl DiffView {
@@ -35,9 +60,7 @@ impl DiffView {
             _ => None,
         }
     }
-}
 
-impl DiffView {
     pub fn jump(&mut self, row: usize) {
         self.cursor = row;
         self.mark = None;
@@ -46,7 +69,13 @@ impl DiffView {
     pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
         let last = ctx.doc.len() - 1;
         let half = (self.height / 2).max(1);
+        // Inside a cursor row taller than the screen, j / k scroll the row first.
+        let scrolled = self.top == self.cursor && self.off > 0;
         match action {
+            "down" if self.overflow => self.off += 1,
+            "half_page_down" if self.overflow => self.off += half,
+            "up" if scrolled => self.off -= 1,
+            "half_page_up" if scrolled => self.off = self.off.saturating_sub(half),
             "down" => self.cursor = (self.cursor + 1).min(last),
             "up" => self.cursor = self.cursor.saturating_sub(1),
             "half_page_down" => self.cursor = (self.cursor + half).min(last),
@@ -117,107 +146,221 @@ impl DiffView {
         let doc = &ctx.doc;
         self.cursor = self.cursor.min(doc.len() - 1);
         self.height = area.height as usize;
-        let height = |i: usize| match &doc.window(i, 1)[0] {
-            Row::Thread { idx } => thread_lines(ctx, *idx, false).len(),
-            _ => 1,
-        };
-        // Scroll so the whole cursor row fits, if it can.
-        if self.cursor < self.top {
-            self.top = self.cursor;
-        }
-        let mut used: usize = (self.top..=self.cursor).map(height).sum();
-        while used > self.height && self.top < self.cursor {
-            used -= height(self.top);
-            self.top += 1;
-        }
+        let (h, cursor, selection) = (self.height, self.cursor, self.selection());
+        let draw = |i: usize| draw_row(ctx, i, area.width, i == cursor, selection.contains(&i));
+        let height = |i: usize| draw(i).height();
 
-        let selection = self.selection();
-        let half = area.width / 2;
-        let mut y = area.y;
-        for (i, row) in doc.window(self.top, self.height).iter().enumerate() {
-            if y >= area.bottom() {
+        // Keep the cursor row on screen: whole if it fits, else from its start.
+        if cursor < self.top {
+            self.top = cursor;
+            self.off = 0;
+        }
+        let mut bottom = 0;
+        for i in self.top..=cursor {
+            bottom += height(i);
+            if bottom > h + self.off {
                 break;
             }
-            let i = self.top + i;
-            let at_cursor = i == self.cursor;
-            let full = Rect {
-                y,
-                height: 1,
+        }
+        if bottom > h + self.off && self.top != cursor {
+            self.top = cursor;
+            self.off = 0;
+            let mut used = height(cursor);
+            while self.top > 0 && used + height(self.top - 1) <= h {
+                self.top -= 1;
+                used += height(self.top);
+            }
+        }
+        let top_height = height(self.top);
+        self.off = if self.top == cursor {
+            self.off.min(top_height.saturating_sub(h))
+        } else {
+            self.off.min(top_height - 1)
+        };
+        self.overflow = self.top == cursor && top_height - self.off > h;
+
+        let half = area.width / 2;
+        let (mut y, mut i, mut skip) = (0, self.top, self.off);
+        while y < h && i < doc.len() {
+            let drawn = draw(i);
+            let shown = (drawn.height() - skip).min(h - y);
+            let rect = Rect {
+                y: area.y + y as u16,
+                height: shown as u16,
                 ..area
             };
-            let mark = |style: Style| {
-                if at_cursor {
-                    style.add_modifier(Modifier::REVERSED)
-                } else {
-                    style
-                }
-            };
-            match row {
-                Row::Session => {
-                    let style = mark(
-                        Style::new()
-                            .bg(Color::Rgb(40, 40, 70))
-                            .add_modifier(Modifier::BOLD),
-                    );
-                    f.render_widget(Paragraph::new("◆ session").style(style), full);
-                }
-                Row::File {
-                    status, path, note, ..
-                } => {
-                    let mut text = format!("{status} {path}");
-                    if let Some(note) = note {
-                        text.push_str(&format!("  ({note})"));
-                    }
-                    let style = mark(
-                        Style::new()
-                            .bg(Color::Rgb(40, 40, 70))
-                            .add_modifier(Modifier::BOLD),
-                    );
-                    f.render_widget(Paragraph::new(text).style(style), full);
-                }
-                Row::Fold { hidden, .. } => {
-                    let style = mark(Style::new().fg(Color::DarkGray));
-                    let text = match hidden {
-                        Some(n) => format!("  ··· {n} unchanged lines ···"),
-                        None => "  ··· more lines ···".to_string(),
-                    };
-                    f.render_widget(Paragraph::new(text).style(style), full);
-                }
-                Row::Code { left, right, .. } => {
-                    let selected = selection.contains(&i);
+            let para = |lines, style| Paragraph::new(lines).style(style).scroll((skip as u16, 0));
+            match drawn {
+                Drawn::Full(lines, style) => f.render_widget(para(lines, style), rect),
+                Drawn::Split([(left, ls), (right, rs)]) => {
                     f.render_widget(
-                        side(left.as_ref(), selected),
+                        para(left, ls),
                         Rect {
                             width: half,
-                            ..full
+                            ..rect
                         },
                     );
-                    let right_area = Rect {
+                    let right_rect = Rect {
                         x: area.x + half,
                         width: area.width - half,
-                        ..full
+                        ..rect
                     };
-                    f.render_widget(side(right.as_ref(), selected), right_area);
-                }
-                Row::Thread { idx } => {
-                    let lines = thread_lines(ctx, *idx, at_cursor);
-                    let h = (lines.len() as u16).min(area.bottom() - y);
-                    f.render_widget(Paragraph::new(lines), Rect { height: h, ..full });
-                    y += h;
-                    continue;
+                    f.render_widget(para(right, rs), right_rect);
                 }
             }
-            y += 1;
+            y += shown;
+            i += 1;
+            skip = 0;
         }
     }
 }
 
-/// A thread: header, then each message; resolved threads collapse to the header.
-fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool) -> Vec<Line<'static>> {
+fn draw_row(ctx: &Ctx, i: usize, width: u16, at_cursor: bool, selected: bool) -> Drawn {
+    let mark = |style: Style| {
+        if at_cursor {
+            style.add_modifier(Modifier::REVERSED)
+        } else {
+            style
+        }
+    };
+    let header = Style::new()
+        .bg(Color::Rgb(40, 40, 70))
+        .add_modifier(Modifier::BOLD);
+    let text = match &ctx.doc.window(i, 1)[0] {
+        Row::Session => "◆ session".to_string(),
+        Row::File {
+            status, path, note, ..
+        } => {
+            let mut text = format!("{status} {path}");
+            if let Some(note) = note {
+                text.push_str(&format!("  ({note})"));
+            }
+            text
+        }
+        Row::Fold { hidden, .. } => {
+            let text = match hidden {
+                Some(n) => format!("  ··· {n} unchanged lines ···"),
+                None => "  ··· more lines ···".to_string(),
+            };
+            return Drawn::Full(
+                vec![Line::raw(text)],
+                mark(Style::new().fg(Color::DarkGray)),
+            );
+        }
+        Row::Thread { idx } => {
+            return Drawn::Full(
+                thread_lines(ctx, *idx, at_cursor, width as usize),
+                Style::new(),
+            );
+        }
+        Row::Code { file, left, right } => {
+            let (left_rev, right_rev) = ctx.doc.revs();
+            let (old_path, new_path) = &ctx.doc.paths()[*file];
+            let colors = |side: &Option<Side>, rev, path| {
+                side.as_ref().and_then(|_| ctx.highlighter.get(rev, path))
+            };
+            let half = width / 2;
+            return Drawn::Split([
+                code_lines(
+                    left.as_ref(),
+                    colors(left, left_rev, old_path),
+                    half as usize,
+                    selected,
+                ),
+                code_lines(
+                    right.as_ref(),
+                    colors(right, right_rev, new_path),
+                    (width - half) as usize,
+                    selected,
+                ),
+            ]);
+        }
+    };
+    Drawn::Full(vec![Line::raw(text)], mark(header))
+}
+
+/// One side of a code row, wrapped by grapheme to `width`.
+fn code_lines(
+    side: Option<&Side>,
+    colors: Option<&Colors>,
+    width: usize,
+    selected: bool,
+) -> (Vec<Line<'static>>, Style) {
+    let Some(s) = side else {
+        return (Vec::new(), Style::new().bg(Color::Rgb(30, 30, 30)));
+    };
+    let (sign, bg, emph) = match s.kind {
+        Kind::Ctx => (' ', Color::Reset, Color::Reset),
+        Kind::Del => ('-', Color::Rgb(70, 25, 25), Color::Rgb(140, 45, 45)),
+        Kind::Add => ('+', Color::Rgb(25, 60, 25), Color::Rgb(45, 120, 45)),
+    };
+    let mut gutter = Style::new().fg(Color::DarkGray);
+    if selected {
+        gutter = gutter.fg(Color::Black).bg(Color::Yellow);
+    }
+    let number = format!("{:>4} ", s.lineno);
+    // Line number and sign.
+    let gutter_width = number.len() + 1;
+    let text_width = width.saturating_sub(gutter_width).max(1);
+    let mut runs = colors
+        .and_then(|c| c.get(s.lineno as usize - 1))
+        .into_iter()
+        .flatten();
+    let (mut run_end, mut fg) = (0, None);
+
+    let mut lines = Vec::new();
+    let mut spans = vec![Span::styled(number, gutter), Span::raw(sign.to_string())];
+    let (mut chunk, mut chunk_style, mut col) = (String::new(), Style::new(), 0);
+    for (at, g) in s.text.grapheme_indices(true) {
+        while at >= run_end {
+            match runs.next() {
+                Some((color, len)) => {
+                    fg = Some(*color);
+                    run_end += len;
+                }
+                None => {
+                    fg = None;
+                    run_end = usize::MAX;
+                }
+            }
+        }
+        let g = match g {
+            "\t" => TAB,
+            "\r" | "\n" => continue,
+            g => g,
+        };
+        let w = g.width();
+        if col + w > text_width && col > 0 {
+            spans.push(Span::styled(std::mem::take(&mut chunk), chunk_style));
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            spans.push(Span::styled(" ".repeat(gutter_width), gutter));
+            col = 0;
+        }
+        let mut style = Style::new();
+        if let Some(fg) = fg {
+            style = style.fg(fg);
+        }
+        if s.emph.iter().any(|r| r.contains(&at)) {
+            style = style.bg(emph);
+        }
+        if style != chunk_style && !chunk.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut chunk), chunk_style));
+        }
+        chunk_style = style;
+        chunk.push_str(g);
+        col += w;
+    }
+    spans.push(Span::styled(chunk, chunk_style));
+    lines.push(Line::from(spans));
+    (lines, Style::new().bg(bg))
+}
+
+/// A thread: header, then each message wrapped to `width`; resolved threads collapse to the header.
+fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Line<'static>> {
     let outdated = ctx.outdated[idx];
     let t: &Thread = &ctx.session.threads[idx];
     let open = t.status == Status::Open;
-    let waiting_on_user = open && t.waiting_on() == "user";
+    let waiting_on_user = t.waiting_on_user();
     let bar_color = if waiting_on_user {
         Color::Yellow
     } else {
@@ -267,42 +410,28 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool) -> Vec<Line<'static>> {
         } else {
             Color::Magenta
         });
-        for (i, l) in m.body.lines().enumerate() {
-            let prefix = if i == 0 {
-                format!("{}: ", m.from)
-            } else {
-                " ".repeat(m.from.len() + 2)
-            };
-            lines.push(Line::from(vec![
-                bar(),
-                Span::styled(prefix, who),
-                Span::raw(clean(l)),
-            ]));
+        let indent = m.from.width() + 2;
+        let body_width = width.saturating_sub(2 + indent).max(10);
+        let mut first = true;
+        for l in m.body.lines() {
+            for part in textwrap::wrap(&clean(l), body_width) {
+                let prefix = if first {
+                    format!("{}: ", m.from)
+                } else {
+                    " ".repeat(indent)
+                };
+                first = false;
+                lines.push(Line::from(vec![
+                    bar(),
+                    Span::styled(prefix, who),
+                    Span::raw(part.into_owned()),
+                ]));
+            }
         }
     }
     lines
 }
 
-fn side(side: Option<&Side>, selected: bool) -> Paragraph<'static> {
-    let Some(s) = side else {
-        return Paragraph::new("").style(Style::new().bg(Color::Rgb(30, 30, 30)));
-    };
-    let (sign, bg) = match s.kind {
-        Kind::Ctx => (' ', Color::Reset),
-        Kind::Del => ('-', Color::Rgb(70, 25, 25)),
-        Kind::Add => ('+', Color::Rgb(25, 60, 25)),
-    };
-    let mut gutter = Style::new().fg(Color::DarkGray);
-    if selected {
-        gutter = gutter.fg(Color::Black).bg(Color::Yellow);
-    }
-    Paragraph::new(Line::from(vec![
-        Span::styled(format!("{:>4} ", s.lineno), gutter),
-        Span::raw(format!("{sign}{}", clean(&s.text))),
-    ]))
-    .style(Style::new().bg(bg))
-}
-
 fn clean(s: &str) -> String {
-    s.replace('\t', "    ").replace('\r', "")
+    s.replace('\t', TAB).replace('\r', "")
 }

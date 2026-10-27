@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
@@ -6,6 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 
 use crate::doc::Doc;
+use crate::highlight::Highlighter;
 use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
@@ -25,6 +28,7 @@ pub struct Ctx {
     pub views: Vec<View>,
     /// Index into `views` of the diff shown.
     pub view: usize,
+    pub highlighter: Highlighter,
 }
 
 pub enum View {
@@ -56,6 +60,7 @@ impl Ctx {
             copy: false,
             views,
             view: 0,
+            highlighter: Highlighter::new(),
         })
     }
 
@@ -105,7 +110,8 @@ const HINTS: &str = " c comment  r reply  x resolve  n/N next waiting  v select 
 pub fn run(ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];
     ratatui::run(|terminal| {
-        loop {
+        'draw: loop {
+            ctx.highlighter.receive();
             terminal.draw(|f| {
                 let [head, body, foot] = Layout::vertical([
                     Constraint::Length(1),
@@ -140,6 +146,13 @@ pub fn run(ctx: &mut Ctx) -> Result<()> {
                     layer.render(f, body, ctx);
                 }
             })?;
+            ctx.highlighter.flush(&mut ctx.repo);
+            // Wait for a key, redrawing as colors arrive.
+            while ctx.highlighter.busy() && !event::poll(Duration::from_millis(30))? {
+                if ctx.highlighter.receive() {
+                    continue 'draw;
+                }
+            }
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {

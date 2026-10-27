@@ -1,5 +1,6 @@
 mod app;
 mod doc;
+mod highlight;
 mod keymap;
 mod repo;
 mod session;
