@@ -1,0 +1,85 @@
+use ratatui::style::Style;
+use ratatui::text::Span;
+use unicode_width::UnicodeWidthStr;
+
+use crate::repo::Commit;
+use crate::theme::Theme;
+
+/// Columns kept for a subject before the author and date are left out.
+const MIN_SUBJECT: usize = 20;
+
+/// The widest author column.
+const MAX_AUTHOR: usize = 16;
+
+/// `[x] ` or `[ ] ` before a row of a commit list.
+pub fn mark(checked: bool, theme: &Theme) -> Span<'static> {
+    let mark = if checked { "[x] " } else { "[ ] " };
+    Span::styled(mark, Style::new().fg(theme.accent))
+}
+
+/// Widths of the author and date columns, shared by the rows of a commit list.
+pub struct Columns {
+    author: usize,
+    when: usize,
+}
+
+impl Columns {
+    pub fn new<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Columns {
+        let none = Columns { author: 0, when: 0 };
+        commits.into_iter().fold(none, |cols, c| Columns {
+            author: cols.author.max(c.author.width()).min(MAX_AUTHOR),
+            when: cols.when.max(c.when.width()),
+        })
+    }
+
+    /// `sha subject (waiting)  author  date` in `width` columns, the author and date
+    /// right-aligned; `style` on the sha and subject.
+    pub fn row<'a>(
+        &self,
+        commit: &'a Commit,
+        waiting: usize,
+        width: usize,
+        style: Style,
+        theme: &Theme,
+    ) -> Vec<Span<'a>> {
+        let author = fit(&commit.author, self.author);
+        let mut meta = format!(
+            "{author}{}  {}{}",
+            " ".repeat(self.author - author.width()),
+            " ".repeat(self.when - commit.when.width()),
+            commit.when
+        );
+        let waiting = if waiting > 0 {
+            format!(" ({waiting})")
+        } else {
+            String::new()
+        };
+        // After the sha, the spaces around the subject and the count.
+        let width = width.saturating_sub(8 + 2 + waiting.width());
+        // Too narrow: the subject goes first.
+        if width < meta.width() + MIN_SUBJECT {
+            meta.clear();
+        }
+        let room = width - meta.width();
+        let subject = fit(&commit.subject, room);
+        let pad = " ".repeat(room - subject.width() + 2);
+        vec![
+            Span::styled(&commit.sha[..7], style.fg(theme.dim)),
+            Span::styled(format!(" {subject}"), style),
+            Span::styled(waiting, Style::new().fg(theme.accent)),
+            Span::raw(pad),
+            Span::styled(meta, Style::new().fg(theme.dim)),
+        ]
+    }
+}
+
+/// `s` cut to `width` columns, as `str::width` counts them.
+fn fit(s: &str, width: usize) -> String {
+    let end = s
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| s[..end].width() <= width)
+        .last()
+        .unwrap_or(0);
+    s[..end].to_string()
+}

@@ -1,3 +1,4 @@
+pub mod commit_row;
 pub mod delete_prompt;
 pub mod diff_view;
 pub mod file_view;
