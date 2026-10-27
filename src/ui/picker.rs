@@ -33,7 +33,7 @@ const HELP: &[Entry] = &[
     (&["filter"], "filter; Enter ends typing, Esc clears"),
     (&["delete_session"], "delete the session"),
     (&["cancel"], "clear the checks, then the filter"),
-    (&["settings"], "settings: theme"),
+    (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
     (&["quit"], "quit"),
 ];
@@ -45,6 +45,7 @@ pub fn run(
     store: &Store,
     repo: &mut Repo,
     theme: &mut &'static Theme,
+    wrap: &mut bool,
 ) -> Result<Option<Session>> {
     let mut p = Picker {
         sessions: store.list()?,
@@ -56,7 +57,7 @@ pub fn run(
         terminal.draw(|f| p.render(f, theme))?;
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Some(done) = p.key(key, store, repo, theme)?
+            && let Some(done) = p.key(key, store, repo, theme, wrap)?
         {
             return Ok(done);
         }
@@ -138,10 +139,11 @@ impl Picker {
         store: &Store,
         repo: &mut Repo,
         theme: &mut &'static Theme,
+        wrap: &mut bool,
     ) -> Result<Option<Option<Session>>> {
         self.error = None;
         if let Some(settings) = &mut self.settings {
-            if settings.key(key, theme) {
+            if settings.key(key, theme, wrap) {
                 self.settings = None;
             }
             return Ok(None);
@@ -210,7 +212,7 @@ impl Picker {
             "filter" => self.typing = true,
             "delete_session" if !self.right => self.deleting = at.is_some(),
             "help" => self.help = Some(help::popup(HELP)),
-            "settings" => self.settings = Some(SettingsPopup::new(theme)),
+            "settings" => self.settings = Some(SettingsPopup::new(theme, *wrap)),
             "focus_left" => self.right = false,
             "focus_right" => self.right = true,
             "quit" => return Ok(Some(None)),

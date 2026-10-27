@@ -42,7 +42,7 @@ const HELP: &[help::Entry] = &[
         &["edit", "delete"],
         "edit / delete your last unanswered message",
     ),
-    (&["settings"], "settings: theme"),
+    (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
     (&["quit"], "quit"),
 ];
@@ -83,7 +83,11 @@ impl Component for Review {
             "focus_left" => self.focus = self.focus.saturating_sub(1),
             "focus_right" => self.focus = (self.focus + 1).min(DIFF),
             "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
-            "settings" => return Ok(Outcome::Push(Box::new(SettingsPopup::new(ctx.theme)))),
+            "settings" => {
+                return Ok(Outcome::Push(Box::new(SettingsPopup::new(
+                    ctx.theme, ctx.wrap,
+                ))));
+            }
             "quit" => {
                 if ctx.session.on_quit.is_none()
                     && ctx.session.markdown(&ctx.doc.thread_order()).is_some()

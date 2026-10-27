@@ -8,11 +8,22 @@ use serde::{Deserialize, Serialize};
 use crate::store::xdg_dir;
 
 /// What the `s` popup changes, kept in `$XDG_CONFIG_HOME/marginalia/settings.json`.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     /// A theme name; empty or unknown means the default.
-    #[serde(default)]
     pub theme: String,
+    /// Wrap long code lines; off cuts them at the edge.
+    pub wrap: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            theme: String::new(),
+            wrap: true,
+        }
+    }
 }
 
 impl Settings {

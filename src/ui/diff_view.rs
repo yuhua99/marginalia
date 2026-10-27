@@ -314,6 +314,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
                     width as usize,
                     selected,
                     theme,
+                    ctx.wrap,
                 );
                 return Drawn::Full(lines, style);
             }
@@ -325,6 +326,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
                     half as usize,
                     selected,
                     theme,
+                    ctx.wrap,
                 ),
                 code_lines(
                     right.as_ref(),
@@ -332,6 +334,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
                     (width - half) as usize,
                     selected,
                     theme,
+                    ctx.wrap,
                 ),
             ]);
         }
@@ -346,6 +349,7 @@ fn code_lines(
     width: usize,
     selected: bool,
     theme: &Theme,
+    wrap: bool,
 ) -> (Vec<Line<'static>>, Style) {
     let Some(s) = side else {
         return (Vec::new(), Style::new());
@@ -395,6 +399,9 @@ fn code_lines(
             g => g,
         };
         let w = g.width();
+        if col + w > text_width && !wrap {
+            break;
+        }
         if col + w > text_width && col > 0 {
             spans.push(Span::styled(std::mem::take(&mut chunk), chunk_style));
             lines.push(Line::from(std::mem::take(&mut spans)));

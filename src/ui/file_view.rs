@@ -29,7 +29,7 @@ const HELP: &[Entry] = &[
         &["edit", "delete"],
         "edit / delete your last unanswered message",
     ),
-    (&["settings"], "settings: theme"),
+    (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
     (&["quit", "cancel"], "back to the diff"),
 ];
@@ -56,7 +56,9 @@ impl Component for FileView {
         };
         match action {
             "help" => Ok(Outcome::Push(Box::new(Help::new(HELP)))),
-            "settings" => Ok(Outcome::Push(Box::new(SettingsPopup::new(ctx.theme)))),
+            "settings" => Ok(Outcome::Push(Box::new(SettingsPopup::new(
+                ctx.theme, ctx.wrap,
+            )))),
             "quit" | "cancel" => {
                 ctx.file = None;
                 Ok(Outcome::Close)

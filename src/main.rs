@@ -141,16 +141,17 @@ fn need_terminal() -> Result<()> {
 
 /// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
 fn tui(store: Store, mut repo: Repo, session: Option<Session>) -> Result<()> {
-    let mut theme = theme::find(&settings::Settings::load()?.theme);
+    let settings = settings::Settings::load()?;
+    let (mut theme, mut wrap) = (theme::find(&settings.theme), settings.wrap);
     let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
         let session = match session {
             Some(session) => session,
-            None => match ui::picker::run(terminal, &store, &mut repo, &mut theme)? {
+            None => match ui::picker::run(terminal, &store, &mut repo, &mut theme, &mut wrap)? {
                 Some(session) => session,
                 None => return Ok(None),
             },
         };
-        let mut ctx = app::Ctx::new(session, repo, store, theme)?;
+        let mut ctx = app::Ctx::new(session, repo, store, theme, wrap)?;
         app::run(terminal, &mut ctx)?;
         Ok(Some(ctx))
     })?;

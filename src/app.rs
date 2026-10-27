@@ -32,6 +32,8 @@ pub struct Ctx {
     pub view: (usize, usize),
     pub highlighter: Highlighter,
     pub theme: &'static Theme,
+    /// Wrap long code lines.
+    pub wrap: bool,
     /// The doc of the file view layer while it is open.
     pub file: Option<Doc>,
 }
@@ -51,6 +53,7 @@ impl Ctx {
         mut repo: Repo,
         store: Store,
         theme: &'static Theme,
+        wrap: bool,
     ) -> Result<Ctx> {
         let outdated = session.outdated(&mut repo)?;
         let mut views = vec![View::All];
@@ -72,6 +75,7 @@ impl Ctx {
             view: (0, 0),
             highlighter: Highlighter::new(),
             theme,
+            wrap,
             file: None,
         })
     }

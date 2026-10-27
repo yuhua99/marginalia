@@ -12,7 +12,8 @@ use crate::theme::{THEMES, Theme};
 use crate::ui::popup::Popup;
 
 /// `s`: the settings. The theme row opens a list that previews the theme under the
-/// cursor; Enter applies and saves it, Esc restores the one before.
+/// cursor; Enter applies and saves it, Esc restores the one before. Enter on wrap
+/// toggles it.
 pub struct SettingsPopup {
     list: Popup,
     /// The theme list, and the theme to restore.
@@ -21,16 +22,17 @@ pub struct SettingsPopup {
 }
 
 impl SettingsPopup {
-    pub fn new(theme: &Theme) -> SettingsPopup {
+    pub fn new(theme: &Theme, wrap: bool) -> SettingsPopup {
         SettingsPopup {
-            list: list(theme, None),
+            list: list(theme, wrap, None),
             themes: None,
             keymap: Keymap::default(),
         }
     }
 
-    /// Handles a key, changing `theme` to preview or apply; true when the popup closes.
-    pub fn key(&mut self, key: KeyEvent, theme: &mut &'static Theme) -> bool {
+    /// Handles a key, changing `theme` to preview or apply, or `wrap`; true when the
+    /// popup closes.
+    pub fn key(&mut self, key: KeyEvent, theme: &mut &'static Theme, wrap: &mut bool) -> bool {
         let Feed::Action(action) = self.keymap.feed(key) else {
             return false;
         };
@@ -38,7 +40,7 @@ impl SettingsPopup {
         if let Some((popup, original)) = &mut self.themes {
             match action {
                 // A failed save keeps the theme for this run and says so.
-                "open" | "focus_right" => error = save(theme.name).err(),
+                "open" | "focus_right" => error = save(theme, *wrap).err(),
                 "cancel" | "quit" | "focus_left" => *theme = *original,
                 _ => {
                     popup.act(action);
@@ -47,11 +49,16 @@ impl SettingsPopup {
                 }
             }
             self.themes = None;
-            self.list = list(theme, error);
+            self.list = list(theme, *wrap, error);
             return false;
         }
         match action {
-            // The theme is the only row so far.
+            "open" | "focus_right" if self.list.cursor == 1 => {
+                *wrap = !*wrap;
+                let error = save(theme, *wrap).err();
+                self.list = list(theme, *wrap, error);
+                self.list.cursor = 1;
+            }
             "open" | "focus_right" => {
                 let rows = THEMES
                     .iter()
@@ -75,23 +82,32 @@ impl SettingsPopup {
     }
 }
 
-fn list(theme: &Theme, error: Option<anyhow::Error>) -> Popup {
-    let mut value = theme.name.to_string();
-    if let Some(e) = error {
-        value.push_str(&format!(" (not saved: {e:#})"));
-    }
-    Popup::new("Settings", vec![("theme".to_string(), value)])
+/// The rows; a failed save shows in the title.
+fn list(theme: &Theme, wrap: bool, error: Option<anyhow::Error>) -> Popup {
+    let title = match error {
+        Some(e) => format!("Settings (not saved: {e:#})"),
+        None => "Settings".to_string(),
+    };
+    let wrap = if wrap { "on" } else { "off" };
+    Popup::new(
+        &title,
+        vec![
+            ("theme".to_string(), theme.name.to_string()),
+            ("wrap".to_string(), wrap.to_string()),
+        ],
+    )
 }
 
-fn save(theme: &str) -> Result<()> {
+fn save(theme: &Theme, wrap: bool) -> Result<()> {
     let mut settings = Settings::load()?;
-    settings.theme = theme.to_string();
+    settings.theme = theme.name.to_string();
+    settings.wrap = wrap;
     settings.save()
 }
 
 impl Component for SettingsPopup {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        Ok(if self.key(key, &mut ctx.theme) {
+        Ok(if self.key(key, &mut ctx.theme, &mut ctx.wrap) {
             Outcome::Close
         } else {
             Outcome::Consumed
