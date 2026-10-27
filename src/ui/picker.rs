@@ -270,7 +270,7 @@ impl Picker {
                 .map(|(row, i)| {
                     let style = match (row == cursor, focused) {
                         (true, true) => Style::new().add_modifier(Modifier::REVERSED),
-                        (true, false) => Style::new().bg(Color::Rgb(50, 50, 50)),
+                        (true, false) => Style::new().add_modifier(Modifier::UNDERLINED),
                         _ => Style::new(),
                     };
                     let text = Span::styled(all[i].0.clone(), style);

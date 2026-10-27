@@ -1,12 +1,13 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::{ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
@@ -37,7 +38,7 @@ impl Highlighter {
         let (tx, done) = mpsc::channel();
         thread::spawn(move || {
             let syntaxes = SyntaxSet::load_defaults_newlines();
-            let theme = &ThemeSet::load_defaults().themes["base16-ocean.dark"];
+            let theme = &ansi_theme();
             for (key, text) in rx {
                 let colors = highlight(&syntaxes, theme, &key.1, &text);
                 if tx.send((key, colors)).is_err() {
@@ -100,6 +101,39 @@ impl Highlighter {
     }
 }
 
+/// Token colors as ANSI indices so they follow the terminal palette: the index in `r`
+/// with `a` 0; `a` 1 is the default foreground.
+fn ansi_theme() -> Theme {
+    let ansi = |r, a| syntect::highlighting::Color { r, g: 0, b: 0, a };
+    let item = |scope: &str, n| ThemeItem {
+        scope: ScopeSelectors::from_str(scope).expect("scope selector"),
+        style: StyleModifier {
+            foreground: Some(ansi(n, 0)),
+            ..StyleModifier::default()
+        },
+    };
+    Theme {
+        settings: ThemeSettings {
+            foreground: Some(ansi(0, 1)),
+            ..ThemeSettings::default()
+        },
+        scopes: vec![
+            item("comment", 8),
+            item("string", 2),
+            item("constant", 3),
+            item("keyword, storage", 5),
+            item("entity.name, support.type, support.class", 6),
+            // More specific than `entity.name`, so it wins.
+            item("entity.name.function, support.function, support.macro", 4),
+            item("entity.name.tag, entity.name.section, markup.heading", 4),
+            item("entity.other.attribute-name", 3),
+            item("markup.inserted", 2),
+            item("markup.deleted", 1),
+        ],
+        ..Theme::default()
+    }
+}
+
 fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Colors {
     if text.len() > MAX_BYTES {
         return Vec::new();
@@ -125,10 +159,11 @@ fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Col
         out.push(
             runs.into_iter()
                 .map(|(s, t)| {
-                    (
-                        Color::Rgb(s.foreground.r, s.foreground.g, s.foreground.b),
-                        t.len(),
-                    )
+                    let color = match s.foreground.a {
+                        0 => Color::Indexed(s.foreground.r),
+                        _ => Color::Reset,
+                    };
+                    (color, t.len())
                 })
                 .collect(),
         );

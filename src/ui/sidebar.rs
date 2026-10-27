@@ -115,7 +115,7 @@ impl Sidebar {
                     style = if focused {
                         style.add_modifier(Modifier::REVERSED)
                     } else {
-                        style.bg(Color::Rgb(50, 50, 50))
+                        style.add_modifier(Modifier::UNDERLINED)
                     };
                 }
                 let mut spans = vec![Span::styled(item.text.clone(), style)];

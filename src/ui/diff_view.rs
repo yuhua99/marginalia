@@ -36,7 +36,7 @@ pub struct DiffView {
     file: bool,
 }
 
-/// What a row draws: full width, or the two halves of a code row with their styles.
+/// What a row draws: full width with a style, or the two halves of a code row.
 enum Drawn {
     Full(Vec<Line<'static>>, Style),
     Split([(Vec<Line<'static>>, Style); 2]),
@@ -274,9 +274,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
             style
         }
     };
-    let header = Style::new()
-        .bg(Color::Rgb(40, 40, 70))
-        .add_modifier(Modifier::BOLD);
+    let header = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "◆ session".to_string(),
         Row::File {
@@ -347,14 +345,15 @@ fn code_lines(
     selected: bool,
 ) -> (Vec<Line<'static>>, Style) {
     let Some(s) = side else {
-        return (Vec::new(), Style::new().bg(Color::Rgb(30, 30, 30)));
+        return (Vec::new(), Style::new());
     };
-    let (sign, bg, emph) = match s.kind {
-        Kind::Ctx => (' ', Color::Reset, Color::Reset),
-        Kind::Del => ('-', Color::Rgb(70, 25, 25), Color::Rgb(140, 45, 45)),
-        Kind::Add => ('+', Color::Rgb(25, 60, 25), Color::Rgb(45, 120, 45)),
+    // Changes show in the gutter color; changed words are reversed in it.
+    let (sign, color, bg, emph) = match s.kind {
+        Kind::Ctx => (' ', Color::DarkGray, Color::Reset, Color::Reset),
+        Kind::Del => ('-', Color::Red, Color::Red, Color::LightRed),
+        Kind::Add => ('+', Color::Green, Color::Green, Color::LightGreen),
     };
-    let mut gutter = Style::new().fg(Color::DarkGray);
+    let mut gutter = Style::new().fg(color);
     if selected {
         gutter = gutter.fg(Color::Black).bg(Color::Yellow);
     }
@@ -369,7 +368,10 @@ fn code_lines(
     let (mut run_end, mut fg) = (0, None);
 
     let mut lines = Vec::new();
-    let mut spans = vec![Span::styled(number, gutter), Span::raw(sign.to_string())];
+    let mut spans = vec![
+        Span::styled(number, gutter),
+        Span::styled(sign.to_string(), Style::new().fg(color)),
+    ];
     let (mut chunk, mut chunk_style, mut col) = (String::new(), Style::new(), 0);
     for (at, g) in s.text.grapheme_indices(true) {
         while at >= run_end {
