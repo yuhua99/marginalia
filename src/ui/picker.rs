@@ -309,10 +309,10 @@ impl Picker {
                 .skip(skip)
                 .take(height)
                 .map(|(row, i)| {
-                    let style = match (row == cursor, focused) {
-                        (true, true) => Style::new().add_modifier(Modifier::REVERSED),
-                        (true, false) => Style::new().add_modifier(Modifier::UNDERLINED),
-                        _ => Style::new(),
+                    let style = if row == cursor && focused {
+                        Style::new().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::new()
                     };
                     let text = Span::styled(all[i].0.clone(), style);
                     if pane == 0 {
