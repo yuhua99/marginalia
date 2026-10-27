@@ -34,6 +34,8 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("c", "comment"),
     ("r", "reply"),
     ("x", "resolve"),
+    ("e", "edit"),
+    ("d", "delete"),
     ("q", "quit"),
 ];
 

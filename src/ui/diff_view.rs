@@ -9,11 +9,12 @@ use ratatui::widgets::Paragraph;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Ctx, Outcome};
+use crate::app::{Component, Ctx, Outcome};
 use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::Kind;
 use crate::session::{Status, Thread};
+use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView};
 use crate::ui::input::Input;
 
@@ -159,6 +160,20 @@ impl DiffView {
                         anchor,
                         &ctx.session,
                     ))));
+                }
+            }
+            // Only the user's last message of an open thread, before the agent answers it.
+            "edit" | "delete" => {
+                if let Some(idx) = self.thread_at_cursor(ctx)
+                    && ctx.session.threads[idx].status == Status::Open
+                    && ctx.session.threads[idx].waiting_on() == "agent"
+                {
+                    let next: Box<dyn Component> = if action == "edit" {
+                        Box::new(Input::edit(idx, &ctx.session))
+                    } else {
+                        Box::new(DeletePrompt(idx))
+                    };
+                    return Ok(Outcome::Push(next));
                 }
             }
             "resolve" => {

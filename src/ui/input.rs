@@ -8,11 +8,13 @@ use ratatui_textarea::{TextArea, WrapMode};
 use crate::app::{Component, Ctx, Outcome};
 use crate::session::{Anchor, Session};
 
-/// Text box for a new comment or a reply. `Ctrl-s` sends, `Esc` cancels.
+/// Text box for a new comment, a reply or an edit. `Ctrl-s` sends, `Esc` cancels.
 pub struct Input {
     target: Target,
     title: String,
     text: TextArea<'static>,
+    /// The text the box opened with; `Esc` discards at once while it is unchanged.
+    original: String,
     /// `Esc` was pressed once with text in the box.
     discarding: bool,
     /// Why the last send failed; the text stays for a retry.
@@ -22,26 +24,37 @@ pub struct Input {
 enum Target {
     Comment(Anchor),
     Reply(usize),
+    /// The user's last message of a thread.
+    Edit(usize),
 }
 
 impl Input {
     pub fn comment(anchor: Anchor, session: &Session) -> Input {
         let title = format!("comment on {}", session.location(&anchor));
-        Input::new(Target::Comment(anchor), title)
+        Input::new(Target::Comment(anchor), title, "")
     }
 
     pub fn reply(idx: usize, session: &Session) -> Input {
         let title = format!("reply to {}", session.threads[idx].id);
-        Input::new(Target::Reply(idx), title)
+        Input::new(Target::Reply(idx), title, "")
     }
 
-    fn new(target: Target, title: String) -> Input {
+    pub fn edit(idx: usize, session: &Session) -> Input {
+        let t = &session.threads[idx];
+        let title = format!("edit your message in {}", t.id);
+        let body = &t.messages.last().expect("a message").body;
+        Input::new(Target::Edit(idx), title, body)
+    }
+
+    fn new(target: Target, title: String, body: &str) -> Input {
         let mut text = TextArea::default();
         text.set_wrap_mode(WrapMode::WordOrGlyph);
+        text.insert_str(body);
         Input {
             target,
             title,
             text,
+            original: body.to_string(),
             discarding: false,
             error: None,
         }
@@ -65,6 +78,10 @@ impl Component for Input {
                         let id = ctx.session.threads[*idx].id.clone();
                         ctx.session.reply(&id, "user", body)
                     }
+                    Target::Edit(idx) => {
+                        ctx.session.edit(*idx, body);
+                        Ok(())
+                    }
                 };
                 if let Err(e) = sent {
                     self.error = Some(format!("{e:#}"));
@@ -74,7 +91,7 @@ impl Component for Input {
                 Ok(Outcome::Close)
             }
             KeyCode::Esc => {
-                if self.text.is_empty() || self.discarding {
+                if self.text.lines().join("\n") == self.original || self.discarding {
                     return Ok(Outcome::Close);
                 }
                 self.discarding = true;

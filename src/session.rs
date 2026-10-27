@@ -136,8 +136,15 @@ impl Session {
         if let Anchor::Commit { commit } = &mut anchor {
             *commit = repo.commit(commit)?;
         }
+        // After the highest id, since deleted threads leave gaps.
+        let n = self
+            .threads
+            .iter()
+            .filter_map(|t| t.id[1..].parse::<usize>().ok())
+            .max()
+            .unwrap_or(0);
         self.threads.push(Thread {
-            id: format!("t{}", self.threads.len() + 1),
+            id: format!("t{}", n + 1),
             status: Status::Open,
             anchor,
             text,
@@ -160,6 +167,27 @@ impl Session {
             body,
         });
         Ok(())
+    }
+
+    /// Rewrites the last message of thread `idx`.
+    pub fn edit(&mut self, idx: usize, body: String) {
+        self.threads[idx]
+            .messages
+            .last_mut()
+            .expect("a message")
+            .body = body;
+    }
+
+    /// Removes the last message of thread `idx`, or the thread when it is the only one.
+    /// Returns whether the thread went.
+    pub fn delete(&mut self, idx: usize) -> bool {
+        let t = &mut self.threads[idx];
+        if t.messages.len() > 1 {
+            t.messages.pop();
+            return false;
+        }
+        self.threads.remove(idx);
+        true
     }
 
     pub fn open_count(&self) -> usize {
