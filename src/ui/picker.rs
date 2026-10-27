@@ -281,7 +281,7 @@ impl Picker {
         let [body, foot] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
         let panes: [_; 2] =
-            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .areas(body);
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
