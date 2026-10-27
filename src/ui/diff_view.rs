@@ -89,6 +89,11 @@ impl DiffView {
         }
     }
 
+    /// The file the cursor is in.
+    pub fn current_file(&self, ctx: &Ctx) -> Option<usize> {
+        self.doc(ctx).file_at(self.cursor)
+    }
+
     /// Starts writing `input` under `row`.
     pub fn start(&mut self, row: usize, input: Input) {
         self.cursor = row;

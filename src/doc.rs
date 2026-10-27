@@ -417,6 +417,14 @@ impl Doc {
         }
     }
 
+    /// The file `row` is in: the nearest file header at or above it.
+    pub fn file_at(&self, row: usize) -> Option<usize> {
+        self.rows.iter().take(row + 1).rev().find_map(|r| match r {
+            Row::File { file, .. } => Some(*file),
+            _ => None,
+        })
+    }
+
     /// The header row of `file`.
     pub fn file_row(&self, file: usize) -> usize {
         self.rows

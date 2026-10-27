@@ -154,8 +154,13 @@ impl Component for Review {
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
         let [left, right] =
             Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(bottom);
-        self.commits.render(f, top, ctx, self.focus == COMMITS);
-        self.files.render(f, left, ctx, self.focus == FILES);
+        self.commits
+            .render(f, top, ctx, self.focus == COMMITS, None);
+        // With the diff focused, the files box marks the diff's file.
+        let file = (self.focus == DIFF)
+            .then(|| self.diff.current_file(ctx))
+            .flatten();
+        self.files.render(f, left, ctx, self.focus == FILES, file);
         let block = boxed(
             Span::styled(header(ctx), Style::new().add_modifier(Modifier::BOLD)),
             self.focus == DIFF,

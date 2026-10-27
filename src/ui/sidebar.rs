@@ -106,13 +106,28 @@ impl Sidebar {
         .min(last);
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, focused: bool) {
+    /// `file`, when set, is marked instead of the cursor.
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &Ctx,
+        focused: bool,
+        file: Option<usize>,
+    ) {
         let items = self.items(ctx);
         self.height = area.height.saturating_sub(2) as usize;
         self.cursor = self.cursor.min(items.len().saturating_sub(1));
-        self.top = self.top.min(self.cursor);
-        if self.cursor >= self.top + self.height {
-            self.top = self.cursor + 1 - self.height;
+        let marked = match file {
+            Some(file) => items
+                .iter()
+                .position(|i| matches!(i.entry, Entry::File(n) if n == file)),
+            None => focused.then_some(self.cursor),
+        };
+        let shown = marked.unwrap_or(self.cursor);
+        self.top = self.top.min(shown);
+        if shown >= self.top + self.height {
+            self.top = shown + 1 - self.height;
         }
         let lines: Vec<Line> = items
             .iter()
@@ -121,12 +136,8 @@ impl Sidebar {
             .take(self.height)
             .map(|(i, item)| {
                 let mut style = Style::new();
-                if i == self.cursor {
-                    style = if focused {
-                        style.add_modifier(Modifier::REVERSED)
-                    } else {
-                        style.add_modifier(Modifier::UNDERLINED)
-                    };
+                if Some(i) == marked {
+                    style = style.add_modifier(Modifier::REVERSED);
                 }
                 let mut spans = vec![Span::styled(item.text.clone(), style)];
                 if item.waiting > 0 {
