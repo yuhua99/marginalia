@@ -14,6 +14,7 @@ use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::Kind;
 use crate::session::{Status, Thread};
+use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView};
 use crate::ui::input::Input;
@@ -274,7 +275,8 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
             style
         }
     };
-    let header = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
+    let theme = ctx.theme;
+    let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "◆ session".to_string(),
         Row::File {
@@ -291,10 +293,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
                 Some(n) => format!("  ··· {n} unchanged lines ···"),
                 None => "  ··· more lines ···".to_string(),
             };
-            return Drawn::Full(
-                vec![Line::raw(text)],
-                mark(Style::new().fg(Color::DarkGray)),
-            );
+            return Drawn::Full(vec![Line::raw(text)], mark(Style::new().fg(theme.dim)));
         }
         Row::Thread { idx } => {
             return Drawn::Full(
@@ -314,6 +313,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
                     colors(right, right_rev, new_path),
                     width as usize,
                     selected,
+                    theme,
                 );
                 return Drawn::Full(lines, style);
             }
@@ -324,12 +324,14 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
                     colors(left, left_rev, old_path),
                     half as usize,
                     selected,
+                    theme,
                 ),
                 code_lines(
                     right.as_ref(),
                     colors(right, right_rev, new_path),
                     (width - half) as usize,
                     selected,
+                    theme,
                 ),
             ]);
         }
@@ -343,19 +345,20 @@ fn code_lines(
     colors: Option<&Colors>,
     width: usize,
     selected: bool,
+    theme: &Theme,
 ) -> (Vec<Line<'static>>, Style) {
     let Some(s) = side else {
         return (Vec::new(), Style::new());
     };
     // Changes show in the gutter color; changed words are reversed in it.
     let (sign, color, bg, emph) = match s.kind {
-        Kind::Ctx => (' ', Color::DarkGray, Color::Reset, Color::Reset),
-        Kind::Del => ('-', Color::Red, Color::Red, Color::LightRed),
-        Kind::Add => ('+', Color::Green, Color::Green, Color::LightGreen),
+        Kind::Ctx => (' ', theme.dim, Color::Reset, Color::Reset),
+        Kind::Del => ('-', theme.red, theme.del_bg, theme.del_emph),
+        Kind::Add => ('+', theme.green, theme.add_bg, theme.add_emph),
     };
     let mut gutter = Style::new().fg(color);
     if selected {
-        gutter = gutter.fg(Color::Black).bg(Color::Yellow);
+        gutter = gutter.fg(theme.on_accent).bg(theme.accent);
     }
     let number = format!("{:>4} ", s.lineno);
     // Line number and sign.
@@ -376,8 +379,8 @@ fn code_lines(
     for (at, g) in s.text.grapheme_indices(true) {
         while at >= run_end {
             match runs.next() {
-                Some((color, len)) => {
-                    fg = Some(*color);
+                Some((slot, len)) => {
+                    fg = Some(theme.slot(*slot));
                     run_end += len;
                 }
                 None => {
@@ -419,14 +422,15 @@ fn code_lines(
 
 /// A thread: header, then each message wrapped to `width`; resolved threads collapse to the header.
 fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Line<'static>> {
+    let theme = ctx.theme;
     let outdated = ctx.outdated[idx];
     let t: &Thread = &ctx.session.threads[idx];
     let open = t.status == Status::Open;
     let waiting_on_user = t.waiting_on_user();
     let bar_color = if waiting_on_user {
-        Color::Yellow
+        theme.accent
     } else {
-        Color::DarkGray
+        theme.dim
     };
     let bar = || Span::styled("┃ ", Style::new().fg(bar_color));
     let state = match (open, waiting_on_user) {
@@ -440,7 +444,7 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
     }
     let mut header_style = Style::new().add_modifier(Modifier::BOLD);
     if !open {
-        header_style = Style::new().fg(Color::DarkGray);
+        header_style = Style::new().fg(theme.dim);
         if let Some(m) = t.messages.first() {
             header.push_str(&format!(
                 " · {}: {}",
@@ -457,7 +461,7 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
         return lines;
     }
     if outdated && let Some(text) = &t.text {
-        let dim = Style::new().fg(Color::DarkGray);
+        let dim = Style::new().fg(theme.dim);
         lines.push(Line::from(vec![bar(), Span::styled("was:", dim)]));
         for l in text.lines() {
             lines.push(Line::from(vec![
@@ -468,9 +472,9 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
     }
     for m in &t.messages {
         let who = Style::new().fg(if m.from == "user" {
-            Color::Cyan
+            theme.teal
         } else {
-            Color::Magenta
+            theme.mauve
         });
         let indent = m.from.width() + 2;
         let body_width = width.saturating_sub(2 + indent).max(10);

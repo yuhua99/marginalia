@@ -5,21 +5,21 @@ use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
-use ratatui::style::Color;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
 use crate::repo::Repo;
+use crate::theme::Slot;
 
 /// Larger files are not colored.
 const MAX_BYTES: usize = 1 << 20;
 /// Coloring stops at the first longer line.
 const MAX_LINE: usize = 2000;
 
-/// Per line, runs of (color, byte length).
-pub type Colors = Vec<Vec<(Color, usize)>>;
+/// Per line, runs of (palette slot, byte length).
+pub type Colors = Vec<Vec<(Slot, usize)>>;
 type Key = (String, String);
 
 /// Syntax colors of whole files per (rev, path), computed on a background thread.
@@ -38,7 +38,7 @@ impl Highlighter {
         let (tx, done) = mpsc::channel();
         thread::spawn(move || {
             let syntaxes = SyntaxSet::load_defaults_newlines();
-            let theme = &ansi_theme();
+            let theme = &slot_theme();
             for (key, text) in rx {
                 let colors = highlight(&syntaxes, theme, &key.1, &text);
                 if tx.send((key, colors)).is_err() {
@@ -101,34 +101,44 @@ impl Highlighter {
     }
 }
 
-/// Token colors as ANSI indices so they follow the terminal palette: the index in `r`
-/// with `a` 0; `a` 1 is the default foreground.
-fn ansi_theme() -> Theme {
-    let ansi = |r, a| syntect::highlighting::Color { r, g: 0, b: 0, a };
-    let item = |scope: &str, n| ThemeItem {
+/// Token colors as palette slots: the index into `Slot::ALL` in `r`.
+fn slot_theme() -> Theme {
+    let slot = |s: Slot| syntect::highlighting::Color {
+        r: Slot::ALL.iter().position(|a| *a == s).expect("slot in ALL") as u8,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
+    let item = |scope: &str, s| ThemeItem {
         scope: ScopeSelectors::from_str(scope).expect("scope selector"),
         style: StyleModifier {
-            foreground: Some(ansi(n, 0)),
+            foreground: Some(slot(s)),
             ..StyleModifier::default()
         },
     };
     Theme {
         settings: ThemeSettings {
-            foreground: Some(ansi(0, 1)),
+            foreground: Some(slot(Slot::Text)),
             ..ThemeSettings::default()
         },
         scopes: vec![
-            item("comment", 8),
-            item("string", 2),
-            item("constant", 3),
-            item("keyword, storage", 5),
-            item("entity.name, support.type, support.class", 6),
-            // More specific than `entity.name`, so it wins.
-            item("entity.name.function, support.function, support.macro", 4),
-            item("entity.name.tag, entity.name.section, markup.heading", 4),
-            item("entity.other.attribute-name", 3),
-            item("markup.inserted", 2),
-            item("markup.deleted", 1),
+            item("comment", Slot::Dim),
+            item("string", Slot::Green),
+            item("constant", Slot::Peach),
+            item("keyword, storage", Slot::Mauve),
+            item("entity.name, support.type, support.class", Slot::Teal),
+            // More specific than `entity.name`, so they win.
+            item(
+                "entity.name.function, support.function, support.macro",
+                Slot::Blue,
+            ),
+            item(
+                "entity.name.tag, entity.name.section, markup.heading",
+                Slot::Blue,
+            ),
+            item("entity.other.attribute-name", Slot::Yellow),
+            item("markup.inserted", Slot::Green),
+            item("markup.deleted", Slot::Red),
         ],
         ..Theme::default()
     }
@@ -158,13 +168,7 @@ fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Col
         };
         out.push(
             runs.into_iter()
-                .map(|(s, t)| {
-                    let color = match s.foreground.a {
-                        0 => Color::Indexed(s.foreground.r),
-                        _ => Color::Reset,
-                    };
-                    (color, t.len())
-                })
+                .map(|(s, t)| (Slot::ALL[s.foreground.r as usize], t.len()))
                 .collect(),
         );
     }

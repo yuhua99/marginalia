@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
@@ -12,6 +12,7 @@ use crate::keymap::{Feed, Keymap};
 use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
+use crate::theme::Theme;
 use crate::ui::check;
 
 /// Commits offered for a new range.
@@ -26,6 +27,7 @@ pub fn run(
     terminal: &mut DefaultTerminal,
     store: &Store,
     repo: &mut Repo,
+    theme: &Theme,
 ) -> Result<Option<Session>> {
     let mut p = Picker {
         sessions: store.list()?,
@@ -34,7 +36,7 @@ pub fn run(
     };
     p.right = p.sessions.is_empty();
     loop {
-        terminal.draw(|f| p.render(f))?;
+        terminal.draw(|f| p.render(f, theme))?;
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
             && let Some(done) = p.key(key, store, repo)?
@@ -245,7 +247,7 @@ impl Picker {
         }
     }
 
-    fn render(&self, f: &mut Frame) {
+    fn render(&self, f: &mut Frame, theme: &Theme) {
         let [body, foot] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
         let panes: [_; 2] =
@@ -280,30 +282,26 @@ impl Picker {
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
                     let mark = if checked { "▌▣ " } else { " ▢ " };
                     Line::from(vec![
-                        Span::styled(mark, Style::new().fg(Color::Yellow)),
+                        Span::styled(mark, Style::new().fg(theme.accent)),
                         text,
                     ])
                 })
                 .collect();
-            let border = if focused {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            };
+            let border = if focused { theme.accent } else { theme.dim };
             let block = Block::bordered()
                 .title(title)
                 .border_style(Style::new().fg(border));
             f.render_widget(Paragraph::new(lines).block(block), area);
         }
         let (text, style) = if let Some(e) = &self.error {
-            (e.clone(), Style::new().fg(Color::Red))
+            (e.clone(), Style::new().fg(theme.red))
         } else if self.deleting {
             (
                 "delete this session? y/n".to_string(),
-                Style::new().fg(Color::Black).bg(Color::Yellow),
+                Style::new().fg(theme.on_accent).bg(theme.accent),
             )
         } else {
-            (HINTS.to_string(), Style::new().fg(Color::DarkGray))
+            (HINTS.to_string(), Style::new().fg(theme.dim))
         };
         f.render_widget(Paragraph::new(text).style(style), foot);
     }

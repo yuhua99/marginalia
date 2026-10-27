@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
@@ -12,6 +12,7 @@ use crate::highlight::Highlighter;
 use crate::repo::Repo;
 use crate::session::Session;
 use crate::store::Store;
+use crate::theme::Theme;
 use crate::ui::review::Review;
 
 /// State shared by all layers; layers keep only their own UI state.
@@ -29,6 +30,7 @@ pub struct Ctx {
     /// First and last of the `views` shown together (oldest to newest).
     pub view: (usize, usize),
     pub highlighter: Highlighter,
+    pub theme: &'static Theme,
     /// The doc of the file view layer while it is open.
     pub file: Option<Doc>,
 }
@@ -43,7 +45,12 @@ pub enum View {
 }
 
 impl Ctx {
-    pub fn new(session: Session, mut repo: Repo, store: Store) -> Result<Ctx> {
+    pub fn new(
+        session: Session,
+        mut repo: Repo,
+        store: Store,
+        theme: &'static Theme,
+    ) -> Result<Ctx> {
         let outdated = session.outdated(&mut repo)?;
         let mut views = vec![View::All];
         for (sha, subject) in repo.commits(&session.base, &session.end)? {
@@ -63,6 +70,7 @@ impl Ctx {
             views,
             view: (0, 0),
             highlighter: Highlighter::new(),
+            theme,
             file: None,
         })
     }
@@ -164,7 +172,7 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
                 head,
             );
             f.render_widget(
-                Paragraph::new(HINTS).style(Style::new().fg(Color::DarkGray)),
+                Paragraph::new(HINTS).style(Style::new().fg(ctx.theme.dim)),
                 foot,
             );
             for layer in &mut layers {

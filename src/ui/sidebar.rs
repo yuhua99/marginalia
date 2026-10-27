@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
@@ -122,7 +122,7 @@ impl Sidebar {
                 if item.waiting > 0 {
                     spans.push(Span::styled(
                         format!(" ●{}", item.waiting),
-                        Style::new().fg(Color::Yellow),
+                        Style::new().fg(ctx.theme.accent),
                     ));
                 }
                 Line::from(spans)

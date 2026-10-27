@@ -5,6 +5,7 @@ mod keymap;
 mod repo;
 mod session;
 mod store;
+mod theme;
 mod ui;
 
 use std::io::{IsTerminal, Read, Write};
@@ -139,15 +140,16 @@ fn need_terminal() -> Result<()> {
 
 /// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
 fn tui(store: Store, mut repo: Repo, session: Option<Session>) -> Result<()> {
+    let theme = &theme::ANSI;
     let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
         let session = match session {
             Some(session) => session,
-            None => match ui::picker::run(terminal, &store, &mut repo)? {
+            None => match ui::picker::run(terminal, &store, &mut repo, theme)? {
                 Some(session) => session,
                 None => return Ok(None),
             },
         };
-        let mut ctx = app::Ctx::new(session, repo, store)?;
+        let mut ctx = app::Ctx::new(session, repo, store, theme)?;
         app::run(terminal, &mut ctx)?;
         Ok(Some(ctx))
     })?;
