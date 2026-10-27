@@ -76,6 +76,9 @@ impl Review {
 
 impl Component for Review {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
+        if self.diff.draft_key(key, ctx)? {
+            return Ok(Outcome::Consumed);
+        }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
         };
@@ -123,10 +126,13 @@ impl Component for Review {
                     }
                     ("comment", entry) => {
                         if let Some(anchor) = entry.anchor(ctx) {
-                            return Ok(Outcome::Push(Box::new(Input::comment(
-                                anchor,
-                                &ctx.session,
-                            ))));
+                            // Under the file's header, or the session's for commits.
+                            let row = match entry {
+                                Entry::File(file) => ctx.doc.file_row(file),
+                                _ => 0,
+                            };
+                            self.diff.start(row, Input::comment(anchor, &ctx.session));
+                            self.focus = DIFF;
                         }
                     }
                     _ => list.act(action, ctx),
@@ -135,6 +141,10 @@ impl Component for Review {
             _ => return self.diff.act(action, ctx),
         }
         Ok(Outcome::Consumed)
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.diff.paste(text);
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {

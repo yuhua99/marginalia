@@ -50,6 +50,9 @@ impl FileView {
 
 impl Component for FileView {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
+        if self.view.draft_key(key, ctx)? {
+            return Ok(Outcome::Consumed);
+        }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
         };
@@ -64,6 +67,10 @@ impl Component for FileView {
             }
             _ => self.view.act(action, ctx),
         }
+    }
+
+    fn paste(&mut self, text: &str) {
+        self.view.paste(text);
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
