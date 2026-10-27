@@ -14,12 +14,27 @@ use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::ui::check;
+use crate::ui::help::{self, Entry};
+use crate::ui::popup::Popup;
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-const HINTS: &str =
-    " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  q quit";
+const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  ? help  q quit";
+
+const HELP: &[Entry] = &[
+    (&["down", "up"], "move"),
+    (&["half_page_down", "half_page_up"], "half page down / up"),
+    (&["top", "bottom"], "top / bottom"),
+    (&["focus_left", "focus_right"], "sessions / new review"),
+    (&["check"], "check rows of a new range"),
+    (&["open"], "resume the session, or review the checked rows"),
+    (&["filter"], "filter; Enter ends typing, Esc clears"),
+    (&["delete_session"], "delete the session"),
+    (&["cancel"], "clear the checks, then the filter"),
+    (&["help"], "this help"),
+    (&["quit"], "quit"),
+];
 
 /// What `mrg` shows first: sessions to resume on the left, a new range on the right
 /// (rows checked with Space, or the cursor row). Returns the session to open, or None to quit.
@@ -59,6 +74,8 @@ struct Picker {
     typing: bool,
     /// Checked rows of the range pane, top..=bottom into all its rows.
     checked: Option<(usize, usize)>,
+    /// The `?` popup.
+    help: Option<Popup>,
     /// Waiting for y/n to delete the session at the cursor.
     deleting: bool,
     error: Option<String>,
@@ -132,6 +149,14 @@ impl Picker {
             }
             return Ok(None);
         }
+        if let Some(popup) = &mut self.help {
+            match self.keymap.feed(key) {
+                Feed::Action("help" | "quit" | "cancel") => self.help = None,
+                Feed::Action(action) => popup.act(action),
+                _ => {}
+            }
+            return Ok(None);
+        }
         if self.typing {
             match key.code {
                 KeyCode::Char(c) => self.filter[pane].push(c),
@@ -147,17 +172,6 @@ impl Picker {
             }
             self.cursor[pane] = 0;
             return Ok(None);
-        }
-        match key.code {
-            KeyCode::Char('/') => {
-                self.typing = true;
-                return Ok(None);
-            }
-            KeyCode::Char('X') if !self.right => {
-                self.deleting = at.is_some();
-                return Ok(None);
-            }
-            _ => {}
         }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(None);
@@ -182,6 +196,9 @@ impl Picker {
                     }
                 }
             }
+            "filter" => self.typing = true,
+            "delete_session" if !self.right => self.deleting = at.is_some(),
+            "help" => self.help = Some(help::popup(HELP)),
             "focus_left" => self.right = false,
             "focus_right" => self.right = true,
             "quit" => return Ok(Some(None)),
@@ -304,6 +321,9 @@ impl Picker {
             (HINTS.to_string(), Style::new().fg(theme.dim))
         };
         f.render_widget(Paragraph::new(text).style(style), foot);
+        if let Some(popup) = &self.help {
+            popup.render(f, f.area(), theme);
+        }
     }
 }
 

@@ -8,6 +8,28 @@ use crate::app::{Component, Ctx, Outcome};
 use crate::doc::Doc;
 use crate::keymap::{Feed, Keymap};
 use crate::ui::diff_view::DiffView;
+use crate::ui::help::{Entry, Help};
+
+const HELP: &[Entry] = &[
+    (&["down", "up"], "move"),
+    (&["half_page_down", "half_page_up"], "half page down / up"),
+    (&["top", "bottom"], "top / bottom"),
+    (
+        &["next_waiting", "prev_waiting"],
+        "next / previous thread waiting on you",
+    ),
+    (&["open"], "follow a thread's link"),
+    (&["select"], "select lines"),
+    (&["comment"], "comment; on a thread, reply"),
+    (&["reply"], "reply to the thread"),
+    (&["resolve"], "resolve or reopen the thread"),
+    (
+        &["edit", "delete"],
+        "edit / delete your last unanswered message",
+    ),
+    (&["help"], "this help"),
+    (&["quit", "cancel"], "back to the diff"),
+];
 
 /// A whole file at the range end, opened from a link; `q` / `Esc` go back.
 pub struct FileView {
@@ -30,6 +52,7 @@ impl Component for FileView {
             return Ok(Outcome::Consumed);
         };
         match action {
+            "help" => Ok(Outcome::Push(Box::new(Help::new(HELP)))),
             "quit" | "cancel" => {
                 ctx.file = None;
                 Ok(Outcome::Close)

@@ -6,9 +6,38 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use crate::app::{Component, Ctx, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::ui::diff_view::DiffView;
+use crate::ui::help::{self, Help};
 use crate::ui::input::Input;
 use crate::ui::quit_prompt::QuitPrompt;
 use crate::ui::sidebar::{Entry, Sidebar};
+
+const HELP: &[help::Entry] = &[
+    (&["down", "up"], "move"),
+    (&["half_page_down", "half_page_up"], "half page down / up"),
+    (&["top", "bottom"], "top / bottom"),
+    (
+        &["next_waiting", "prev_waiting"],
+        "next / previous thread waiting on you",
+    ),
+    (&["next_file", "prev_file"], "next / previous file"),
+    (&["focus_left", "focus_right"], "focus sidebar / diff"),
+    (
+        &["open"],
+        "expand fold, follow a thread's link, open a view or file",
+    ),
+    (&["check"], "check commits in the sidebar to view together"),
+    (&["select"], "select lines"),
+    (&["cancel"], "clear the selection or checks"),
+    (&["comment"], "comment; on a thread, reply"),
+    (&["reply"], "reply to the thread"),
+    (&["resolve"], "resolve or reopen the thread"),
+    (
+        &["edit", "delete"],
+        "edit / delete your last unanswered message",
+    ),
+    (&["help"], "this help"),
+    (&["quit"], "quit"),
+];
 
 /// The bottom layer: sidebar on the left, diff on the right; `h` / `l` move the focus.
 #[derive(Default)]
@@ -27,6 +56,7 @@ impl Component for Review {
         match action {
             "focus_left" => self.sidebar_focused = true,
             "focus_right" => self.sidebar_focused = false,
+            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
             "quit" => {
                 if ctx.session.on_quit.is_none()
                     && ctx.session.markdown(&ctx.doc.thread_order()).is_some()

@@ -37,6 +37,9 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("e", "edit"),
     ("d", "delete"),
     ("q", "quit"),
+    ("?", "help"),
+    ("/", "filter"),
+    ("X", "delete_session"),
 ];
 
 impl Default for Keymap {
@@ -76,6 +79,16 @@ impl Keymap {
         self.pending.clear();
         if retry { self.feed(key) } else { Feed::Unbound }
     }
+}
+
+/// The keys bound to `action`, such as `g g`.
+pub fn keys(action: &str) -> String {
+    DEFAULTS
+        .iter()
+        .filter(|(_, a)| *a == action)
+        .map(|(keys, _)| *keys)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `x`, `G`, `C-x`, `Esc`, `Enter` or `Space`.

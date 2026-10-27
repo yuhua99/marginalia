@@ -132,7 +132,7 @@ pub trait Component {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
 }
 
-const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  q quit";
+const HINTS: &str = " c comment  r reply  x resolve  e/d edit/delete  n/N next waiting  v select  J/K file  h/l focus  Space check  Enter open  ? help  q quit";
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];

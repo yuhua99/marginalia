@@ -1,8 +1,10 @@
 pub mod delete_prompt;
 pub mod diff_view;
 pub mod file_view;
+pub mod help;
 pub mod input;
 pub mod picker;
+pub mod popup;
 pub mod quit_prompt;
 pub mod review;
 pub mod sidebar;
