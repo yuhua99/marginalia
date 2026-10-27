@@ -8,8 +8,8 @@ use crate::app::{Ctx, View};
 use crate::session::{Anchor, Thread};
 use crate::ui::{boxed, check};
 
-/// A box left of the diff: the views (all, each commit, uncommitted), where Space checks
-/// a run of commits to view together; or the files of the shown diff as a tree.
+/// A box: the commits (and uncommitted changes), `[x]` on those shown, where Space checks
+/// another run for Enter to show; or the files of the shown diff as a tree.
 #[derive(Default)]
 pub struct Sidebar {
     files: bool,
@@ -81,14 +81,11 @@ impl Sidebar {
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
         let last = self.items(ctx).len().saturating_sub(1);
         match action {
-            // `all` (view 0) is not a commit to check.
             "check" => {
-                if let Entry::View(v) = self.entry(ctx)
-                    && v > 0
-                {
+                if let Entry::View(v) = self.entry(ctx) {
                     self.checked = check(self.checked, v);
                     if self.checked.is_some() {
-                        self.cursor = (self.cursor + 1).min(ctx.views.len() - 1);
+                        self.cursor = (self.cursor + 1).min(last);
                     }
                 }
                 return;
@@ -124,9 +121,6 @@ impl Sidebar {
             .take(self.height)
             .map(|(i, item)| {
                 let mut style = Style::new();
-                if matches!(item.entry, Entry::View(v) if (ctx.view.0..=ctx.view.1).contains(&v)) {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
                 if i == self.cursor {
                     style = if focused {
                         style.add_modifier(Modifier::REVERSED)
@@ -154,40 +148,32 @@ impl Sidebar {
 
 fn views(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
     let threads = &ctx.session.threads;
+    let within = |range: (usize, usize), v| (range.0..=range.1).contains(&v);
+    // View 0, all, is every row checked.
     ctx.views
         .iter()
         .enumerate()
+        .skip(1)
         .map(|(v, view)| {
-            let mark = if (ctx.view.0..=ctx.view.1).contains(&v) {
-                '>'
-            } else {
-                ' '
+            // Checking shows the checks until Enter shows them or Esc drops them.
+            let on = match checked {
+                Some(range) => within(range, v),
+                None => ctx.view == (0, 0) || within(ctx.view, v),
             };
-            // `all` (view 0) can't be checked.
-            let check = match v {
-                0 => "   ",
-                _ if checked.is_some_and(|(first, last)| (first..=last).contains(&v)) => "[x]",
-                _ => "[ ]",
-            };
+            let check = if on { "[x]" } else { "[ ]" };
             let (text, waiting) = match view {
-                View::All => (
-                    "all".to_string(),
-                    count(threads, |rev| {
-                        rev == ctx.session.base || rev == ctx.session.end
-                    }),
-                ),
                 View::Commit { sha, subject } => (
                     format!("{} {subject}", &sha[..7]),
                     count(threads, |rev| rev == sha),
                 ),
-                View::Uncommitted => (
+                _ => (
                     ctx.session.end.clone(),
                     count(threads, |rev| rev == ctx.session.end),
                 ),
             };
             Item {
                 entry: Entry::View(v),
-                text: format!("{mark}{check} {text}"),
+                text: format!("{check} {text}"),
                 waiting,
             }
         })

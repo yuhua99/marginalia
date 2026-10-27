@@ -26,13 +26,13 @@ const HELP: &[help::Entry] = &[
     (&["next_file", "prev_file"], "next / previous file"),
     (
         &["focus_left", "focus_right"],
-        "focus files <- commits <- diff",
+        "focus commits <- files <- diff",
     ),
     (
         &["open"],
-        "expand fold, follow a thread's link, open a view or file",
+        "expand fold, follow a thread's link, show the checked commits (or this one) or open a file",
     ),
-    (&["check"], "check commits to view together"),
+    (&["check"], "check commits for Enter to show together"),
     (&["select"], "select lines"),
     (&["cancel"], "clear the selection or checks"),
     (&["comment"], "comment; on a thread, reply"),
@@ -48,19 +48,19 @@ const HELP: &[help::Entry] = &[
     (&["quit"], "quit"),
 ];
 
-/// The bottom layer: commits over files on the left, the diff on the right.
-/// `h` / `l` move the focus along files, commits, diff.
+/// The bottom layer: commits across the top, files and the diff below.
+/// `h` / `l` move the focus along commits, files, diff.
 pub struct Review {
     commits: Sidebar,
     files: Sidebar,
     diff: DiffView,
-    /// 0 files, 1 commits, 2 diff.
+    /// 0 commits, 1 files, 2 diff.
     focus: usize,
     keymap: Keymap,
 }
 
-const FILES: usize = 0;
-const COMMITS: usize = 1;
+const COMMITS: usize = 0;
+const FILES: usize = 1;
 const DIFF: usize = 2;
 
 impl Review {
@@ -110,7 +110,12 @@ impl Component for Review {
                 };
                 match (action, list.entry(ctx)) {
                     ("open", Entry::View(view)) => {
-                        ctx.show(self.commits.take_checked().unwrap_or((view, view)))?;
+                        let mut range = self.commits.take_checked().unwrap_or((view, view));
+                        // Every row is all.
+                        if range == (1, ctx.views.len() - 1) {
+                            range = (0, 0);
+                        }
+                        ctx.show(range)?;
                         self.diff = DiffView::default();
                     }
                     ("open", Entry::File(file)) => {
@@ -134,14 +139,14 @@ impl Component for Review {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        let [left, right] =
-            Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(area);
-        // Commits as tall as their rows, up to 40%.
-        let commits = (ctx.views.len() as u16 + 2).min(left.height * 2 / 5);
+        // Commits as tall as their rows, up to 4.
+        let rows = (ctx.views.len() - 1).min(4) as u16;
         let [top, bottom] =
-            Layout::vertical([Constraint::Length(commits), Constraint::Fill(1)]).areas(left);
+            Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
+        let [left, right] =
+            Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(bottom);
         self.commits.render(f, top, ctx, self.focus == COMMITS);
-        self.files.render(f, bottom, ctx, self.focus == FILES);
+        self.files.render(f, left, ctx, self.focus == FILES);
         let block = boxed(
             Span::styled(header(ctx), Style::new().add_modifier(Modifier::BOLD)),
             self.focus == DIFF,
@@ -164,9 +169,8 @@ fn header(ctx: &Ctx) -> String {
         s.waiting_on_user_count()
     );
     let label = |v: usize| match &ctx.views[v] {
-        View::All => "all",
         View::Commit { sha, .. } => &sha[..7],
-        View::Uncommitted => &s.end,
+        _ => &s.end,
     };
     match ctx.view {
         (0, 0) => {}
