@@ -74,6 +74,9 @@ enum Cmd {
     Show {
         #[arg(long)]
         session: String,
+        /// Only threads waiting on the agent, or open ones whose anchored lines changed since
+        #[arg(long, value_parser = ["waiting", "outdated"])]
+        only: Option<String>,
     },
     /// List sessions of the current repo as JSON
     List,
@@ -135,11 +138,17 @@ fn main() -> Result<()> {
             session.close(&threads, true)?;
             store.save(&session)
         }
-        Some(Cmd::Show { session }) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&store.load(&session)?.view(&mut repo)?)?
-            );
+        Some(Cmd::Show { session, only }) => {
+            let mut view = store.load(&session)?.view(&mut repo)?;
+            if let Some(only) = only {
+                let threads = view["threads"].as_array_mut().expect("threads array");
+                threads.retain(|t| match only.as_str() {
+                    "waiting" => t["waiting_on"] == "agent",
+                    // Open ones; resolved threads are done with.
+                    _ => t["outdated"] == true && !t["waiting_on"].is_null(),
+                });
+            }
+            println!("{}", serde_json::to_string_pretty(&view)?);
             Ok(())
         }
         Some(Cmd::List) => {

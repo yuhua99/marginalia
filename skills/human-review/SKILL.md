@@ -14,7 +14,7 @@ Run every command from the repo root; sessions belong to the repo.
 - `mrg comment --session ID FILE` (`-` for stdin) posts `{"from": "agent", "comments": [...]}`. Each comment has `body` and exactly one of `reply_to: "<thread id>"` or `anchor`:
   - `{"kind": "session"}`, `{"kind": "commit", "commit": REV}`, `{"kind": "file", "file": PATH}`
   - `{"kind": "lines", "file": PATH, "start": N, "end": M}` anchors new-side lines at the range end. Add `"rev": BASE` (`base` in `mrg show`) for deleted lines.
-- `mrg show --session ID` prints the session as JSON.
+- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you, `--only outdated` those whose lines changed since.
 - `mrg resolve|delete --session ID THREAD...` closes threads you started; `delete` only those the user never replied to.
 - `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits.
 
@@ -40,7 +40,7 @@ Ask once if the scope is missing.
    - File anchors: only context not already covered by the session or lines comments.
 
 4. Follow-up:
-   - `waiting on agent` → `mrg show`; for each thread waiting on you, answer or fix, then reply in it with `reply_to`. Leave resolving the user's threads to the user. For your threads the fix made wrong: `delete`, or `resolve` if the user replied. Post replies and comments on any new delta, then `review-tab` the same ID.
+   - `waiting on agent` → `mrg show --only waiting`; for each thread, answer or fix, then reply in it with `reply_to`. Leave resolving the user's threads to the user. After fixing, check your threads in `mrg show --only outdated`: `delete` the ones the fix made wrong, or `resolve` them if the user replied. Post replies and comments on any new delta, then `review-tab` the same ID.
    - `quit with N threads open` → ask whether to `review-tab` it again.
 
 ## Gotchas
