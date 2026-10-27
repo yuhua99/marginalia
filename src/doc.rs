@@ -15,6 +15,8 @@ pub struct Doc {
     /// (old_path, new_path) per file.
     paths: Vec<(String, String)>,
     rows: Vec<Row>,
+    /// One whole file in one column (`Doc::file`), showing only the threads on it.
+    single: bool,
 }
 
 pub enum Row {
@@ -175,7 +177,47 @@ impl Doc {
             right_rev,
             paths,
             rows,
+            single: false,
         }
+    }
+
+    /// `path` at `rev` with content `text`, every line as a right side.
+    pub fn file(rev: String, path: String, text: &str) -> Doc {
+        let header = Row::File {
+            file: 0,
+            status: ' ',
+            path: path.clone(),
+            note: None,
+        };
+        let lines = text.lines().enumerate().map(|(i, line)| Row::Code {
+            file: 0,
+            left: None,
+            right: Some(Side {
+                lineno: i as u32 + 1,
+                kind: Kind::Ctx,
+                text: line.to_string(),
+                emph: Vec::new(),
+            }),
+        });
+        Doc {
+            left_rev: rev.clone(),
+            right_rev: rev,
+            paths: vec![(path.clone(), path)],
+            rows: [header].into_iter().chain(lines).collect(),
+            single: true,
+        }
+    }
+
+    pub fn single(&self) -> bool {
+        self.single
+    }
+
+    /// The row of right-side line `line`, or the last row.
+    pub fn line_row(&self, line: u32) -> usize {
+        self.rows
+            .iter()
+            .position(|r| matches!(r, Row::Code { right: Some(s), .. } if s.lineno == line))
+            .unwrap_or(self.rows.len() - 1)
     }
 
     /// Replaces the thread rows.
@@ -202,9 +244,11 @@ impl Doc {
                 rows.extend(at.remove(&spot).into_iter().flatten().map(thread_row));
             }
         }
-        let mut rest: Vec<usize> = at.into_values().flatten().collect();
-        rest.sort();
-        rows.splice(1..1, rest.into_iter().map(thread_row));
+        if !self.single {
+            let mut rest: Vec<usize> = at.into_values().flatten().collect();
+            rest.sort();
+            rows.splice(1..1, rest.into_iter().map(thread_row));
+        }
         self.rows = rows;
     }
 

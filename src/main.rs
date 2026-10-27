@@ -67,7 +67,10 @@ fn main() -> Result<()> {
     let mut repo = Repo::open()?;
     let store = Store::open(&repo.key())?;
     match cli.cmd {
-        None => bail!("`mrg` without arguments is not implemented yet; use `mrg new RANGE`"),
+        None => {
+            need_terminal()?;
+            tui(store, repo, None)
+        }
         Some(Cmd::New { range, on_quit }) => {
             let (base, end) = repo.resolve(&range)?;
             let session = Session::new(store.new_id(), range, base, end, on_quit);
@@ -91,16 +94,14 @@ fn main() -> Result<()> {
             store.save(&session)
         }
         Some(Cmd::Resume { session, on_quit }) => {
-            if !std::io::stdout().is_terminal() {
-                bail!("mrg resume needs a terminal");
-            }
+            need_terminal()?;
             let mut session = store.load(&session)?;
             repo.verify(&session.base, &session.end)?;
             if on_quit.is_some() {
                 session.on_quit = on_quit;
                 store.save(&session)?;
             }
-            open(store, repo, session)
+            tui(store, repo, Some(session))
         }
         Some(Cmd::Show { session }) => {
             println!(
@@ -129,9 +130,30 @@ fn main() -> Result<()> {
     }
 }
 
-fn open(store: Store, repo: Repo, session: Session) -> Result<()> {
-    let mut ctx = app::Ctx::new(session, repo, store)?;
-    app::run(&mut ctx)?;
+fn need_terminal() -> Result<()> {
+    if !std::io::stdout().is_terminal() {
+        bail!("mrg needs a terminal");
+    }
+    Ok(())
+}
+
+/// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
+fn tui(store: Store, mut repo: Repo, session: Option<Session>) -> Result<()> {
+    let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
+        let session = match session {
+            Some(session) => session,
+            None => match ui::picker::run(terminal, &store, &mut repo)? {
+                Some(session) => session,
+                None => return Ok(None),
+            },
+        };
+        let mut ctx = app::Ctx::new(session, repo, store)?;
+        app::run(terminal, &mut ctx)?;
+        Ok(Some(ctx))
+    })?;
+    let Some(ctx) = ctx else {
+        return Ok(());
+    };
     let session = &ctx.session;
     if ctx.copy
         && let Some(md) = session.markdown(&ctx.doc.thread_order())

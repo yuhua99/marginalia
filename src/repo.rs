@@ -238,13 +238,19 @@ impl Repo {
 
     /// Commits in `base..end`, oldest first, as (sha, subject).
     pub fn commits(&self, base: &str, end: &str) -> Result<Vec<(String, String)>> {
-        let out = run(&mut self.git(&[
-            "log",
-            "--first-parent",
-            "--reverse",
-            "--format=%H %s",
-            &format!("{base}..{}", tip(end)),
-        ]))?;
+        self.log(&["--reverse", &format!("{base}..{}", tip(end))])
+    }
+
+    /// Up to `n` commits back from HEAD, newest first, as (sha, subject).
+    pub fn recent(&self, n: usize) -> Result<Vec<(String, String)>> {
+        self.log(&["-n", &n.to_string(), "HEAD"])
+    }
+
+    /// First-parent `git log` as (sha, subject).
+    fn log(&self, args: &[&str]) -> Result<Vec<(String, String)>> {
+        let mut log = vec!["log", "--first-parent", "--format=%H %s"];
+        log.extend(args);
+        let out = run(&mut self.git(&log))?;
         Ok(String::from_utf8_lossy(&out)
             .lines()
             .map(|l| {

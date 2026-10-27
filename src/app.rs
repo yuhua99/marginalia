@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
+use ratatui::{DefaultTerminal, Frame};
 
 use crate::doc::Doc;
 use crate::highlight::Highlighter;
@@ -29,6 +29,8 @@ pub struct Ctx {
     /// Index into `views` of the diff shown.
     pub view: usize,
     pub highlighter: Highlighter,
+    /// The doc of the file view layer while it is open.
+    pub file: Option<Doc>,
 }
 
 pub enum View {
@@ -61,6 +63,7 @@ impl Ctx {
             views,
             view: 0,
             highlighter: Highlighter::new(),
+            file: None,
         })
     }
 
@@ -76,6 +79,9 @@ impl Ctx {
         self.outdated.resize(self.session.threads.len(), false);
         self.store.save(&self.session)?;
         self.doc.set_threads(&self.session.threads);
+        if let Some(file) = &mut self.file {
+            file.set_threads(&self.session.threads);
+        }
         Ok(())
     }
 }
@@ -107,64 +113,60 @@ pub trait Component {
 
 const HINTS: &str = " c comment  r reply  x resolve  n/N next waiting  v select  J/K file  h/l focus  Enter open  q quit";
 
-pub fn run(ctx: &mut Ctx) -> Result<()> {
+pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::default())];
-    ratatui::run(|terminal| {
-        'draw: loop {
-            ctx.highlighter.receive();
-            terminal.draw(|f| {
-                let [head, body, foot] = Layout::vertical([
-                    Constraint::Length(1),
-                    Constraint::Fill(1),
-                    Constraint::Length(1),
-                ])
-                .areas(f.area());
-                let s = &ctx.session;
-                let mut header = format!(
-                    "mrg  {} · {} · {} open · {} 等你",
-                    s.range,
-                    s.id,
-                    s.open_count(),
-                    s.waiting_on_user_count()
-                );
-                match &ctx.views[ctx.view] {
-                    View::All => {}
-                    View::Commit { sha, .. } => {
-                        header.push_str(&format!(" · viewing {}", &sha[..7]))
-                    }
-                    View::Uncommitted => header.push_str(&format!(" · viewing {}", s.end)),
-                }
-                f.render_widget(
-                    Paragraph::new(header).style(Style::new().add_modifier(Modifier::BOLD)),
-                    head,
-                );
-                f.render_widget(
-                    Paragraph::new(HINTS).style(Style::new().fg(Color::DarkGray)),
-                    foot,
-                );
-                for layer in &mut layers {
-                    layer.render(f, body, ctx);
-                }
-            })?;
-            ctx.highlighter.flush(&mut ctx.repo);
-            // Wait for a key, redrawing as colors arrive.
-            while ctx.highlighter.busy() && !event::poll(Duration::from_millis(30))? {
-                if ctx.highlighter.receive() {
-                    continue 'draw;
-                }
+    'draw: loop {
+        ctx.highlighter.receive();
+        terminal.draw(|f| {
+            let [head, body, foot] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Fill(1),
+                Constraint::Length(1),
+            ])
+            .areas(f.area());
+            let s = &ctx.session;
+            let mut header = format!(
+                "mrg  {} · {} · {} open · {} 等你",
+                s.range,
+                s.id,
+                s.open_count(),
+                s.waiting_on_user_count()
+            );
+            match &ctx.views[ctx.view] {
+                View::All => {}
+                View::Commit { sha, .. } => header.push_str(&format!(" · viewing {}", &sha[..7])),
+                View::Uncommitted => header.push_str(&format!(" · viewing {}", s.end)),
             }
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                match layers.last_mut().unwrap().handle_key(key, ctx)? {
-                    Outcome::Consumed => {}
-                    Outcome::Push(layer) => layers.push(layer),
-                    Outcome::Close => {
-                        layers.pop();
-                    }
-                    Outcome::Quit => return Ok(()),
-                }
+            f.render_widget(
+                Paragraph::new(header).style(Style::new().add_modifier(Modifier::BOLD)),
+                head,
+            );
+            f.render_widget(
+                Paragraph::new(HINTS).style(Style::new().fg(Color::DarkGray)),
+                foot,
+            );
+            for layer in &mut layers {
+                layer.render(f, body, ctx);
+            }
+        })?;
+        ctx.highlighter.flush(&mut ctx.repo);
+        // Wait for a key, redrawing as colors arrive.
+        while ctx.highlighter.busy() && !event::poll(Duration::from_millis(30))? {
+            if ctx.highlighter.receive() {
+                continue 'draw;
             }
         }
-    })
+        if let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match layers.last_mut().unwrap().handle_key(key, ctx)? {
+                Outcome::Consumed => {}
+                Outcome::Push(layer) => layers.push(layer),
+                Outcome::Close => {
+                    layers.pop();
+                }
+                Outcome::Quit => return Ok(()),
+            }
+        }
+    }
 }

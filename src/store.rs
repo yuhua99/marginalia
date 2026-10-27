@@ -65,10 +65,17 @@ impl Store {
                 .modified()?
                 .duration_since(UNIX_EPOCH)?
                 .as_secs();
-            out.push((self.load(&id)?, updated));
+            let session = self
+                .load(&id)
+                .with_context(|| format!("load {}", path.display()))?;
+            out.push((session, updated));
         }
         out.sort_by(|a, b| b.1.cmp(&a.1));
         Ok(out)
+    }
+
+    pub fn delete(&self, id: &str) -> Result<()> {
+        fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))
     }
 
     fn path(&self, id: &str) -> PathBuf {

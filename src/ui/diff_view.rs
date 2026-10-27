@@ -10,10 +10,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Ctx, Outcome};
-use crate::doc::{Row, Side};
+use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::Kind;
 use crate::session::{Status, Thread};
+use crate::ui::file_view::{self, FileView};
 use crate::ui::input::Input;
 
 const TAB: &str = "    ";
@@ -30,6 +31,8 @@ pub struct DiffView {
     overflow: bool,
     /// Start of a `v` selection.
     mark: Option<usize>,
+    /// Shows `ctx.file` instead of `ctx.doc`.
+    file: bool,
 }
 
 /// What a row draws: full width, or the two halves of a code row with their styles.
@@ -54,8 +57,26 @@ impl DiffView {
         mark.min(self.cursor)..=mark.max(self.cursor)
     }
 
+    /// A view of `ctx.file` with lines `start..=end` selected.
+    pub fn file(start: usize, end: usize) -> DiffView {
+        DiffView {
+            cursor: end,
+            mark: (start != end).then_some(start),
+            file: true,
+            ..DiffView::default()
+        }
+    }
+
+    fn doc<'a>(&self, ctx: &'a Ctx) -> &'a Doc {
+        if self.file {
+            ctx.file.as_ref().expect("file view without ctx.file")
+        } else {
+            &ctx.doc
+        }
+    }
+
     fn thread_at_cursor(&self, ctx: &Ctx) -> Option<usize> {
-        match ctx.doc.window(self.cursor, 1).first() {
+        match self.doc(ctx).window(self.cursor, 1).first() {
             Some(Row::Thread { idx }) => Some(*idx),
             _ => None,
         }
@@ -67,7 +88,7 @@ impl DiffView {
     }
 
     pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
-        let last = ctx.doc.len() - 1;
+        let last = self.doc(ctx).len() - 1;
         let half = (self.height / 2).max(1);
         // Inside a cursor row taller than the screen, j / k scroll the row first.
         let scrolled = self.top == self.cursor && self.off > 0;
@@ -83,7 +104,7 @@ impl DiffView {
             "top" => self.cursor = 0,
             "bottom" => self.cursor = last,
             "next_waiting" | "prev_waiting" => {
-                if let Some(i) = ctx.doc.next_waiting(
+                if let Some(i) = self.doc(ctx).next_waiting(
                     self.cursor,
                     action == "next_waiting",
                     &ctx.session.threads,
@@ -92,11 +113,25 @@ impl DiffView {
                 }
             }
             "next_file" | "prev_file" => {
-                if let Some(i) = ctx.doc.next_file(self.cursor, action == "next_file") {
+                if let Some(i) = self.doc(ctx).next_file(self.cursor, action == "next_file") {
                     self.cursor = i;
                 }
             }
             "open" => {
+                // On a thread: follow its first link to a file view.
+                if let Some(idx) = self.thread_at_cursor(ctx) {
+                    if let Some((start, end)) = file_view::follow(ctx, idx)? {
+                        if self.file {
+                            *self = DiffView::file(start, end);
+                        } else {
+                            return Ok(Outcome::Push(Box::new(FileView::new(start, end))));
+                        }
+                    }
+                    return Ok(Outcome::Consumed);
+                }
+                if self.file {
+                    return Ok(Outcome::Consumed);
+                }
                 let row = ctx
                     .doc
                     .expand(self.cursor, &ctx.session.threads, |rev, path| {
@@ -118,7 +153,7 @@ impl DiffView {
                     return Ok(Outcome::Push(Box::new(Input::reply(idx, &ctx.session))));
                 }
                 if action == "comment" {
-                    let anchor = ctx.doc.anchor_at(self.selection());
+                    let anchor = self.doc(ctx).anchor_at(self.selection());
                     self.mark = None;
                     return Ok(Outcome::Push(Box::new(Input::comment(
                         anchor,
@@ -143,11 +178,12 @@ impl DiffView {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        let doc = &ctx.doc;
+        let doc = self.doc(ctx);
         self.cursor = self.cursor.min(doc.len() - 1);
         self.height = area.height as usize;
         let (h, cursor, selection) = (self.height, self.cursor, self.selection());
-        let draw = |i: usize| draw_row(ctx, i, area.width, i == cursor, selection.contains(&i));
+        let draw =
+            |i: usize| draw_row(ctx, doc, i, area.width, i == cursor, selection.contains(&i));
         let height = |i: usize| draw(i).height();
 
         // Keep the cursor row on screen: whole if it fits, else from its start.
@@ -215,7 +251,7 @@ impl DiffView {
     }
 }
 
-fn draw_row(ctx: &Ctx, i: usize, width: u16, at_cursor: bool, selected: bool) -> Drawn {
+fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selected: bool) -> Drawn {
     let mark = |style: Style| {
         if at_cursor {
             style.add_modifier(Modifier::REVERSED)
@@ -226,7 +262,7 @@ fn draw_row(ctx: &Ctx, i: usize, width: u16, at_cursor: bool, selected: bool) ->
     let header = Style::new()
         .bg(Color::Rgb(40, 40, 70))
         .add_modifier(Modifier::BOLD);
-    let text = match &ctx.doc.window(i, 1)[0] {
+    let text = match &doc.window(i, 1)[0] {
         Row::Session => "◆ session".to_string(),
         Row::File {
             status, path, note, ..
@@ -254,11 +290,20 @@ fn draw_row(ctx: &Ctx, i: usize, width: u16, at_cursor: bool, selected: bool) ->
             );
         }
         Row::Code { file, left, right } => {
-            let (left_rev, right_rev) = ctx.doc.revs();
-            let (old_path, new_path) = &ctx.doc.paths()[*file];
+            let (left_rev, right_rev) = doc.revs();
+            let (old_path, new_path) = &doc.paths()[*file];
             let colors = |side: &Option<Side>, rev, path| {
                 side.as_ref().and_then(|_| ctx.highlighter.get(rev, path))
             };
+            if doc.single() {
+                let (lines, style) = code_lines(
+                    right.as_ref(),
+                    colors(right, right_rev, new_path),
+                    width as usize,
+                    selected,
+                );
+                return Drawn::Full(lines, style);
+            }
             let half = width / 2;
             return Drawn::Split([
                 code_lines(
