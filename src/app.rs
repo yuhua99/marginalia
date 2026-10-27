@@ -126,7 +126,7 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
             .areas(f.area());
             let s = &ctx.session;
             let mut header = format!(
-                "mrg  {} · {} · {} open · {} 等你",
+                "mrg  {} · {} · {} open · {} waiting on you",
                 s.range,
                 s.id,
                 s.open_count(),

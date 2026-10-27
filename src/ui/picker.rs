@@ -6,6 +6,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::keymap::{Feed, Keymap};
 use crate::repo::Repo;
 use crate::session::Session;
@@ -67,11 +69,13 @@ impl Picker {
     /// (text, value) of a pane, filtered.
     fn items(&self, pane: usize) -> Vec<(String, String)> {
         let all: Vec<(String, String)> = if pane == 0 {
+            let width = self.sessions.iter().map(|(s, _)| s.range.width()).max();
             self.sessions
                 .iter()
                 .map(|(s, _)| {
+                    let pad = " ".repeat(width.unwrap_or(0) - s.range.width());
                     let text = format!(
-                        "{}  {}  {} open  {} 等你",
+                        "{}  {}{pad}  {:>3} open  {:>3} waiting on you",
                         s.id,
                         s.range,
                         s.open_count(),
