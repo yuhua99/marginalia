@@ -2,6 +2,7 @@ use std::ops::RangeInclusive;
 
 use anyhow::Result;
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -21,7 +22,7 @@ use crate::ui::input::Input;
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
-const INDENT: usize = 5;
+pub const INDENT: usize = 5;
 
 /// Side-by-side diff with a row cursor. Rows wrap; the screen starts `off` lines
 /// into row `top`, which only happens for a cursor row taller than the screen.
@@ -37,6 +38,8 @@ pub struct DiffView {
     mark: Option<usize>,
     /// Shows `ctx.file` instead of `ctx.doc`.
     file: bool,
+    /// A message being written, drawn under this row; it takes all keys.
+    draft: Option<(usize, Input)>,
 }
 
 /// What a row draws: full width with a style, or the two halves of a code row.
@@ -83,6 +86,30 @@ impl DiffView {
         match self.doc(ctx).window(self.cursor, 1).first() {
             Some(Row::Thread { idx }) => Some(*idx),
             _ => None,
+        }
+    }
+
+    /// Starts writing `input` under `row`.
+    pub fn start(&mut self, row: usize, input: Input) {
+        self.cursor = row;
+        self.mark = None;
+        self.draft = Some((row, input));
+    }
+
+    /// Sends `key` to the draft, if there is one.
+    pub fn draft_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<bool> {
+        let Some((_, input)) = &mut self.draft else {
+            return Ok(false);
+        };
+        if let Outcome::Close = input.handle_key(key, ctx)? {
+            self.draft = None;
+        }
+        Ok(true)
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        if let Some((_, input)) = &mut self.draft {
+            input.paste(text);
         }
     }
 
@@ -157,14 +184,12 @@ impl DiffView {
             "cancel" => self.mark = None,
             "comment" => {
                 if let Some(idx) = self.thread_at_cursor(ctx) {
-                    return Ok(Outcome::Push(Box::new(Input::reply(idx, &ctx.session))));
+                    self.start(self.cursor, Input::reply(idx));
+                } else {
+                    let selection = self.selection();
+                    let anchor = self.doc(ctx).anchor_at(selection.clone());
+                    self.start(*selection.end(), Input::comment(anchor, &ctx.session));
                 }
-                let anchor = self.doc(ctx).anchor_at(self.selection());
-                self.mark = None;
-                return Ok(Outcome::Push(Box::new(Input::comment(
-                    anchor,
-                    &ctx.session,
-                ))));
             }
             // Only the user's last message of an open thread, before the agent answers it.
             "edit" | "delete" => {
@@ -172,12 +197,11 @@ impl DiffView {
                     && ctx.session.threads[idx].status == Status::Open
                     && ctx.session.threads[idx].waiting_on() == "agent"
                 {
-                    let next: Box<dyn Component> = if action == "edit" {
-                        Box::new(Input::edit(idx, &ctx.session))
+                    if action == "edit" {
+                        self.start(self.cursor, Input::edit(idx, &ctx.session));
                     } else {
-                        Box::new(DeletePrompt(idx))
-                    };
-                    return Ok(Outcome::Push(next));
+                        return Ok(Outcome::Push(Box::new(DeletePrompt(idx))));
+                    }
                 }
             }
             "resolve" => {
@@ -201,9 +225,19 @@ impl DiffView {
         self.cursor = self.cursor.min(doc.len() - 1);
         self.height = area.height as usize;
         let (h, cursor, selection) = (self.height, self.cursor, self.selection());
-        let draw =
-            |i: usize| draw_row(ctx, doc, i, area.width, i == cursor, selection.contains(&i));
-        let height = |i: usize| draw(i).height();
+        let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
+        let draw = |i: usize| {
+            let (at_cursor, selected) = (i == cursor, selection.contains(&i));
+            draw_row(ctx, doc, i, area.width, at_cursor, selected, editing)
+        };
+        let draft_at = self.draft.as_ref().map(|(row, _)| *row);
+        let draft_height = self
+            .draft
+            .as_ref()
+            .map_or(0, |(_, input)| input.height(area.width as usize));
+        // The draft counts as part of its row, so it stays on screen with the cursor.
+        let height =
+            |i: usize| draw(i).height() + if draft_at == Some(i) { draft_height } else { 0 };
 
         // Keep the cursor row on screen: whole if it fits, else from its start.
         if cursor < self.top {
@@ -232,13 +266,17 @@ impl DiffView {
         } else {
             self.off.min(top_height - 1)
         };
+        // A draft under a row taller than the screen shows from its end.
+        if draft_at == Some(cursor) && self.top == cursor {
+            self.off = top_height.saturating_sub(h);
+        }
         self.overflow = self.top == cursor && top_height - self.off > h;
 
         let half = area.width / 2;
         let (mut y, mut i, mut skip) = (0, self.top, self.off);
         while y < h && i < doc.len() {
             let drawn = draw(i);
-            let shown = (drawn.height() - skip).min(h - y);
+            let shown = drawn.height().saturating_sub(skip).min(h - y);
             let rect = Rect {
                 y: area.y + y as u16,
                 height: shown as u16,
@@ -264,13 +302,35 @@ impl DiffView {
                 }
             }
             y += shown;
+            if draft_at == Some(i)
+                && y < h
+                && let Some((_, input)) = &mut self.draft
+            {
+                let shown = draft_height.min(h - y);
+                let rect = Rect {
+                    y: area.y + y as u16,
+                    height: shown as u16,
+                    ..area
+                };
+                input.render(f, rect, ctx);
+                y += shown;
+            }
             i += 1;
             skip = 0;
         }
     }
 }
 
-fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selected: bool) -> Drawn {
+/// `editing`: the thread whose last message the draft replaces.
+fn draw_row(
+    ctx: &Ctx,
+    doc: &Doc,
+    i: usize,
+    width: u16,
+    at_cursor: bool,
+    selected: bool,
+    editing: Option<usize>,
+) -> Drawn {
     let mark = |style: Style| {
         if at_cursor {
             style.add_modifier(Modifier::REVERSED)
@@ -300,7 +360,14 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
         }
         Row::Thread { idx } => {
             return Drawn::Full(
-                thread_lines(ctx, *idx, at_cursor, !doc.at_top(i), width as usize),
+                thread_lines(
+                    ctx,
+                    *idx,
+                    at_cursor,
+                    !doc.at_top(i),
+                    editing == Some(*idx),
+                    width as usize,
+                ),
                 Style::new().bg(theme.surface),
             );
         }
@@ -439,6 +506,7 @@ fn thread_lines(
     idx: usize,
     at_cursor: bool,
     inline: bool,
+    hide_last: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
@@ -493,7 +561,7 @@ fn thread_lines(
             lines.push(line(vec![Span::styled(format!("  {}", clean(l)), dim)]));
         }
     }
-    for m in &t.messages {
+    for m in &t.messages[..t.messages.len() - hide_last as usize] {
         let who = Style::new().fg(if m.from == "user" {
             theme.teal
         } else {

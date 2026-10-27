@@ -141,7 +141,7 @@ pub enum Outcome {
 pub trait Component {
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx);
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
-    /// Pasted text; only text boxes take it.
+    /// Pasted text; only a draft takes it.
     fn paste(&mut self, _text: &str) {}
 }
 
