@@ -278,7 +278,7 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
     let theme = ctx.theme;
     let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
     let text = match &doc.window(i, 1)[0] {
-        Row::Session => "◆ session".to_string(),
+        Row::Session => "# session".to_string(),
         Row::File {
             status, path, note, ..
         } => {
@@ -290,8 +290,8 @@ fn draw_row(ctx: &Ctx, doc: &Doc, i: usize, width: u16, at_cursor: bool, selecte
         }
         Row::Fold { hidden, .. } => {
             let text = match hidden {
-                Some(n) => format!("  ··· {n} unchanged lines ···"),
-                None => "  ··· more lines ···".to_string(),
+                Some(n) => format!("  ... {n} unchanged lines ..."),
+                None => "  ... more lines ...".to_string(),
             };
             return Drawn::Full(vec![Line::raw(text)], mark(Style::new().fg(theme.dim)));
         }
@@ -438,16 +438,16 @@ fn thread_lines(ctx: &Ctx, idx: usize, at_cursor: bool, width: usize) -> Vec<Lin
         (true, true) => "waiting on you",
         (true, false) => "waiting on agent",
     };
-    let mut header = format!("{} · {} · {state}", t.id, ctx.session.location(&t.anchor));
+    let mut header = format!("{} / {} / {state}", t.id, ctx.session.location(&t.anchor));
     if outdated {
-        header.push_str(" · outdated");
+        header.push_str(" / outdated");
     }
     let mut header_style = Style::new().add_modifier(Modifier::BOLD);
     if !open {
         header_style = Style::new().fg(theme.dim);
         if let Some(m) = t.messages.first() {
             header.push_str(&format!(
-                " · {}: {}",
+                " / {}: {}",
                 m.from,
                 m.body.lines().next().unwrap_or("")
             ));

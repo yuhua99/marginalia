@@ -73,7 +73,7 @@ impl Doc {
             let path = if f.old_path == f.new_path {
                 f.new_path.clone()
             } else {
-                format!("{} → {}", f.old_path, f.new_path)
+                format!("{} -> {}", f.old_path, f.new_path)
             };
             let note = if f.skipped {
                 Some("too large, skipped")

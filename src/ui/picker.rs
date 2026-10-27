@@ -310,7 +310,7 @@ impl Picker {
                         return Line::from(text);
                     }
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
-                    let mark = if checked { "▌▣ " } else { " ▢ " };
+                    let mark = if checked { "[x] " } else { "[ ] " };
                     Line::from(vec![
                         Span::styled(mark, Style::new().fg(theme.accent)),
                         text,

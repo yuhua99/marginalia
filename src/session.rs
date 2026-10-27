@@ -264,14 +264,14 @@ impl Session {
 
     /// Open threads waiting on the agent, in `order`, as markdown; None if there are none.
     pub fn markdown(&self, order: &[usize]) -> Option<String> {
-        let mut out = format!("# mrg review {} · {}\n", self.id, self.range);
+        let mut out = format!("# mrg review {} / {}\n", self.id, self.range);
         let mut any = false;
         for t in order.iter().map(|&i| &self.threads[i]) {
             if t.status != Status::Open || t.waiting_on() != "agent" {
                 continue;
             }
             any = true;
-            out.push_str(&format!("\n## {} · {}\n", t.id, self.location(&t.anchor)));
+            out.push_str(&format!("\n## {} / {}\n", t.id, self.location(&t.anchor)));
             for m in &t.messages {
                 out.push_str(&format!(
                     "- **{}**: {}\n",

@@ -117,7 +117,7 @@ impl Component for Input {
         let hint = match &self.error {
             _ if self.discarding => "Esc again to discard".to_string(),
             Some(e) => format!("error: {e}"),
-            None => "Ctrl-s send · Esc cancel".to_string(),
+            None => "Ctrl-s send / Esc cancel".to_string(),
         };
         self.text.set_block(
             Block::bordered()

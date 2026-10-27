@@ -121,7 +121,7 @@ impl Sidebar {
                 let mut spans = vec![Span::styled(item.text.clone(), style)];
                 if item.waiting > 0 {
                     spans.push(Span::styled(
-                        format!(" ●{}", item.waiting),
+                        format!(" ({})", item.waiting),
                         Style::new().fg(ctx.theme.accent),
                     ));
                 }
@@ -143,14 +143,15 @@ fn items(ctx: &Ctx, checked: Option<(usize, usize)>) -> Vec<Item> {
         .enumerate()
         .map(|(v, view)| {
             let mark = if (ctx.view.0..=ctx.view.1).contains(&v) {
-                '▸'
+                '>'
             } else {
                 ' '
             };
-            let check = if checked.is_some_and(|(first, last)| (first..=last).contains(&v)) {
-                '▣'
-            } else {
-                ' '
+            // `all` (view 0) can't be checked.
+            let check = match v {
+                0 => "   ",
+                _ if checked.is_some_and(|(first, last)| (first..=last).contains(&v)) => "[x]",
+                _ => "[ ]",
             };
             let (text, waiting) = match view {
                 View::All => (

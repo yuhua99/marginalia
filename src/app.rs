@@ -149,7 +149,7 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
             .areas(f.area());
             let s = &ctx.session;
             let mut header = format!(
-                "mrg  {} · {} · {} open · {} waiting on you",
+                "mrg  {} / {} / {} open / {} waiting on you",
                 s.range,
                 s.id,
                 s.open_count(),
@@ -163,10 +163,10 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
             match ctx.view {
                 (0, 0) => {}
                 (first, last) if first == last => {
-                    header.push_str(&format!(" · viewing {}", label(first)))
+                    header.push_str(&format!(" / viewing {}", label(first)))
                 }
                 (first, last) => {
-                    header.push_str(&format!(" · viewing {} – {}", label(first), label(last)))
+                    header.push_str(&format!(" / viewing {}..{}", label(first), label(last)))
                 }
             }
             f.render_widget(
