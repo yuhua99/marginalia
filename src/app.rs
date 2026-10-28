@@ -106,9 +106,6 @@ impl Ctx {
         self.outdated.resize(self.session.threads.len(), false);
         self.store.save(&self.session)?;
         self.doc.set_threads(&self.session.threads);
-        if let Some(file) = &mut self.file {
-            file.set_threads(&self.session.threads);
-        }
         Ok(())
     }
 }

@@ -22,23 +22,13 @@ const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
     (&["top", "bottom"], "top / bottom"),
-    (&["next_thread", "prev_thread"], "next / previous thread"),
-    (
-        &["open"],
-        "follow a thread's link, from a list when it has several",
-    ),
-    (&["select"], "select lines"),
-    (&["comment"], "comment; on a thread, reply"),
-    (
-        &["edit", "delete"],
-        "edit / delete your last unanswered message",
-    ),
     (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
     (&["quit", "cancel"], "back to the diff"),
 ];
 
-/// A whole file at the range end, opened from a link; `q` / `Esc` go back.
+/// A whole file at the range end, opened from a link, read only and without threads;
+/// the linked lines are marked in the gutter. `q` / `Esc` go back.
 pub struct FileView {
     view: DiffView,
     keymap: Keymap,
@@ -55,9 +45,6 @@ impl FileView {
 
 impl Component for FileView {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        if let Some(outcome) = self.view.modal_key(key, ctx)? {
-            return Ok(outcome);
-        }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
         };
@@ -72,10 +59,6 @@ impl Component for FileView {
             }
             _ => self.view.act(action, ctx),
         }
-    }
-
-    fn paste(&mut self, text: &str) {
-        self.view.paste(text);
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
@@ -151,8 +134,7 @@ pub fn open(ctx: &mut Ctx, link: &Link) -> Result<Option<(usize, usize)>> {
     let Some(text) = ctx.repo.read(&ctx.session.end, &link.path)? else {
         return Ok(None);
     };
-    let mut doc = Doc::file(ctx.session.end.clone(), link.path.clone(), &text);
-    doc.set_threads(&ctx.session.threads);
+    let doc = Doc::file(ctx.session.end.clone(), link.path.clone(), &text);
     let rows = (doc.line_row(link.start), doc.line_row(link.end));
     ctx.file = Some(doc);
     Ok(Some(rows))
