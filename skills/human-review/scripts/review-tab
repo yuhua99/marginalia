@@ -15,17 +15,17 @@ else
     die "not in herdr or tmux; restart the agent inside one."
 fi
 
-# Runs CMD in a new focused tab named review, in the current directory; the tab closes when CMD
+# Runs CMD in a new focused tab named review-ID, in the current directory; the tab closes when CMD
 # exits, after Enter if it failed so its error stays readable.
 mux_open() {
-    local cmd="$1 || { echo 'mrg failed; Enter closes'; read -r _; }"
+    local cmd="$1 || { echo 'mrg failed; Enter closes'; read -r _; }" name="review-$2"
     if [ "$mux" = herdr ]; then
         local tab
-        tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label review --cwd "$PWD" --focus)"
+        tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label "$name" --cwd "$PWD" --focus)"
         herdr pane run "$(jq -r '.result.root_pane.pane_id' <<<"$tab")" \
             "$cmd; herdr tab close $(jq -r '.result.tab.tab_id' <<<"$tab")" >/dev/null
     else
-        tmux new-window -a -n review -c "$PWD" "$cmd"
+        tmux new-window -a -n "$name" -c "$PWD" "$cmd"
     fi
 }
 
@@ -66,6 +66,6 @@ case "${1:-}" in
         # A bad id fails here, where the agent sees it.
         mrg show --session "$1" >/dev/null
         hook="$(printf '%q --notify %q' "$(realpath "$0")" "$agent_pane")"
-        mux_open "$(printf 'mrg resume --session %q --on-quit %q' "$1" "$hook")"
+        mux_open "$(printf 'mrg resume --session %q --on-quit %q' "$1" "$hook")" "$1"
         ;;
 esac
