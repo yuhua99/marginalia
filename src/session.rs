@@ -1,17 +1,23 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use unicode_width::UnicodeWidthStr;
 
 use crate::repo::Repo;
 
 /// The session format; sessions before 1 have no line owners.
 const VERSION: u32 = 1;
 
+/// The widest a session name may be, in columns.
+pub const NAME_MAX: usize = 32;
+
 #[derive(Serialize, Deserialize)]
 pub struct Session {
     #[serde(default)]
     pub version: u32,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The range as given by the user, for display.
     pub range: String,
     pub base: String,
@@ -110,11 +116,25 @@ impl Session {
         Session {
             version: VERSION,
             id,
+            name: None,
             range,
             base,
             end,
             threads: Vec::new(),
         }
+    }
+
+    /// Sets the name, trimmed; a blank one clears it.
+    pub fn set_name(&mut self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.chars().any(char::is_control) {
+            bail!("a session name is one line");
+        }
+        if name.width() > NAME_MAX {
+            bail!("a session name is at most {NAME_MAX} columns wide");
+        }
+        self.name = (!name.is_empty()).then(|| name.to_string());
+        Ok(())
     }
 
     /// Adds agent comments; returns the index of the thread each one went to.
@@ -608,6 +628,18 @@ mod tests {
         };
         s.comment(anchor, "agent", "x".into(), &mut repo).unwrap();
         assert_eq!(s.threads.last().unwrap().anchor.commit(), Some("unstaged"));
+    }
+
+    #[test]
+    fn names() {
+        let mut s = Session::new("1".into(), "r".into(), "b".into(), "e".into());
+        s.set_name("  a b  ").unwrap();
+        assert_eq!(s.name.as_deref(), Some("a b"));
+        s.set_name("   ").unwrap();
+        assert_eq!(s.name, None);
+        assert!(s.set_name("a\nb").is_err());
+        s.set_name(&"中".repeat(16)).unwrap();
+        assert!(s.set_name(&"中".repeat(17)).is_err());
     }
 
     #[test]

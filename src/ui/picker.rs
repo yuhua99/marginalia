@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::keymap::{Feed, Keymap};
 use crate::repo::{Commit, Repo};
-use crate::session::Session;
+use crate::session::{NAME_MAX, Session};
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::ui::commit_row::{Columns, mark};
@@ -22,7 +22,7 @@ use crate::ui::{boxed, check, clear};
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  s settings  ? help  q quit";
+const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  R rename  X delete session  Esc clear  s settings  ? help  q quit";
 
 const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
@@ -32,6 +32,7 @@ const HELP: &[Entry] = &[
     (&["check"], "check rows of a new range"),
     (&["open"], "resume the session, or review the checked rows"),
     (&["filter"], "filter; Enter ends typing, Esc clears"),
+    (&["rename_session"], "rename the session; blank clears"),
     (&["delete_session"], "delete the session"),
     (&["cancel"], "clear the checks, then the filter"),
     (&["settings"], "settings: theme, wrap"),
@@ -62,6 +63,9 @@ pub fn run(
                 if let Some(done) = p.key(key, store, repo, theme, wrap)? {
                     return Ok(done);
                 }
+            }
+            Event::Paste(text) if p.renaming.is_some() => {
+                p.rename_push(text.lines().next().unwrap_or(""));
             }
             Event::Paste(text) if p.typing => {
                 let pane = p.pane();
@@ -94,6 +98,8 @@ struct Picker {
     settings: Option<SettingsPopup>,
     /// Waiting for y/n to delete the session at the cursor.
     deleting: bool,
+    /// The name being typed for the session at the cursor.
+    renaming: Option<String>,
     error: Option<String>,
     keymap: Keymap,
 }
@@ -118,12 +124,22 @@ impl Picker {
                 .collect();
         }
         let width = self.sessions.iter().map(|(s, _)| s.range.width()).max();
+        let name_width = self
+            .sessions
+            .iter()
+            .filter_map(|(s, _)| s.name.as_ref().map(|n| n.width()))
+            .max();
         self.sessions
             .iter()
             .map(|(s, _)| {
                 let pad = " ".repeat(width.unwrap_or(0) - s.range.width());
+                // A name column only when some session has a name.
+                let name = name_width.map_or(String::new(), |w| {
+                    let n = s.name.as_deref().unwrap_or("");
+                    format!("{n}{}  ", " ".repeat(w - n.width()))
+                });
                 let text = format!(
-                    "{}  {}{pad}  {:>3} open  {:>3} waiting on you",
+                    "{}  {name}{}{pad}  {:>3} open  {:>3} waiting on you",
                     s.id,
                     s.range,
                     s.open_count(),
@@ -171,6 +187,32 @@ impl Picker {
                 store.delete(&self.sessions[i].0.id)?;
                 self.sessions = store.list()?;
                 self.cursor[0] = self.cursor[0].min(self.shown(0).len().saturating_sub(1));
+            }
+            return Ok(None);
+        }
+        if let Some(name) = &self.renaming {
+            match key.code {
+                KeyCode::Char(c) => self.rename_push(&c.to_string()),
+                KeyCode::Backspace => {
+                    self.renaming.as_mut().expect("renaming").pop();
+                }
+                KeyCode::Enter => {
+                    if let Some(i) = at {
+                        // Reloaded so changes saved since the list was read are kept.
+                        let mut session = store.load(&self.sessions[i].0.id)?;
+                        if let Err(e) = session.set_name(name) {
+                            self.error = Some(format!("{e:#}"));
+                            return Ok(None);
+                        }
+                        store.save(&session)?;
+                        self.sessions[i].0 = session;
+                        // The row may leave the filter with its old name.
+                        self.cursor[0] = self.cursor[0].min(self.shown(0).len().saturating_sub(1));
+                    }
+                    self.renaming = None;
+                }
+                KeyCode::Esc => self.renaming = None,
+                _ => {}
             }
             return Ok(None);
         }
@@ -223,6 +265,11 @@ impl Picker {
             }
             "filter" => self.typing = true,
             "delete_session" if !self.right => self.deleting = at.is_some(),
+            "rename_session" if !self.right => {
+                if let Some(i) = at {
+                    self.renaming = Some(self.sessions[i].0.name.clone().unwrap_or_default());
+                }
+            }
             "help" => self.help = Some(help::popup(HELP)),
             "settings" => self.settings = Some(SettingsPopup::new(theme, *wrap)),
             "focus_left" => self.right = false,
@@ -244,6 +291,17 @@ impl Picker {
             _ => {}
         }
         Ok(None)
+    }
+
+    /// Adds `text` to the name being typed, as far as it fits.
+    fn rename_push(&mut self, text: &str) {
+        let name = self.renaming.as_mut().expect("renaming");
+        for c in text.chars().filter(|c| !c.is_control()) {
+            if format!("{name}{c}").width() > NAME_MAX {
+                break;
+            }
+            name.push(c);
+        }
     }
 
     /// Enter on row `i`: resumes that session, or makes a session of the checked rows
@@ -343,6 +401,11 @@ impl Picker {
         }
         let (text, style) = if let Some(e) = &self.error {
             (e.clone(), Style::new().fg(theme.red))
+        } else if let Some(name) = &self.renaming {
+            (
+                format!("name: {name}▏  Enter save  Esc cancel"),
+                Style::new().fg(theme.on_accent).bg(theme.accent),
+            )
         } else if self.deleting {
             (
                 "delete this session? y/n".to_string(),

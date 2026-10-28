@@ -10,7 +10,7 @@ Run every command from the repo root; sessions belong to the repo.
 
 ## Tool
 `mrg` (`mrg <cmd> --help` for flags):
-- `mrg new RANGE` prints a session id. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, or `unstaged` (working tree). Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session.
+- `mrg new RANGE [--name NAME]` prints a session id. NAME: the change's purpose, at most 32 columns. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, or `unstaged` (working tree). Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session.
 - `mrg comment --session ID FILE` (`-` for stdin) posts `{"from": "agent", "comments": [...]}`. Each comment has `body` and exactly one of `reply_to: "<thread id>"` or `anchor`:
   - `{"kind": "session"}`, `{"kind": "commit", "commit": REV}`, `{"kind": "file", "file": PATH}`
   - `{"kind": "lines", "file": PATH, "start": N, "end": M}` anchors new-side lines at the range end. Add `"rev": BASE` (`base` in `mrg show`) for deleted lines.
@@ -34,7 +34,7 @@ Ask once if the scope is missing.
    Add a likely objection or toy before/after only when it clarifies a trade-off or a confusing change. Open a comment on a known problem with `問題：`. Redact secrets.
    Done when every changed hunk is covered by block-level explanations or explicitly included in a brief-summary exception above.
 
-3. Order the file, `mrg new RANGE`, `mrg comment` it, then `review-tab ID`:
+3. Order the file, `mrg new RANGE --name NAME`, `mrg comment` it, then `review-tab ID`:
    - Session anchor first: the change's purpose, which concern to read first, and why. Add one ASCII sketch of the change's shape: a call tree, file tree, or pseudocode with `+`/`-` lines, holding only the nodes this change touches.
    - Lines anchors: the block-level explanations and brief summaries from step 2.
    - File anchors: only context not already covered by the session or lines comments.
