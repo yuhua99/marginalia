@@ -213,7 +213,7 @@ fn tui(
         };
         let s = &ctx.session;
         if ctx.copy
-            && let Some(md) = s.markdown(&ctx.doc.thread_order(s.threads.len()))
+            && let Some(md) = s.markdown(&ctx.doc.thread_order(&s.threads))
         {
             // OSC 52: the terminal sets its clipboard, which outlives this process.
             print!("\x1b]52;c;{}\x07", STANDARD.encode(md));

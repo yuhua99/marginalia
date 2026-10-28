@@ -192,7 +192,16 @@ impl DiffView {
                 } else {
                     let selection = self.selection();
                     let anchor = self.doc(ctx).anchor_at(selection.clone());
-                    self.start(*selection.end(), Input::comment(anchor, &ctx.session));
+                    let mut row = *selection.end();
+                    // A comment on a collapsed file would be hidden with it. Here, that is
+                    // one on its header, whose rows the expanding shifts.
+                    if !self.file
+                        && let Some(file) = ctx.doc.file_of(&anchor)
+                        && ctx.doc.collapsed(file)
+                    {
+                        row = ctx.doc.expand_file(file, &ctx.session.threads);
+                    }
+                    self.start(row, Input::comment(anchor, &ctx.session));
                 }
             }
             // Only the user's last message, before the agent answers it.
@@ -205,6 +214,18 @@ impl DiffView {
                     } else {
                         return Ok(Outcome::Push(Box::new(DeletePrompt(idx))));
                     }
+                }
+            }
+            "collapse" => {
+                if !self.file
+                    && let Some(file) = self.current_file(ctx)
+                {
+                    self.cursor = if ctx.doc.collapsed(file) {
+                        ctx.doc.expand_file(file, &ctx.session.threads)
+                    } else {
+                        ctx.doc.collapse_file(file, &ctx.session.threads)
+                    };
+                    self.mark = None;
                 }
             }
             _ => {}
@@ -335,11 +356,17 @@ fn draw_row(
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "# session".to_string(),
         Row::File {
-            status, path, note, ..
+            file,
+            status,
+            path,
+            note,
         } => {
             let mut text = format!("{status} {path}");
             if let Some(note) = note {
                 text.push_str(&format!("  ({note})"));
+            }
+            if doc.collapsed(*file) {
+                text.push_str("  (reviewed)");
             }
             text
         }

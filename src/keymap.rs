@@ -32,6 +32,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("v", "select"),
     ("Esc", "cancel"),
     ("c", "comment"),
+    ("r", "collapse"),
     ("e", "edit"),
     ("d", "delete"),
     ("q", "quit"),
