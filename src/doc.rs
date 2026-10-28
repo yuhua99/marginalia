@@ -19,8 +19,6 @@ pub struct Doc {
     /// Per file, added or deleted: only one side has lines.
     one_sided: Vec<bool>,
     rows: Vec<Row>,
-    /// One whole file in one column (`Doc::file`), showing only the threads on it.
-    single: bool,
     /// The commits shown, oldest first: shas, or the range end for uncommitted changes.
     /// Empty for the whole range, which places lines by their rev and shows every thread;
     /// otherwise lines go by their owner, and threads of other commits are left out.
@@ -202,7 +200,6 @@ impl Doc {
             statuses,
             one_sided,
             rows,
-            single: false,
             commits,
             collapsed: HashMap::new(),
         }
@@ -233,7 +230,6 @@ impl Doc {
             statuses: vec![' '],
             one_sided: vec![true],
             rows: [header].into_iter().chain(lines).collect(),
-            single: true,
             commits: Vec::new(),
             collapsed: HashMap::new(),
         }
@@ -301,20 +297,18 @@ impl Doc {
                 rows.extend(idx.into_iter().map(thread_row));
             }
         }
-        if !self.single {
-            // Left over are `Whole` ones, `Top` ones (whole range only), lines past the
-            // file's rows, and those of collapsed files, which stay out.
-            let mut rest: Vec<usize> = at
-                .into_iter()
-                .filter(|(spot, _)| self.commits.is_empty() || *spot != Spot::Top)
-                .filter(|(spot, _)| {
-                    !matches!(spot, Spot::File(f) | Spot::Line(f, ..) if self.collapsed.contains_key(f))
-                })
-                .flat_map(|(_, idx)| idx)
-                .collect();
-            rest.sort();
-            rows.splice(1..1, rest.into_iter().map(thread_row));
-        }
+        // Left over are `Whole` ones, `Top` ones (whole range only), lines past the
+        // file's rows, and those of collapsed files, which stay out.
+        let mut rest: Vec<usize> = at
+            .into_iter()
+            .filter(|(spot, _)| self.commits.is_empty() || *spot != Spot::Top)
+            .filter(|(spot, _)| {
+                !matches!(spot, Spot::File(f) | Spot::Line(f, ..) if self.collapsed.contains_key(f))
+            })
+            .flat_map(|(_, idx)| idx)
+            .collect();
+        rest.sort();
+        rows.splice(1..1, rest.into_iter().map(thread_row));
         self.rows = rows;
     }
 
@@ -475,7 +469,7 @@ impl Doc {
 
     /// Whether `row` is in the top thread group, away from what it anchors to.
     pub fn at_top(&self, row: usize) -> bool {
-        !self.single && row <= self.top_threads()
+        row <= self.top_threads()
     }
 
     /// Number of thread rows in the top group.

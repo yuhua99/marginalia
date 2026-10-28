@@ -37,8 +37,9 @@ pub struct DiffView {
     overflow: bool,
     /// Start of a `v` selection.
     mark: Option<usize>,
-    /// Shows `ctx.file` instead of `ctx.doc`: the link it was opened from, as `path:line`.
-    file: Option<String>,
+    /// Shows `ctx.file` instead of `ctx.doc`, read only: the link it was opened from, as
+    /// `path:line`, and the rows of the linked lines.
+    file: Option<(String, RangeInclusive<usize>)>,
     /// A message being written, drawn under this row; it takes all keys.
     draft: Option<(usize, Input)>,
     /// The links of the thread at the cursor to pick from; it takes all keys.
@@ -67,31 +68,19 @@ impl DiffView {
         mark.min(self.cursor)..=mark.max(self.cursor)
     }
 
-    /// A view of `ctx.file`, opened from `link`, with lines `start..=end` selected.
+    /// A view of `ctx.file`, opened from `link`, with the cursor on its rows `start..=end`.
     pub fn file(start: usize, end: usize, link: &Link) -> DiffView {
         DiffView {
-            cursor: end,
-            mark: (start != end).then_some(start),
-            file: Some(link.label()),
+            cursor: start,
+            top: start,
+            file: Some((link.label(), start..=end)),
             ..DiffView::default()
         }
     }
 
     /// The link a file view was opened from.
     pub fn link(&self) -> &str {
-        self.file.as_deref().unwrap_or_default()
-    }
-
-    /// Opens `link` in a file view, in place when this is one.
-    fn follow(&mut self, link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
-        let Some((start, end)) = file_view::open(ctx, link)? else {
-            return Ok(Outcome::Consumed);
-        };
-        if self.file.is_some() {
-            *self = DiffView::file(start, end, link);
-            return Ok(Outcome::Consumed);
-        }
-        Ok(Outcome::Push(Box::new(FileView::new(start, end, link))))
+        self.file.as_ref().map_or("", |(link, _)| link)
     }
 
     fn doc<'a>(&self, ctx: &'a Ctx) -> &'a Doc {
@@ -129,7 +118,7 @@ impl DiffView {
             };
             self.links = None;
             return Ok(Some(match picked {
-                Some(link) => self.follow(&link, ctx)?,
+                Some(link) => follow(&link, ctx)?,
                 None => Outcome::Consumed,
             }));
         }
@@ -192,7 +181,7 @@ impl DiffView {
                     if links.len() > 1 {
                         self.links = Some(LinkPicker::new(links));
                     } else if let Some(link) = links.pop() {
-                        return self.follow(&link, ctx);
+                        return follow(&link, ctx);
                     }
                     return Ok(Outcome::Consumed);
                 }
@@ -207,6 +196,8 @@ impl DiffView {
                 self.cursor = row.min(ctx.doc.len() - 1);
                 self.mark = None;
             }
+            // A file view is read only.
+            "select" | "comment" | "edit" | "delete" if self.file.is_some() => {}
             "select" => {
                 self.mark = if self.mark.is_some() {
                     None
@@ -224,8 +215,7 @@ impl DiffView {
                     let mut row = *selection.end();
                     // A comment on a collapsed file would be hidden with it. Here, that is
                     // one on its header, whose rows the expanding shifts.
-                    if self.file.is_none()
-                        && let Some(file) = ctx.doc.file_of(&anchor)
+                    if let Some(file) = ctx.doc.file_of(&anchor)
                         && ctx.doc.collapsed(file)
                     {
                         row = ctx.doc.expand_file(file, &ctx.session.threads);
@@ -268,7 +258,19 @@ impl DiffView {
         self.height = area.height as usize;
         let (h, cursor, selection) = (self.height, self.cursor, self.selection());
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
-        let draw = |i: usize| draw_row(ctx, doc, i, area.width, selection.contains(&i), editing);
+        let linked = self.file.as_ref().map(|(_, rows)| rows.clone());
+        let draw = |i: usize| {
+            // The selection as an accent block; linked lines as bold blue numbers, apart
+            // from it in themes whose accent is blue.
+            let mark = if selection.contains(&i) {
+                Some(Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent))
+            } else if linked.as_ref().is_some_and(|rows| rows.contains(&i)) {
+                Some(Style::new().fg(ctx.theme.blue).add_modifier(Modifier::BOLD))
+            } else {
+                None
+            };
+            draw_row(ctx, doc, i, area.width, mark, editing)
+        };
         let draft_at = self.draft.as_ref().map(|(row, _)| *row);
         let draft_height = self
             .draft
@@ -367,13 +369,22 @@ impl DiffView {
     }
 }
 
+/// Opens `link` in a file view.
+fn follow(link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
+    let Some((start, end)) = file_view::open(ctx, link)? else {
+        return Ok(Outcome::Consumed);
+    };
+    Ok(Outcome::Push(Box::new(FileView::new(start, end, link))))
+}
+
+/// `mark`: the gutter's style, for the selection or a file view's linked lines.
 /// `editing`: the thread whose last message the draft replaces.
 fn draw_row(
     ctx: &Ctx,
     doc: &Doc,
     i: usize,
     width: u16,
-    selected: bool,
+    mark: Option<Style>,
     editing: Option<usize>,
 ) -> Drawn {
     let theme = ctx.theme;
@@ -430,14 +441,8 @@ fn draw_row(
                     Some(_) => (right, colors(right, right_rev, new_path)),
                     None => (left, colors(left, left_rev, old_path)),
                 };
-                let (lines, style) = code_lines(
-                    side.as_ref(),
-                    colors,
-                    width as usize,
-                    selected,
-                    theme,
-                    ctx.wrap,
-                );
+                let (lines, style) =
+                    code_lines(side.as_ref(), colors, width as usize, mark, theme, ctx.wrap);
                 return Drawn::Full(lines, style);
             }
             let half = width / 2;
@@ -446,7 +451,7 @@ fn draw_row(
                     left.as_ref(),
                     colors(left, left_rev, old_path),
                     half as usize,
-                    selected,
+                    mark,
                     theme,
                     ctx.wrap,
                 ),
@@ -454,7 +459,7 @@ fn draw_row(
                     right.as_ref(),
                     colors(right, right_rev, new_path),
                     (width - half) as usize,
-                    selected,
+                    mark,
                     theme,
                     ctx.wrap,
                 ),
@@ -464,12 +469,12 @@ fn draw_row(
     Drawn::Full(vec![Line::raw(text)], header)
 }
 
-/// One side of a code row, wrapped by grapheme to `width`.
+/// One side of a code row, wrapped by grapheme to `width`; `mark` styles the gutter.
 fn code_lines(
     side: Option<&Side>,
     colors: Option<&Colors>,
     width: usize,
-    selected: bool,
+    mark: Option<Style>,
     theme: &Theme,
     wrap: bool,
 ) -> (Vec<Line<'static>>, Style) {
@@ -483,8 +488,8 @@ fn code_lines(
         Kind::Add => (theme.green, theme.add_bg, theme.add_emph),
     };
     let mut gutter = Style::new().fg(color);
-    if selected {
-        gutter = gutter.fg(theme.on_accent).bg(theme.accent);
+    if let Some(mark) = mark {
+        gutter = gutter.patch(mark);
     }
     let number = format!("{:>1$} ", s.lineno, INDENT - 1);
     let gutter_width = number.len();
