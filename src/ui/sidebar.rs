@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{Ctx, View};
-use crate::session::{Anchor, Thread};
+use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::{boxed, check};
 
@@ -53,7 +53,6 @@ struct Item {
     /// `[x]` or `[ ]` on a view.
     checked: Option<bool>,
     text: String,
-    waiting: usize,
 }
 
 impl Sidebar {
@@ -150,16 +149,10 @@ impl Sidebar {
                 if let Entry::View(v) = item.entry
                     && let View::Commit(c) = &ctx.views[v]
                 {
-                    spans.extend(columns.row(c, item.waiting, width, style, ctx.theme));
+                    spans.extend(columns.row(c, width, style, ctx.theme));
                     return Line::from(spans);
                 }
                 spans.push(Span::styled(item.text.clone(), style));
-                if item.waiting > 0 {
-                    spans.push(Span::styled(
-                        format!(" ({})", item.waiting),
-                        Style::new().fg(ctx.theme.accent),
-                    ));
-                }
                 Line::from(spans)
             })
             .collect();
@@ -172,7 +165,6 @@ impl Sidebar {
 }
 
 fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
-    let threads = &ctx.session.threads;
     let within = |range: (usize, usize), v| (range.0..=range.1).contains(&v);
     // View 0, all, is every row checked.
     ctx.views
@@ -185,26 +177,23 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
                 Some(range) => range.is_some_and(|range| within(range, v)),
                 None => ctx.view == (0, 0) || within(ctx.view, v),
             };
-            let (text, waiting) = match view {
+            let text = match view {
                 // Drawn by `Columns::row`.
-                View::Commit(c) => (String::new(), count(threads, &c.sha)),
-                _ => (ctx.session.end.clone(), count(threads, &ctx.session.end)),
+                View::Commit(_) => String::new(),
+                _ => ctx.session.end.clone(),
             };
             Item {
                 entry: Entry::View(v),
                 checked: Some(on),
                 text,
-                waiting,
             }
         })
         .collect()
 }
 
 fn files(ctx: &Ctx) -> Vec<Item> {
-    let threads = &ctx.session.threads;
     let mut items = Vec::new();
     // Files come in path order, so a directory's files are contiguous.
-    let waiting = ctx.doc.waiting_per_file(threads);
     let mut prev: Vec<&str> = Vec::new();
     for (file, (_, path)) in ctx.doc.paths().iter().enumerate() {
         let mut dirs: Vec<&str> = path.split('/').collect();
@@ -215,24 +204,14 @@ fn files(ctx: &Ctx) -> Vec<Item> {
                 entry: Entry::Other,
                 checked: None,
                 text: format!("{}{dir}/", "  ".repeat(depth)),
-                waiting: 0,
             });
         }
         items.push(Item {
             entry: Entry::File(file),
             checked: None,
             text: format!("{}{name}", "  ".repeat(dirs.len())),
-            waiting: waiting[file],
         });
         prev = dirs;
     }
     items
-}
-
-/// Threads of `commit` waiting on the user.
-fn count(threads: &[Thread], commit: &str) -> usize {
-    threads
-        .iter()
-        .filter(|t| t.waiting_on_user() && t.anchor.commit() == Some(commit))
-        .count()
 }

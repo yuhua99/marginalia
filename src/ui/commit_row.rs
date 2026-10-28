@@ -32,12 +32,11 @@ impl Columns {
         })
     }
 
-    /// `sha subject (waiting)  author  date` in `width` columns, the author and date
+    /// `sha subject  author  date` in `width` columns, the author and date
     /// right-aligned; `style` on the sha and subject.
     pub fn row<'a>(
         &self,
         commit: &'a Commit,
-        waiting: usize,
         width: usize,
         style: Style,
         theme: &Theme,
@@ -49,13 +48,8 @@ impl Columns {
             " ".repeat(self.when - commit.when.width()),
             commit.when
         );
-        let waiting = if waiting > 0 {
-            format!(" ({waiting})")
-        } else {
-            String::new()
-        };
-        // After the sha, the spaces around the subject and the count.
-        let width = width.saturating_sub(8 + 2 + waiting.width());
+        // After the sha, the spaces around the subject.
+        let width = width.saturating_sub(8 + 2);
         // Too narrow: the subject goes first.
         if width < meta.width() + MIN_SUBJECT {
             meta.clear();
@@ -66,7 +60,6 @@ impl Columns {
         vec![
             Span::styled(&commit.sha[..7], style.fg(theme.dim)),
             Span::styled(format!(" {subject}"), style),
-            Span::styled(waiting, Style::new().fg(theme.accent)),
             Span::raw(pad),
             Span::styled(meta, Style::new().fg(theme.dim)),
         ]

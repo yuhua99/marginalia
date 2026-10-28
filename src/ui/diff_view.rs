@@ -14,7 +14,7 @@ use crate::app::{Component, Ctx, Outcome};
 use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::Kind;
-use crate::session::{Anchor, Status, Thread};
+use crate::session::{Anchor, Thread};
 use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView};
@@ -142,12 +142,11 @@ impl DiffView {
             "half_page_up" => self.cursor = self.cursor.saturating_sub(half),
             "top" => self.cursor = 0,
             "bottom" => self.cursor = last,
-            "next_waiting" | "prev_waiting" => {
-                if let Some(i) = self.doc(ctx).next_waiting(
-                    self.cursor,
-                    action == "next_waiting",
-                    &ctx.session.threads,
-                ) {
+            "next_thread" | "prev_thread" => {
+                if let Some(i) = self
+                    .doc(ctx)
+                    .next_thread(self.cursor, action == "next_thread")
+                {
                     self.cursor = i;
                 }
             }
@@ -196,28 +195,16 @@ impl DiffView {
                     self.start(*selection.end(), Input::comment(anchor, &ctx.session));
                 }
             }
-            // Only the user's last message of an open thread, before the agent answers it.
+            // Only the user's last message, before the agent answers it.
             "edit" | "delete" => {
                 if let Some(idx) = self.thread_at_cursor(ctx)
-                    && ctx.session.threads[idx].status == Status::Open
-                    && ctx.session.threads[idx].waiting_on() == "agent"
+                    && ctx.session.threads[idx].waiting_on_agent()
                 {
                     if action == "edit" {
                         self.start(self.cursor, Input::edit(idx, &ctx.session));
                     } else {
                         return Ok(Outcome::Push(Box::new(DeletePrompt(idx))));
                     }
-                }
-            }
-            "resolve" => {
-                if let Some(idx) = self.thread_at_cursor(ctx) {
-                    let t = &mut ctx.session.threads[idx];
-                    t.status = if t.status == Status::Open {
-                        Status::Resolved
-                    } else {
-                        Status::Open
-                    };
-                    ctx.threads_changed()?;
                 }
             }
             _ => {}
@@ -503,9 +490,8 @@ fn code_lines(
     (lines, Style::new().bg(bg))
 }
 
-/// A thread as a card: header, then each message wrapped to `width`;
-/// resolved threads collapse to the header. `inline` threads sit under what they
-/// anchor to, so their header leaves out the path.
+/// A thread as a card: header, then each message wrapped to `width`.
+/// `inline` threads sit under what they anchor to, so their header leaves out the path.
 fn thread_lines(
     ctx: &Ctx,
     idx: usize,
@@ -517,48 +503,28 @@ fn thread_lines(
     let theme = ctx.theme;
     let outdated = ctx.outdated[idx];
     let t: &Thread = &ctx.session.threads[idx];
-    let open = t.status == Status::Open;
-    let waiting_on_user = t.waiting_on_user();
     let line = |spans: Vec<Span<'static>>| {
         Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
     let inner = width.saturating_sub(INDENT);
-    let state = match (open, waiting_on_user) {
-        (false, _) => "resolved",
-        (true, true) => "waiting on you",
-        (true, false) => "waiting on agent",
-    };
     let location = ctx.session.location(&t.anchor);
     let place = match (&t.anchor, inline) {
         (Anchor::Lines { file, .. }, true) => location.replacen(&format!("{file}:"), "L", 1),
         (Anchor::File { .. }, true) => "file".into(),
         _ => location,
     };
-    let mut header = format!("{}  {place}  {state}", t.id);
+    let mut header = format!("{}  {place}", t.id);
+    if t.waiting_on_agent() {
+        header.push_str("  waiting on agent");
+    }
     if outdated {
         header.push_str("  outdated");
     }
     let mut header_style = Style::new().add_modifier(Modifier::BOLD);
-    if waiting_on_user {
-        header_style = header_style.fg(theme.accent);
-    }
-    if !open {
-        header_style = Style::new().fg(theme.dim);
-        if let Some(m) = t.messages.first() {
-            header.push_str(&format!(
-                "  {}: {}",
-                m.from,
-                m.body.lines().next().unwrap_or("")
-            ));
-        }
-    }
     if at_cursor {
         header_style = header_style.add_modifier(Modifier::REVERSED);
     }
     let mut lines = vec![line(vec![Span::styled(header, header_style)])];
-    if !open {
-        return lines;
-    }
     if outdated && let Some(text) = &t.text {
         let dim = Style::new().fg(theme.dim);
         lines.push(line(vec![Span::styled("was:", dim)]));

@@ -5,7 +5,7 @@ use anyhow::Result;
 use similar::{ChangeTag, TextDiff};
 
 use crate::repo::{FileDiff, Kind};
-use crate::session::{Anchor, Owner, Status, Thread};
+use crate::session::{Anchor, Owner, Thread};
 
 /// The logical rows of a side-by-side diff, with threads placed under what they anchor to.
 pub struct Doc {
@@ -445,13 +445,9 @@ impl Doc {
             .count()
     }
 
-    /// The next (or previous) thread row waiting on the user.
-    pub fn next_waiting(&self, from: usize, forward: bool, threads: &[Thread]) -> Option<usize> {
-        self.find(
-            from,
-            forward,
-            |r| matches!(r, Row::Thread { idx } if threads[*idx].waiting_on_user()),
-        )
+    /// The next (or previous) thread row.
+    pub fn next_thread(&self, from: usize, forward: bool) -> Option<usize> {
+        self.find(from, forward, |r| matches!(r, Row::Thread { .. }))
     }
 
     /// The next (or previous) file header row.
@@ -492,33 +488,6 @@ impl Doc {
     /// (old_path, new_path) per file.
     pub fn paths(&self) -> &[(String, String)] {
         &self.paths
-    }
-
-    /// The file `anchor` is on in this view.
-    fn file_of(&self, anchor: &Anchor) -> Option<usize> {
-        match self.spot(anchor) {
-            Spot::File(f) | Spot::Line(f, ..) => Some(f),
-            _ => None,
-        }
-    }
-
-    /// Per file, its threads waiting on the user.
-    pub fn waiting_per_file(&self, threads: &[Thread]) -> Vec<usize> {
-        let mut n = vec![0; self.paths.len()];
-        for t in threads.iter().filter(|t| t.waiting_on_user()) {
-            if let Some(f) = self.file_of(&t.anchor) {
-                n[f] += 1;
-            }
-        }
-        n
-    }
-
-    /// The open threads on `file`.
-    pub fn open_in(&self, threads: &[Thread], file: usize) -> usize {
-        threads
-            .iter()
-            .filter(|t| t.status == Status::Open && self.file_of(&t.anchor) == Some(file))
-            .count()
     }
 
     /// Thread indices in row order, then those hidden in this view.
