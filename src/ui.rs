@@ -9,6 +9,7 @@ pub mod picker;
 pub mod popup;
 pub mod quit_prompt;
 pub mod review;
+pub mod scroll;
 pub mod settings;
 pub mod sidebar;
 

@@ -19,27 +19,20 @@ use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
-use crate::ui::{cursor_bar, status_style, step};
+use crate::ui::scroll::Scroll;
+use crate::ui::{cursor_bar, status_style};
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
 pub const INDENT: usize = 5;
 
-/// Side-by-side diff with a row cursor. Rows wrap; the screen starts `off` lines
-/// into row `top`, which only happens for a cursor row taller than the screen.
+/// Side-by-side diff with a row cursor. Rows wrap; a cursor row taller than the screen
+/// scrolls.
 #[derive(Default)]
 pub struct DiffView {
-    cursor: usize,
-    top: usize,
-    off: usize,
-    height: usize,
-    /// The cursor row goes on below the screen.
-    overflow: bool,
+    scroll: Scroll,
     /// Start of a `v` selection.
     mark: Option<usize>,
-    /// Shows `ctx.file` instead of `ctx.doc`, read only: the link it was opened from, as
-    /// `path:line`, and the rows of the linked lines.
-    file: Option<(String, RangeInclusive<usize>)>,
     /// A message being written, drawn under this row; it takes all keys.
     draft: Option<(usize, Input)>,
     /// The links of the thread at the cursor to pick from; it takes all keys.
@@ -47,13 +40,13 @@ pub struct DiffView {
 }
 
 /// What a row draws: full width with a style, or the two halves of a code row.
-enum Drawn {
+pub enum Drawn {
     Full(Vec<Line<'static>>, Style),
     Split([(Vec<Line<'static>>, Style); 2]),
 }
 
 impl Drawn {
-    fn height(&self) -> usize {
+    pub fn height(&self) -> usize {
         match self {
             Drawn::Full(lines, _) => lines.len(),
             Drawn::Split([l, r]) => l.0.len().max(r.0.len()),
@@ -64,35 +57,13 @@ impl Drawn {
 
 impl DiffView {
     fn selection(&self) -> RangeInclusive<usize> {
-        let mark = self.mark.unwrap_or(self.cursor);
-        mark.min(self.cursor)..=mark.max(self.cursor)
-    }
-
-    /// A view of `ctx.file`, opened from `link`, with the cursor on its rows `start..=end`.
-    pub fn file(start: usize, end: usize, link: &Link) -> DiffView {
-        DiffView {
-            cursor: start,
-            top: start,
-            file: Some((link.label(), start..=end)),
-            ..DiffView::default()
-        }
-    }
-
-    /// The link a file view was opened from.
-    pub fn link(&self) -> &str {
-        self.file.as_ref().map_or("", |(link, _)| link)
-    }
-
-    fn doc<'a>(&self, ctx: &'a Ctx) -> &'a Doc {
-        if self.file.is_some() {
-            ctx.file.as_ref().expect("file view without ctx.file")
-        } else {
-            &ctx.doc
-        }
+        let cursor = self.scroll.cursor;
+        let mark = self.mark.unwrap_or(cursor);
+        mark.min(cursor)..=mark.max(cursor)
     }
 
     fn thread_at_cursor(&self, ctx: &Ctx) -> Option<usize> {
-        match self.doc(ctx).window(self.cursor, 1).first() {
+        match ctx.doc.window(self.scroll.cursor, 1).first() {
             Some(Row::Thread { idx }) => Some(*idx),
             _ => None,
         }
@@ -100,12 +71,12 @@ impl DiffView {
 
     /// The file the cursor is in.
     pub fn current_file(&self, ctx: &Ctx) -> Option<usize> {
-        self.doc(ctx).file_at(self.cursor)
+        ctx.doc.file_at(self.scroll.cursor)
     }
 
     /// Starts writing `input` under `row`.
     pub fn start(&mut self, row: usize, input: Input) {
-        self.cursor = row;
+        self.scroll.cursor = row;
         self.mark = None;
         self.draft = Some((row, input));
     }
@@ -139,46 +110,23 @@ impl DiffView {
 
     /// Moves the cursor to `row` at the top of the screen.
     pub fn jump(&mut self, row: usize) {
-        self.cursor = row;
-        self.top = row;
-        self.off = 0;
+        self.scroll.jump(row);
         self.mark = None;
     }
 
-    /// Moves the cursor, or scrolls a cursor row taller than the screen, for movement
-    /// actions over `len` rows; false for other actions.
-    fn scroll(&mut self, action: &str, len: usize) -> bool {
-        let half = (self.height / 2).max(1);
-        // Inside a cursor row taller than the screen, j / k scroll the row first.
-        let scrolled = self.top == self.cursor && self.off > 0;
-        match action {
-            "down" if self.overflow => self.off += 1,
-            "half_page_down" if self.overflow => self.off += half,
-            "up" if scrolled => self.off -= 1,
-            "half_page_up" if scrolled => self.off = self.off.saturating_sub(half),
-            _ => match step(self.cursor, action, len, self.height) {
-                Some(cursor) => self.cursor = cursor,
-                None => return false,
-            },
-        }
-        true
-    }
-
     pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
-        if self.scroll(action, self.doc(ctx).len()) {
+        if self.scroll.act(action, ctx.doc.len()) {
             return Ok(Outcome::Consumed);
         }
+        let cursor = self.scroll.cursor;
         match action {
             "next_thread" | "prev_thread" => {
-                if let Some(i) = self
-                    .doc(ctx)
-                    .next_thread(self.cursor, action == "next_thread")
-                {
-                    self.cursor = i;
+                if let Some(i) = ctx.doc.next_thread(cursor, action == "next_thread") {
+                    self.scroll.cursor = i;
                 }
             }
             "next_file" | "prev_file" => {
-                if let Some(i) = self.doc(ctx).next_file(self.cursor, action == "next_file") {
+                if let Some(i) = ctx.doc.next_file(cursor, action == "next_file") {
                     self.jump(i);
                 }
             }
@@ -193,31 +141,26 @@ impl DiffView {
                     }
                     return Ok(Outcome::Consumed);
                 }
-                if self.file.is_some() {
-                    return Ok(Outcome::Consumed);
-                }
                 let row = ctx
                     .doc
-                    .expand(self.cursor, |rev, path| ctx.repo.read(rev, path))?;
-                self.cursor = row.min(ctx.doc.len() - 1);
+                    .expand(cursor, |rev, path| ctx.repo.read(rev, path))?;
+                self.scroll.cursor = row.min(ctx.doc.len() - 1);
                 self.mark = None;
             }
-            // A file view is read only.
-            "select" | "comment" | "edit" | "delete" if self.file.is_some() => {}
             "select" => {
                 self.mark = if self.mark.is_some() {
                     None
                 } else {
-                    Some(self.cursor)
+                    Some(cursor)
                 }
             }
             "cancel" => self.mark = None,
             "comment" => {
                 if let Some(idx) = self.thread_at_cursor(ctx) {
-                    self.start(self.cursor, Input::reply(idx));
+                    self.start(cursor, Input::reply(idx));
                 } else {
                     let selection = self.selection();
-                    let anchor = self.doc(ctx).anchor_at(selection.clone());
+                    let anchor = ctx.doc.anchor_at(selection.clone());
                     let mut row = *selection.end();
                     // A comment on a collapsed file would be hidden with it. Here, that is
                     // one on its header, whose rows the expanding shifts.
@@ -235,17 +178,15 @@ impl DiffView {
                     && ctx.session.threads[idx].waiting_on_agent()
                 {
                     if action == "edit" {
-                        self.start(self.cursor, Input::edit(idx, &ctx.session));
+                        self.start(cursor, Input::edit(idx, &ctx.session));
                     } else {
                         return Ok(Outcome::Push(Box::new(DeletePrompt(idx))));
                     }
                 }
             }
             "collapse" => {
-                if self.file.is_none()
-                    && let Some(file) = self.current_file(ctx)
-                {
-                    self.cursor = if ctx.doc.collapsed(file) {
+                if let Some(file) = self.current_file(ctx) {
+                    self.scroll.cursor = if ctx.doc.collapsed(file) {
                         ctx.doc.expand_file(file)
                     } else {
                         ctx.doc.collapse_file(file)
@@ -259,22 +200,13 @@ impl DiffView {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        let doc = self.doc(ctx);
-        self.cursor = self.cursor.min(doc.len() - 1);
-        self.height = area.height as usize;
-        let (h, cursor, selection) = (self.height, self.cursor, self.selection());
+        let doc = &ctx.doc;
+        self.scroll.cursor = self.scroll.cursor.min(doc.len() - 1);
+        let selection = self.selection();
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
-        let linked = self.file.as_ref().map(|(_, rows)| rows.clone());
         let draw = |i: usize| {
-            // The selection as an accent block; linked lines as bold blue numbers, apart
-            // from it in themes whose accent is blue.
-            let mark = if selection.contains(&i) {
-                Some(Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent))
-            } else if linked.as_ref().is_some_and(|rows| rows.contains(&i)) {
-                Some(Style::new().fg(ctx.theme.blue).add_modifier(Modifier::BOLD))
-            } else {
-                None
-            };
+            let accent = Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent);
+            let mark = selection.contains(&i).then_some(accent);
             draw_row(ctx, doc, i, area.width, mark, editing)
         };
         let draft_at = self.draft.as_ref().map(|(row, _)| *row);
@@ -282,93 +214,37 @@ impl DiffView {
             .draft
             .as_ref()
             .map_or(0, |(_, input)| input.height(area.width as usize));
-        // The draft counts as part of its row, so it stays on screen with the cursor.
+        // The draft counts as part of its row, so it stays on screen with the cursor; under
+        // a row taller than the screen, it shows from its end.
         let height =
             |i: usize| draw(i).height() + if draft_at == Some(i) { draft_height } else { 0 };
-
-        // Keep the cursor row on screen: whole if it fits, else from its start.
-        if cursor < self.top {
-            self.top = cursor;
-            self.off = 0;
-        }
-        let mut bottom = 0;
-        for i in self.top..=cursor {
-            bottom += height(i);
-            if bottom > h + self.off {
-                break;
-            }
-        }
-        if bottom > h + self.off && self.top != cursor {
-            self.top = cursor;
-            self.off = 0;
-            let mut used = height(cursor);
-            while self.top > 0 && used + height(self.top - 1) <= h {
-                self.top -= 1;
-                used += height(self.top);
-            }
-        }
-        let top_height = height(self.top);
-        self.off = if self.top == cursor {
-            self.off.min(top_height.saturating_sub(h))
-        } else {
-            self.off.min(top_height - 1)
-        };
-        // A draft under a row taller than the screen shows from its end.
-        if draft_at == Some(cursor) && self.top == cursor {
-            self.off = top_height.saturating_sub(h);
-        }
-        self.overflow = self.top == cursor && top_height - self.off > h;
-
-        let half = area.width / 2;
-        let (mut y, mut i, mut skip) = (0, self.top, self.off);
-        while y < h && i < doc.len() {
-            let drawn = draw(i);
-            let shown = drawn.height().saturating_sub(skip).min(h - y);
-            let rect = Rect {
-                y: area.y + y as u16,
-                height: shown as u16,
-                ..area
-            };
-            let para = |lines, style| Paragraph::new(lines).style(style).scroll((skip as u16, 0));
-            match drawn {
-                Drawn::Full(lines, style) => f.render_widget(para(lines, style), rect),
-                Drawn::Split([(left, ls), (right, rs)]) => {
-                    f.render_widget(
-                        para(left, ls),
+        let from_end = draft_at == Some(self.scroll.cursor);
+        self.scroll
+            .place(area.height as usize, doc.len(), height, from_end);
+        let draft = &mut self.draft;
+        draw_rows(
+            f,
+            area,
+            &self.scroll,
+            doc,
+            ctx.theme,
+            draw,
+            |f, i, rest| match draft {
+                Some((row, input)) if *row == i => {
+                    let shown = draft_height.min(rest.height as usize);
+                    input.render(
+                        f,
                         Rect {
-                            width: half,
-                            ..rect
+                            height: shown as u16,
+                            ..rest
                         },
+                        ctx,
                     );
-                    let right_rect = Rect {
-                        x: area.x + half,
-                        width: area.width - half,
-                        ..rect
-                    };
-                    f.render_widget(para(right, rs), right_rect);
+                    shown
                 }
-            }
-            // A code row shows the cursor in its gutter; other rows, a bar on their first line.
-            if i == cursor && skip == 0 && !matches!(doc.window(i, 1)[0], Row::Code { .. }) {
-                cursor_bar(f, area, rect.y, ctx.theme);
-            }
-            y += shown;
-            if draft_at == Some(i)
-                && y < h
-                && let Some((_, input)) = &mut self.draft
-            {
-                let shown = draft_height.min(h - y);
-                let rect = Rect {
-                    y: area.y + y as u16,
-                    height: shown as u16,
-                    ..area
-                };
-                input.render(f, rect, ctx);
-                y += shown;
-            }
-            i += 1;
-            skip = 0;
-        }
+                _ => 0,
+            },
+        );
         if let Some(picker) = &mut self.links {
             picker.render(f, area, ctx.theme);
         }
@@ -377,15 +253,75 @@ impl DiffView {
 
 /// Opens `link` in a file view.
 fn follow(link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
-    let Some((start, end)) = file_view::open(ctx, link)? else {
-        return Ok(Outcome::Consumed);
-    };
-    Ok(Outcome::Push(Box::new(FileView::new(start, end, link))))
+    Ok(match FileView::open(ctx, link)? {
+        Some(view) => Outcome::Push(Box::new(view)),
+        None => Outcome::Consumed,
+    })
+}
+
+/// Draws `doc`'s rows from the top of `scroll` on, each as `draw` makes it, the cursor
+/// row's first line barred unless a code row marks it in its gutter. Under row `i` goes
+/// what `under(f, i, rest)` draws in the `rest` of the area, returning its height.
+pub fn draw_rows(
+    f: &mut Frame,
+    area: Rect,
+    scroll: &Scroll,
+    doc: &Doc,
+    theme: &Theme,
+    draw: impl Fn(usize) -> Drawn,
+    mut under: impl FnMut(&mut Frame, usize, Rect) -> usize,
+) {
+    let h = area.height as usize;
+    let half = area.width / 2;
+    let (top, off) = scroll.top();
+    let (mut y, mut i, mut skip) = (0, top, off);
+    while y < h && i < doc.len() {
+        let drawn = draw(i);
+        let shown = drawn.height().saturating_sub(skip).min(h - y);
+        let rect = Rect {
+            y: area.y + y as u16,
+            height: shown as u16,
+            ..area
+        };
+        let para = |lines, style| Paragraph::new(lines).style(style).scroll((skip as u16, 0));
+        match drawn {
+            Drawn::Full(lines, style) => f.render_widget(para(lines, style), rect),
+            Drawn::Split([(left, ls), (right, rs)]) => {
+                f.render_widget(
+                    para(left, ls),
+                    Rect {
+                        width: half,
+                        ..rect
+                    },
+                );
+                let right_rect = Rect {
+                    x: area.x + half,
+                    width: area.width - half,
+                    ..rect
+                };
+                f.render_widget(para(right, rs), right_rect);
+            }
+        }
+        if i == scroll.cursor && skip == 0 && !matches!(doc.window(i, 1)[0], Row::Code { .. }) {
+            cursor_bar(f, area, rect.y, theme);
+        }
+        y += shown;
+        if y < h {
+            let rest = Rect {
+                y: area.y + y as u16,
+                height: (h - y) as u16,
+                ..area
+            };
+            y += under(f, i, rest);
+        }
+        i += 1;
+        skip = 0;
+    }
 }
 
 /// `mark`: the gutter's style, for the selection or a file view's linked lines.
 /// `editing`: the thread whose last message the draft replaces.
-fn draw_row(
+pub fn draw_row(
     ctx: &Ctx,
     doc: &Doc,
     i: usize,

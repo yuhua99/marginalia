@@ -36,8 +36,6 @@ pub struct Ctx {
     pub theme: &'static Theme,
     /// Wrap long code lines.
     pub wrap: bool,
-    /// The doc of the file view layer while it is open.
-    pub file: Option<Doc>,
     /// Paths of the files at the range end, which links in threads may open.
     pub files: HashSet<String>,
 }
@@ -111,7 +109,6 @@ impl Ctx {
             highlighter: Highlighter::new(),
             theme,
             wrap,
-            file: None,
             files,
         })
     }
