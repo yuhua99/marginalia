@@ -63,6 +63,20 @@ pub fn modal(
     inner
 }
 
+/// A file's status letter: added green, deleted red, modified yellow, renamed blue,
+/// type changed mauve; others, like `Doc::file`'s ' ', keep the surrounding style.
+pub fn status_style(status: char, theme: &Theme) -> Style {
+    let color = match status {
+        'A' => theme.green,
+        'D' => theme.red,
+        'M' => theme.yellow,
+        'R' => theme.blue,
+        'T' => theme.mauve,
+        _ => return Style::new(),
+    };
+    Style::new().fg(color)
+}
+
 /// Space on row `i` of a contiguous check: extends it to `i`, or clears it when `i` is in it.
 pub fn check(checked: Option<(usize, usize)>, i: usize) -> Option<(usize, usize)> {
     match checked {

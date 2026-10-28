@@ -19,6 +19,7 @@ use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView};
 use crate::ui::input::Input;
+use crate::ui::status_style;
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
@@ -361,14 +362,18 @@ fn draw_row(
             path,
             note,
         } => {
-            let mut text = format!("{status} {path}");
+            let mut text = path.clone();
             if let Some(note) = note {
                 text.push_str(&format!("  ({note})"));
             }
             if doc.collapsed(*file) {
                 text.push_str("  (reviewed)");
             }
-            text
+            let line = Line::from(vec![
+                Span::styled(status.to_string(), status_style(*status, theme)),
+                Span::raw(format!(" {text}")),
+            ]);
+            return Drawn::Full(vec![line], mark(header));
         }
         Row::Fold { hidden, .. } => {
             let text = match hidden {

@@ -381,7 +381,7 @@ impl Picker {
             let all = self.all(pane);
             let columns = Columns::new(&self.commits);
             // Inside the borders, after the mark.
-            let width = (area.width as usize).saturating_sub(2 + 4);
+            let width = (area.width as usize).saturating_sub(2 + 2);
             let lines: Vec<Line> = self
                 .shown(pane)
                 .into_iter()

@@ -14,6 +14,8 @@ pub struct Doc {
     right_rev: String,
     /// (old_path, new_path) per file.
     paths: Vec<(String, String)>,
+    /// Status letter per file, as in `FileDiff::status`.
+    statuses: Vec<char>,
     /// Per file, added or deleted: only one side has lines.
     one_sided: Vec<bool>,
     rows: Vec<Row>,
@@ -86,6 +88,7 @@ impl Doc {
     ) -> Doc {
         let mut rows = vec![Row::Session];
         let mut paths = Vec::new();
+        let mut statuses = Vec::new();
         let mut one_sided = Vec::new();
         for (file, f) in files.into_iter().enumerate() {
             one_sided.push(matches!(f.status, 'A' | 'D'));
@@ -108,6 +111,7 @@ impl Doc {
                 note,
             });
             paths.push((f.old_path, f.new_path));
+            statuses.push(f.status);
             let (mut next_old, mut next_new) = (1, 1);
             // The file may go on after a hunk ending in full (-U3) context.
             let mut more = false;
@@ -195,6 +199,7 @@ impl Doc {
             left_rev,
             right_rev,
             paths,
+            statuses,
             one_sided,
             rows,
             single: false,
@@ -225,6 +230,7 @@ impl Doc {
             left_rev: rev.clone(),
             right_rev: rev,
             paths: vec![(path.clone(), path)],
+            statuses: vec![' '],
             one_sided: vec![true],
             rows: [header].into_iter().chain(lines).collect(),
             single: true,
@@ -526,6 +532,11 @@ impl Doc {
     /// (old_path, new_path) per file.
     pub fn paths(&self) -> &[(String, String)] {
         &self.paths
+    }
+
+    /// Status letter of `file`: A, D, M, R, T, or ' ' for `Doc::file`.
+    pub fn status(&self, file: usize) -> char {
+        self.statuses[file]
     }
 
     /// The file `anchor` is on in this view.

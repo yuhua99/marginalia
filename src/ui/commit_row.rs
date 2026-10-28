@@ -11,9 +11,9 @@ const MIN_SUBJECT: usize = 20;
 /// The widest author column.
 const MAX_AUTHOR: usize = 16;
 
-/// `[x] ` or `[ ] ` before a row of a commit list.
+/// `☒ ` or `☐ ` before a checkable row.
 pub fn mark(checked: bool, theme: &Theme) -> Span<'static> {
-    let mark = if checked { "[x] " } else { "[ ] " };
+    let mark = if checked { "☒ " } else { "☐ " };
     Span::styled(mark, Style::new().fg(theme.accent))
 }
 
