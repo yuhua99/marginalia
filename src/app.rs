@@ -82,9 +82,6 @@ impl Ctx {
         theme: &'static Theme,
         wrap: bool,
     ) -> Result<Ctx> {
-        if session.migrate(&mut repo)? {
-            store.save(&session)?;
-        }
         session.check_outdated(&mut repo)?;
         let mut views: Vec<View> = repo
             .commits(&session.base, &session.end)?
