@@ -10,7 +10,7 @@ use ratatui_textarea::TextArea;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::keymap::{Feed, Keymap};
-use crate::repo::{Commit, Repo};
+use crate::repo::{self, Commit, Repo, short};
 use crate::session::{NAME_MAX, Session};
 use crate::store::Store;
 use crate::theme::Theme;
@@ -330,7 +330,7 @@ impl Picker {
         let (top, bottom) = self.checked.unwrap_or((i, i));
         let all = self.all(1);
         let (end, bottom) = (&all[top].1, &all[bottom].1);
-        let base = if matches!(bottom.as_str(), "staged" | "unstaged") {
+        let base = if repo::worktree(bottom) {
             "HEAD".to_string()
         } else {
             // Left out for the root commit: the range starts before it.
@@ -435,9 +435,4 @@ impl Picker {
             );
         }
     }
-}
-
-/// A commit sha shortened for a range label; other revs as is.
-fn short(rev: &str) -> &str {
-    if rev.len() == 40 { &rev[..7] } else { rev }
 }

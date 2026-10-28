@@ -10,7 +10,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::doc::Doc;
 use crate::highlight::Highlighter;
-use crate::repo::{Commit, Repo};
+use crate::repo::{self, Commit, Repo};
 use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
@@ -70,7 +70,7 @@ impl Ctx {
         for commit in repo.commits(&session.base, &session.end)? {
             views.push(View::Commit(commit));
         }
-        if matches!(session.end.as_str(), "staged" | "unstaged") {
+        if repo::worktree(&session.end) {
             views.push(View::Uncommitted);
         }
         let doc = load(&mut repo, &session, &views, (0, 0))?;
