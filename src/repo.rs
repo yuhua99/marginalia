@@ -11,6 +11,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 pub use parse::{FileDiff, Kind};
+#[cfg(test)]
+pub use parse::{Hunk, Line};
 
 const UNTRACKED_MAX_BYTES: u64 = 1 << 20;
 

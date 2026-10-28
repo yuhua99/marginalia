@@ -33,6 +33,9 @@ pub struct Thread {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub messages: Vec<Message>,
+    /// The anchored lines no longer match `text`, as of `Session::check_outdated`.
+    #[serde(skip)]
+    pub outdated: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -214,6 +217,7 @@ impl Session {
                 from: from.to_string(),
                 body,
             }],
+            outdated: false,
         });
         Ok(())
     }
@@ -333,15 +337,13 @@ impl Session {
     }
 
     /// Removes the last message of thread `idx`, or the thread when it is the only one.
-    /// Returns whether the thread went.
-    pub fn delete(&mut self, idx: usize) -> bool {
+    pub fn delete(&mut self, idx: usize) {
         let t = &mut self.threads[idx];
         if t.messages.len() > 1 {
             t.messages.pop();
-            return false;
+        } else {
+            self.threads.remove(idx);
         }
-        self.threads.remove(idx);
-        true
     }
 
     pub fn waiting_on_agent_count(&self) -> usize {
@@ -349,66 +351,77 @@ impl Session {
     }
 
     /// The session as JSON, with derived fields added to each thread.
-    /// `waiting_on` is `agent` or null; `outdated` means the anchored
-    /// lines no longer match the stored `text`.
-    pub fn view(&self, repo: &mut Repo) -> Result<Value> {
+    /// `waiting_on` is `agent` or null; `outdated` is as of `check_outdated`.
+    pub fn view(&self) -> Result<Value> {
         let mut v = serde_json::to_value(self)?;
-        let outdated = self.outdated(repo)?;
-        for ((t, tv), outdated) in self
+        for (t, tv) in self
             .threads
             .iter()
             .zip(v["threads"].as_array_mut().expect("threads array"))
-            .zip(outdated)
         {
             tv["waiting_on"] = t.waiting_on_agent().then_some("agent").into();
-            tv["outdated"] = outdated.into();
+            tv["outdated"] = t.outdated.into();
         }
         Ok(v)
     }
 
-    /// Per thread: the anchored lines no longer match the stored `text`.
-    pub fn outdated(&self, repo: &mut Repo) -> Result<Vec<bool>> {
-        self.threads
-            .iter()
-            .map(|t| match &t.anchor {
+    /// Sets each thread's `outdated`: its anchored lines no longer match the stored `text`.
+    pub fn check_outdated(&mut self, repo: &mut Repo) -> Result<()> {
+        for t in &mut self.threads {
+            t.outdated = match &t.anchor {
                 Anchor::Lines {
                     rev: Some(rev),
                     file,
                     start,
                     end,
                     ..
-                } if t.text.is_some() => Ok(snippet(repo, rev, file, *start, *end)? != t.text),
-                _ => Ok(false),
-            })
-            .collect()
+                } if t.text.is_some() => snippet(repo, rev, file, *start, *end)? != t.text,
+                _ => false,
+            };
+        }
+        Ok(())
     }
 
     /// Where a thread is anchored, e.g. `src/a.rs:3-5`, plus `@rev` when not the range end.
     pub fn location(&self, anchor: &Anchor) -> String {
         match anchor {
             Anchor::Lines {
-                rev,
                 file,
+                rev,
                 start,
                 end,
                 ..
-            } => {
-                let mut s = if start == end {
-                    format!("{file}:{start}")
-                } else {
-                    format!("{file}:{start}-{end}")
-                };
-                if let Some(rev) = rev
-                    && *rev != self.end
-                {
-                    s.push_str(&format!(" @{}", short(rev)));
-                }
-                s
-            }
+            } => format!("{file}:{}", self.lines(rev, *start, *end)),
             Anchor::File { file } => file.clone(),
             Anchor::Commit { commit } => format!("commit {}", short(commit)),
             Anchor::Session => "session".into(),
         }
+    }
+
+    /// `location` for a thread shown under what it anchors to: lines as `L3-5`, a file as `file`.
+    pub fn inline_location(&self, anchor: &Anchor) -> String {
+        match anchor {
+            Anchor::Lines {
+                rev, start, end, ..
+            } => format!("L{}", self.lines(rev, *start, *end)),
+            Anchor::File { .. } => "file".into(),
+            _ => self.location(anchor),
+        }
+    }
+
+    /// Lines `3` or `3-5`, plus `@rev` when not the range end.
+    fn lines(&self, rev: &Option<String>, start: u32, end: u32) -> String {
+        let mut s = if start == end {
+            start.to_string()
+        } else {
+            format!("{start}-{end}")
+        };
+        if let Some(rev) = rev
+            && *rev != self.end
+        {
+            s.push_str(&format!(" @{}", short(rev)));
+        }
+        s
     }
 
     /// Threads waiting on the agent, in `order`, as markdown; None if there are none.

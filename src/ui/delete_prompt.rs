@@ -13,10 +13,7 @@ impl Component for DeletePrompt {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
         Ok(match key.code {
             KeyCode::Char('y') => {
-                if ctx.session.delete(self.0) {
-                    ctx.outdated.remove(self.0);
-                }
-                ctx.threads_changed()?;
+                ctx.delete(self.0)?;
                 Outcome::Close
             }
             KeyCode::Char('n') | KeyCode::Esc => Outcome::Close,

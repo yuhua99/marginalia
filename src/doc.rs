@@ -25,6 +25,8 @@ pub struct Doc {
     commits: Vec<String>,
     /// Per collapsed file, its rows other than the header; its threads are left out.
     collapsed: HashMap<usize, Vec<Row>>,
+    /// Where each of the session threads goes, as of `set_threads`.
+    spots: Vec<Spot>,
 }
 
 pub enum Row {
@@ -66,7 +68,7 @@ pub struct Side {
 type Ranges = Vec<Range<usize>>;
 
 /// Where a thread row goes.
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum Spot {
     Top,
     /// At the top in every view: the session, a commit shown, or its lines that have no
@@ -202,6 +204,7 @@ impl Doc {
             rows,
             commits,
             collapsed: HashMap::new(),
+            spots: Vec::new(),
         }
     }
 
@@ -232,6 +235,7 @@ impl Doc {
             rows: [header].into_iter().chain(lines).collect(),
             commits: Vec::new(),
             collapsed: HashMap::new(),
+            spots: Vec::new(),
         }
     }
 
@@ -247,15 +251,21 @@ impl Doc {
             .unwrap_or(self.rows.len() - 1)
     }
 
-    /// Replaces the thread rows.
+    /// Replaces the thread rows with those of `threads`, the session's after they changed.
     pub fn set_threads(&mut self, threads: &[Thread]) {
+        self.spots = threads.iter().map(|t| self.spot(&t.anchor)).collect();
+        self.place();
+    }
+
+    /// Puts the thread rows where `spots` say, for the rows there are now.
+    fn place(&mut self) {
         let mut at: HashMap<Spot, Vec<usize>> = HashMap::new();
-        for (idx, t) in threads.iter().enumerate() {
-            at.entry(self.spot(&t.anchor)).or_default().push(idx);
+        for (idx, spot) in self.spots.iter().enumerate() {
+            at.entry(*spot).or_default().push(idx);
         }
         let thread_row = |idx: usize| Row::Thread { idx };
         let old = std::mem::take(&mut self.rows);
-        let mut rows = Vec::with_capacity(old.len() + threads.len());
+        let mut rows = Vec::with_capacity(old.len() + self.spots.len());
         for row in old {
             let spots = match &row {
                 Row::File { file, .. } if self.collapsed.contains_key(file) => [None, None],
@@ -416,7 +426,6 @@ impl Doc {
     pub fn expand(
         &mut self,
         row: usize,
-        threads: &[Thread],
         read: impl FnOnce(&str, &str) -> Result<Option<String>>,
     ) -> Result<usize> {
         let Row::Fold {
@@ -463,7 +472,7 @@ impl Doc {
         };
         let top = self.top_threads();
         self.rows.splice(row..=row, shown);
-        self.set_threads(threads);
+        self.place();
         Ok(row + (self.top_threads() - top))
     }
 
@@ -490,7 +499,7 @@ impl Doc {
     }
 
     /// Collapses `file` to its header. Returns the header row.
-    pub fn collapse_file(&mut self, file: usize, threads: &[Thread]) -> usize {
+    pub fn collapse_file(&mut self, file: usize) -> usize {
         let row = self.file_row(file);
         let end = self.next_file(row, true).unwrap_or(self.rows.len());
         let rows = self
@@ -499,16 +508,16 @@ impl Doc {
             .filter(|r| !matches!(r, Row::Thread { .. }))
             .collect();
         self.collapsed.insert(file, rows);
-        self.set_threads(threads);
+        self.place();
         self.file_row(file)
     }
 
     /// Expands `file` if collapsed. Returns the header row.
-    pub fn expand_file(&mut self, file: usize, threads: &[Thread]) -> usize {
+    pub fn expand_file(&mut self, file: usize) -> usize {
         let row = self.file_row(file);
         if let Some(rows) = self.collapsed.remove(&file) {
             self.rows.splice(row + 1..row + 1, rows);
-            self.set_threads(threads);
+            self.place();
         }
         self.file_row(file)
     }
@@ -560,26 +569,24 @@ impl Doc {
 
     /// The file `anchor` is on in this view.
     pub fn file_of(&self, anchor: &Anchor) -> Option<usize> {
-        match self.spot(anchor) {
-            Spot::File(f) | Spot::Line(f, ..) => Some(f),
-            _ => None,
-        }
+        self.spot(anchor).file()
     }
 
     /// Thread indices in row order, those of a collapsed file at its header,
     /// then those hidden in this view.
-    pub fn thread_order(&self, threads: &[Thread]) -> Vec<usize> {
+    pub fn thread_order(&self) -> Vec<usize> {
+        let n = self.spots.len();
         let mut order: Vec<usize> = Vec::new();
         for r in &self.rows {
             match r {
                 Row::Thread { idx } => order.push(*idx),
-                Row::File { file, .. } if self.collapsed(*file) => order.extend(
-                    (0..threads.len()).filter(|&i| self.file_of(&threads[i].anchor) == Some(*file)),
-                ),
+                Row::File { file, .. } if self.collapsed(*file) => {
+                    order.extend((0..n).filter(|&i| self.spots[i].file() == Some(*file)))
+                }
                 _ => {}
             }
         }
-        let hidden: Vec<usize> = (0..threads.len()).filter(|i| !order.contains(i)).collect();
+        let hidden: Vec<usize> = (0..n).filter(|i| !order.contains(i)).collect();
         order.extend(hidden);
         order
     }
@@ -592,6 +599,15 @@ impl Doc {
     pub fn window(&self, start: usize, n: usize) -> &[Row] {
         let start = start.min(self.rows.len());
         &self.rows[start..(start + n).min(self.rows.len())]
+    }
+}
+
+impl Spot {
+    fn file(self) -> Option<usize> {
+        match self {
+            Spot::File(f) | Spot::Line(f, ..) => Some(f),
+            _ => None,
+        }
     }
 }
 
@@ -648,4 +664,80 @@ fn word_diff(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
         }
     }
     Some((o, n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repo::{Hunk, Line};
+    use crate::session::Message;
+
+    /// `a` changing line 2 of `x` to `y`, with a line of context on each side.
+    fn doc() -> Doc {
+        let line = |kind, text: &str| Line {
+            kind,
+            text: text.into(),
+        };
+        let file = FileDiff {
+            status: 'M',
+            old_path: "a".into(),
+            new_path: "a".into(),
+            binary: false,
+            skipped: false,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_len: 3,
+                new_start: 1,
+                new_len: 3,
+                lines: vec![
+                    line(Kind::Ctx, "1"),
+                    line(Kind::Del, "x"),
+                    line(Kind::Add, "y"),
+                    line(Kind::Ctx, "3"),
+                ],
+            }],
+        };
+        Doc::new("b".into(), "e".into(), vec![file], Vec::new())
+    }
+
+    fn thread(anchor: Anchor) -> Thread {
+        Thread {
+            id: "t1".into(),
+            anchor,
+            text: None,
+            messages: vec![Message {
+                from: "user".into(),
+                body: "?".into(),
+            }],
+            outdated: false,
+        }
+    }
+
+    fn thread_rows(doc: &Doc) -> Vec<usize> {
+        (0..doc.len())
+            .filter(|&i| matches!(doc.window(i, 1)[0], Row::Thread { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn threads_follow_collapsing() {
+        let mut doc = doc();
+        let line2 = Anchor::Lines {
+            rev: Some("e".into()),
+            file: "a".into(),
+            start: 2,
+            end: 2,
+            owner: None,
+        };
+        doc.set_threads(&[thread(Anchor::Session), thread(line2)]);
+        // Session, its thread, the file, line 1, the changed line 2, its thread, line 3.
+        assert_eq!(thread_rows(&doc), [1, 5]);
+        assert_eq!(doc.thread_order(), [0, 1]);
+        // A collapsed file keeps its threads out of the rows but in the order.
+        doc.collapse_file(0);
+        assert_eq!(thread_rows(&doc), [1]);
+        assert_eq!(doc.thread_order(), [0, 1]);
+        doc.expand_file(0);
+        assert_eq!(thread_rows(&doc), [1, 5]);
+    }
 }
