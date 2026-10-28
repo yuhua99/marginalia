@@ -14,7 +14,8 @@ use crate::keymap::{Feed, Keymap};
 use crate::repo::{self, Commit, Repo, short};
 use crate::session::{NAME_MAX, Session};
 use crate::store::Store;
-use crate::ui::commit_row::{Columns, mark};
+use crate::theme::Theme;
+use crate::ui::commit_row::{Columns, fit, mark};
 use crate::ui::confirm::Confirm;
 use crate::ui::help::{Entry, Help};
 use crate::ui::query::Query;
@@ -154,19 +155,12 @@ impl Picker {
                 .chain(commits)
                 .collect();
         }
-        let name_width = sessions
-            .iter()
-            .filter_map(|(s, _)| s.name.as_ref().map(|n| n.width()))
-            .max();
+        let name_width = name_width(sessions);
         sessions
             .iter()
             .map(|(s, _)| {
-                // A name column only when some session has a name.
-                let name = name_width.map_or(String::new(), |w| {
-                    let n = s.name.as_deref().unwrap_or("");
-                    format!("{n}{}  ", " ".repeat(w - n.width()))
-                });
-                let text = format!("{}  {name}{}", s.id, s.range);
+                let name = name_column(s, name_width);
+                let text = format!("{}{name}  {}", s.id, s.range);
                 (text, s.id.clone())
             })
             .collect()
@@ -315,6 +309,7 @@ impl Component<Pick> for Picker {
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .areas(area);
         self.height = area.height.saturating_sub(2) as usize;
+        let name_width = name_width(&ctx.sessions);
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
             let mut title = [" Sessions ", " New review "][pane].to_string();
@@ -324,8 +319,10 @@ impl Component<Pick> for Picker {
             let skip = (cursor + 1).saturating_sub(height);
             let all = self.all(pane, &ctx.sessions);
             let columns = Columns::new(&self.commits);
-            // Inside the borders, after the mark.
-            let width = (area.width as usize).saturating_sub(2 + 2);
+            // Inside the borders.
+            let inner_width = (area.width as usize).saturating_sub(2);
+            // After the mark.
+            let width = inner_width.saturating_sub(2);
             let shown = self.shown(pane, &ctx.sessions);
             let rows = shown.len();
             let lines: Vec<Line> = shown
@@ -334,7 +331,8 @@ impl Component<Pick> for Picker {
                 .take(height)
                 .map(|i| {
                     if pane == 0 {
-                        return Line::raw(all[i].0.clone());
+                        let s = &ctx.sessions[i].0;
+                        return Line::from(session_row(s, name_width, inner_width, theme));
                     }
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
                     let mut spans = vec![mark(checked, theme)];
@@ -353,6 +351,48 @@ impl Component<Pick> for Picker {
             }
         }
     }
+}
+
+/// The widest session name; None when no session has a name.
+fn name_width(sessions: &[(Session, u64)]) -> Option<usize> {
+    sessions
+        .iter()
+        .filter_map(|(s, _)| s.name.as_ref().map(|n| n.width()))
+        .max()
+}
+
+/// `  name` padded to `name_width`, a longer name cut to `nam…`; empty when no
+/// session has a name.
+fn name_column(s: &Session, name_width: Option<usize>) -> String {
+    name_width.map_or(String::new(), |w| {
+        let mut n = s.name.clone().unwrap_or_default();
+        if n.width() > w {
+            n = format!("{}…", fit(&n, w.saturating_sub(1)));
+        }
+        format!("  {n}{}", " ".repeat(w.saturating_sub(n.width())))
+    })
+}
+
+/// `id  name  range` in `width` columns, the range right-aligned; the name column
+/// only when some session has a name, narrowed so the range fits.
+fn session_row<'a>(
+    s: &'a Session,
+    name_width: Option<usize>,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    // Width left for the name after the id, the range and the spaces around the name.
+    let room = width.saturating_sub(s.id.width() + s.range.width() + 4);
+    // No room: the name column goes, so the range fits.
+    let name = name_column(s, name_width.map(|w| w.min(room)).filter(|&w| w > 0));
+    let used = s.id.width() + name.width() + s.range.width();
+    let pad = " ".repeat(width.saturating_sub(used).max(2));
+    vec![
+        Span::styled(s.id.as_str(), Style::new().fg(theme.dim)),
+        Span::raw(name),
+        Span::raw(pad),
+        Span::styled(s.range.as_str(), Style::new().fg(theme.dim)),
+    ]
 }
 
 /// `R`: the name being typed for session `id`; Enter saves it, Esc cancels.

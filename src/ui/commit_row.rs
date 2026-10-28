@@ -61,7 +61,7 @@ impl Columns {
 }
 
 /// `s` cut to `width` columns, as `str::width` counts them.
-fn fit(s: &str, width: usize) -> String {
+pub fn fit(s: &str, width: usize) -> String {
     let end = s
         .char_indices()
         .map(|(i, c)| i + c.len_utf8())
