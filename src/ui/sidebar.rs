@@ -1,13 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{Ctx, View};
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
-use crate::ui::{boxed, check, status_style};
+use crate::ui::{boxed, check, cursor_bar, status_style};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
 /// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
@@ -122,7 +121,6 @@ impl Sidebar {
         let items = self.items(ctx);
         self.height = area.height.saturating_sub(2) as usize;
         self.cursor = self.cursor.min(items.len().saturating_sub(1));
-        let marked = focused.then_some(self.cursor);
         self.top = self.top.min(self.cursor);
         if self.cursor >= self.top + self.height {
             self.top = self.cursor + 1 - self.height;
@@ -135,14 +133,9 @@ impl Sidebar {
         let width = (area.width as usize).saturating_sub(2 + 2);
         let lines: Vec<Line> = items
             .iter()
-            .enumerate()
             .skip(self.top)
             .take(self.height)
-            .map(|(i, item)| {
-                let mut style = Style::new();
-                if Some(i) == marked {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
+            .map(|item| {
                 let mut spans = vec![Span::raw(" ".repeat(item.indent))];
                 spans.extend(item.checked.map(|on| mark(on, ctx.theme)));
                 if let Entry::File(file) = item.entry {
@@ -152,18 +145,21 @@ impl Sidebar {
                 if let Entry::View(v) = item.entry
                     && let View::Commit(c) = &ctx.views[v]
                 {
-                    spans.extend(columns.row(c, width, style, ctx.theme));
+                    spans.extend(columns.row(c, width, ctx.theme));
                     return Line::from(spans);
                 }
-                spans.push(Span::styled(item.text.clone(), style));
+                spans.push(Span::raw(item.text.clone()));
                 Line::from(spans)
             })
             .collect();
         let title = if self.files { " Files " } else { " Commits " };
-        f.render_widget(
-            Paragraph::new(lines).block(boxed(title, focused, ctx.theme)),
-            area,
-        );
+        let block = boxed(title, focused, ctx.theme);
+        let inner = block.inner(area);
+        f.render_widget(Paragraph::new(lines).block(block), area);
+        if focused && self.cursor < items.len() && self.height > 0 {
+            let y = inner.y + (self.cursor - self.top) as u16;
+            cursor_bar(f, inner, y, ctx.theme);
+        }
     }
 }
 

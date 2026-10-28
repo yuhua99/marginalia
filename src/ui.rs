@@ -63,6 +63,17 @@ pub fn modal(
     inner
 }
 
+/// Marks row `y` of `area` as the cursor: an accent bar across it, over any colors.
+pub fn cursor_bar(f: &mut Frame, area: Rect, y: u16, theme: &Theme) {
+    let rect = Rect {
+        y,
+        height: 1,
+        ..area
+    };
+    f.buffer_mut()
+        .set_style(rect, Style::new().bg(theme.accent).fg(theme.on_accent));
+}
+
 /// A file's status letter: added green, deleted red, modified yellow, renamed blue,
 /// type changed mauve; others, like `Doc::file`'s ' ', keep the surrounding style.
 pub fn status_style(status: char, theme: &Theme) -> Style {

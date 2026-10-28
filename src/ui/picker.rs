@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
@@ -18,7 +18,7 @@ use crate::ui::commit_row::{Columns, mark};
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{boxed, check, clear, dialog};
+use crate::ui::{boxed, check, clear, cursor_bar, dialog};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -375,34 +375,31 @@ impl Picker {
             let columns = Columns::new(&self.commits);
             // Inside the borders, after the mark.
             let width = (area.width as usize).saturating_sub(2 + 2);
-            let lines: Vec<Line> = self
-                .shown(pane)
+            let shown = self.shown(pane);
+            let rows = shown.len();
+            let lines: Vec<Line> = shown
                 .into_iter()
-                .enumerate()
                 .skip(skip)
                 .take(height)
-                .map(|(row, i)| {
-                    let style = if row == cursor && focused {
-                        Style::new().add_modifier(Modifier::REVERSED)
-                    } else {
-                        Style::new()
-                    };
+                .map(|i| {
                     if pane == 0 {
-                        return Line::from(Span::styled(all[i].0.clone(), style));
+                        return Line::raw(all[i].0.clone());
                     }
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
                     let mut spans = vec![mark(checked, theme)];
                     match i.checked_sub(self.uncommitted.len()) {
-                        Some(c) => spans.extend(columns.row(&self.commits[c], width, style, theme)),
-                        None => spans.push(Span::styled(all[i].0.clone(), style)),
+                        Some(c) => spans.extend(columns.row(&self.commits[c], width, theme)),
+                        None => spans.push(Span::raw(all[i].0.clone())),
                     }
                     Line::from(spans)
                 })
                 .collect();
-            f.render_widget(
-                Paragraph::new(lines).block(boxed(title, focused, theme)),
-                area,
-            );
+            let block = boxed(title, focused, theme);
+            let inner = block.inner(area);
+            f.render_widget(Paragraph::new(lines).block(block), area);
+            if focused && cursor < rows && height > 0 {
+                cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
+            }
         }
         let (text, style) = if let Some(e) = &self.error {
             (e.clone(), Style::new().fg(theme.red))

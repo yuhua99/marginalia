@@ -1,12 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
-use crate::ui::modal;
+use crate::ui::{cursor_bar, modal};
 
 /// A centered list of (label, text) rows with a cursor, for help and settings.
 pub struct Popup {
@@ -61,15 +61,9 @@ impl Popup {
             })
             .collect();
         f.render_widget(Paragraph::new(lines), inner);
-        // The cursor row reversed across the box, which may be wider than the rows.
+        // Across the box, which may be wider than the rows.
         if let Some(row) = self.cursor.checked_sub(skip).filter(|&r| r < shown) {
-            let rect = Rect {
-                y: inner.y + row as u16,
-                height: 1,
-                ..inner
-            };
-            f.buffer_mut()
-                .set_style(rect, Style::new().add_modifier(Modifier::REVERSED));
+            cursor_bar(f, inner, inner.y + row as u16, theme);
         }
     }
 }
