@@ -104,24 +104,14 @@ impl Component for Input {
                     return Ok(Outcome::Consumed);
                 }
                 let sent = match &self.target {
-                    Target::Comment(anchor) => {
-                        ctx.session
-                            .comment(anchor.clone(), "user", body, &mut ctx.repo)
-                    }
-                    Target::Reply(idx) => {
-                        let id = ctx.session.threads[*idx].id.clone();
-                        ctx.session.reply(&id, "user", body)
-                    }
-                    Target::Edit(idx) => {
-                        ctx.session.edit(*idx, body);
-                        Ok(())
-                    }
+                    Target::Comment(anchor) => ctx.comment(anchor.clone(), body)?,
+                    Target::Reply(idx) => ctx.reply(*idx, body)?,
+                    Target::Edit(idx) => ctx.edit(*idx, body).map(Ok)?,
                 };
                 if let Err(e) = sent {
                     self.error = Some(format!("{e:#}"));
                     return Ok(Outcome::Consumed);
                 }
-                ctx.threads_changed()?;
                 Ok(Outcome::Close)
             }
             KeyCode::Esc => {

@@ -134,15 +134,14 @@ fn main() -> Result<()> {
             store.save(&session)
         }
         Some(Cmd::Show { session, only }) => {
-            let mut view = store.load(&session)?.view(&mut repo)?;
-            if let Some(only) = only {
-                let threads = view["threads"].as_array_mut().expect("threads array");
-                threads.retain(|t| match only.as_str() {
-                    "waiting" => t["waiting_on"] == "agent",
-                    _ => t["outdated"] == true,
-                });
+            let mut session = store.load(&session)?;
+            session.check_outdated(&mut repo)?;
+            match only.as_deref() {
+                Some("waiting") => session.threads.retain(|t| t.waiting_on_agent()),
+                Some("outdated") => session.threads.retain(|t| t.outdated),
+                _ => {}
             }
-            println!("{}", serde_json::to_string_pretty(&view)?);
+            println!("{}", serde_json::to_string_pretty(&session.view()?)?);
             Ok(())
         }
         Some(Cmd::List) => {
@@ -213,7 +212,7 @@ fn tui(
         };
         let s = &ctx.session;
         if ctx.copy
-            && let Some(md) = s.markdown(&ctx.doc.thread_order(&s.threads))
+            && let Some(md) = s.markdown(&ctx.doc.thread_order())
         {
             // OSC 52: the terminal sets its clipboard, which outlives this process.
             print!("\x1b]52;c;{}\x07", STANDARD.encode(md));

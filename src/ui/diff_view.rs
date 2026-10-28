@@ -14,7 +14,7 @@ use crate::app::{Component, Ctx, Outcome};
 use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::Kind;
-use crate::session::{Anchor, Thread};
+use crate::session::Thread;
 use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
@@ -190,9 +190,7 @@ impl DiffView {
                 }
                 let row = ctx
                     .doc
-                    .expand(self.cursor, &ctx.session.threads, |rev, path| {
-                        ctx.repo.read(rev, path)
-                    })?;
+                    .expand(self.cursor, |rev, path| ctx.repo.read(rev, path))?;
                 self.cursor = row.min(ctx.doc.len() - 1);
                 self.mark = None;
             }
@@ -218,7 +216,7 @@ impl DiffView {
                     if let Some(file) = ctx.doc.file_of(&anchor)
                         && ctx.doc.collapsed(file)
                     {
-                        row = ctx.doc.expand_file(file, &ctx.session.threads);
+                        row = ctx.doc.expand_file(file);
                     }
                     self.start(row, Input::comment(anchor, &ctx.session));
                 }
@@ -240,9 +238,9 @@ impl DiffView {
                     && let Some(file) = self.current_file(ctx)
                 {
                     self.cursor = if ctx.doc.collapsed(file) {
-                        ctx.doc.expand_file(file, &ctx.session.threads)
+                        ctx.doc.expand_file(file)
                     } else {
-                        ctx.doc.collapse_file(file, &ctx.session.threads)
+                        ctx.doc.collapse_file(file)
                     };
                     self.mark = None;
                 }
@@ -560,17 +558,16 @@ fn thread_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
-    let outdated = ctx.outdated[idx];
     let t: &Thread = &ctx.session.threads[idx];
+    let outdated = t.outdated;
     let line = |spans: Vec<Span<'static>>| {
         Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
     let inner = width.saturating_sub(INDENT);
-    let location = ctx.session.location(&t.anchor);
-    let place = match (&t.anchor, inline) {
-        (Anchor::Lines { file, .. }, true) => location.replacen(&format!("{file}:"), "L", 1),
-        (Anchor::File { .. }, true) => "file".into(),
-        _ => location,
+    let place = if inline {
+        ctx.session.inline_location(&t.anchor)
+    } else {
+        ctx.session.location(&t.anchor)
     };
     let mut header = format!("{}  {place}", t.id);
     if t.waiting_on_agent() {

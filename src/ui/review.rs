@@ -92,7 +92,7 @@ impl Component for Review {
             // Leaving for the picker ends the session like quitting does.
             "quit" | "back" => {
                 ctx.back = action == "back";
-                let order = ctx.doc.thread_order(&ctx.session.threads);
+                let order = ctx.doc.thread_order();
                 if ctx.on_quit.is_none() && ctx.session.markdown(&order).is_some() {
                     return Ok(Outcome::Push(Box::new(QuitPrompt)));
                 }
@@ -119,9 +119,7 @@ impl Component for Review {
                         if let Some(anchor) = entry.anchor(ctx) {
                             // Under the file's header, or the session's for commits.
                             let row = match entry {
-                                Entry::File(file) => {
-                                    ctx.doc.expand_file(file, &ctx.session.threads)
-                                }
+                                Entry::File(file) => ctx.doc.expand_file(file),
                                 _ => 0,
                             };
                             self.diff.start(row, Input::comment(anchor, &ctx.session));

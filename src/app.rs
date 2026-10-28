@@ -11,7 +11,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::doc::Doc;
 use crate::highlight::Highlighter;
 use crate::repo::{self, Commit, Repo};
-use crate::session::Session;
+use crate::session::{Anchor, Session};
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::ui;
@@ -23,8 +23,6 @@ pub struct Ctx {
     pub repo: Repo,
     pub store: Store,
     pub doc: Doc,
-    /// Indexed like `session.threads`.
-    pub outdated: Vec<bool>,
     /// Copy the threads waiting on the agent to the clipboard after quitting.
     pub copy: bool,
     /// Quitting goes back to the picker.
@@ -89,7 +87,7 @@ impl Ctx {
         if session.migrate(&mut repo)? {
             store.save(&session)?;
         }
-        let outdated = session.outdated(&mut repo)?;
+        session.check_outdated(&mut repo)?;
         let mut views: Vec<View> = repo
             .commits(&session.base, &session.end)?
             .into_iter()
@@ -105,7 +103,6 @@ impl Ctx {
             repo,
             store,
             doc,
-            outdated,
             copy: false,
             back: false,
             on_quit: None,
@@ -126,9 +123,38 @@ impl Ctx {
         Ok(())
     }
 
+    /// The user's comment on `anchor`. The inner error is the session turning it down,
+    /// the outer one saving failing; so for `reply`.
+    pub fn comment(&mut self, anchor: Anchor, body: String) -> Result<Result<()>> {
+        if let Err(e) = self.session.comment(anchor, "user", body, &mut self.repo) {
+            return Ok(Err(e));
+        }
+        self.threads_changed().map(Ok)
+    }
+
+    /// The user's reply to thread `idx`.
+    pub fn reply(&mut self, idx: usize, body: String) -> Result<Result<()>> {
+        let id = self.session.threads[idx].id.clone();
+        if let Err(e) = self.session.reply(&id, "user", body) {
+            return Ok(Err(e));
+        }
+        self.threads_changed().map(Ok)
+    }
+
+    /// Rewrites the last message of thread `idx`.
+    pub fn edit(&mut self, idx: usize, body: String) -> Result<()> {
+        self.session.edit(idx, body);
+        self.threads_changed()
+    }
+
+    /// Removes the last message of thread `idx`, or the thread when it is the only one.
+    pub fn delete(&mut self, idx: usize) -> Result<()> {
+        self.session.delete(idx);
+        self.threads_changed()
+    }
+
     /// Saves the session and refreshes the thread rows after threads changed.
-    pub fn threads_changed(&mut self) -> Result<()> {
-        self.outdated.resize(self.session.threads.len(), false);
+    fn threads_changed(&mut self) -> Result<()> {
         self.store.save(&self.session)?;
         self.doc.set_threads(&self.session.threads);
         Ok(())
