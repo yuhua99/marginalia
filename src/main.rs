@@ -41,7 +41,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged; no A starts before the root) and print its id
-    New { range: String },
+    New {
+        range: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Add comments from a JSON file (`-` for stdin) to a session; prints {id, location} per comment
     Comment {
         #[arg(long)]
@@ -91,9 +95,12 @@ fn main() -> Result<()> {
             need_terminal()?;
             tui(store, repo, None, None)
         }
-        Some(Cmd::New { range }) => {
+        Some(Cmd::New { range, name }) => {
             let (base, end) = repo.resolve(&range)?;
-            let session = Session::new(store.new_id(), range, base, end);
+            let mut session = Session::new(store.new_id(), range, base, end);
+            if let Some(name) = name {
+                session.set_name(&name)?;
+            }
             store.save(&session)?;
             println!("{}", session.id);
             Ok(())
@@ -158,6 +165,7 @@ fn main() -> Result<()> {
                 .map(|(s, updated)| {
                     serde_json::json!({
                         "id": s.id,
+                        "name": s.name,
                         "range": s.range,
                         "updated": updated,
                         "open": s.open_count(),

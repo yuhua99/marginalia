@@ -173,11 +173,12 @@ impl Component for Review {
     }
 }
 
-/// The range, id, thread counts and the views shown.
+/// The name, range, id, thread counts and the views shown.
 fn header(ctx: &Ctx) -> String {
     let s = &ctx.session;
+    let name = s.name.as_ref().map_or(String::new(), |n| format!(" {n} /"));
     let mut header = format!(
-        " {} / {} / {} open / {} waiting on you",
+        "{name} {} / {} / {} open / {} waiting on you",
         s.range,
         s.id,
         s.open_count(),

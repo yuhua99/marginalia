@@ -41,6 +41,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("s", "settings"),
     ("/", "filter"),
     ("X", "delete_session"),
+    ("R", "rename_session"),
 ];
 
 impl Default for Keymap {
