@@ -19,7 +19,7 @@ use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
-use crate::ui::status_style;
+use crate::ui::{cursor_bar, status_style};
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
@@ -268,10 +268,7 @@ impl DiffView {
         self.height = area.height as usize;
         let (h, cursor, selection) = (self.height, self.cursor, self.selection());
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
-        let draw = |i: usize| {
-            let (at_cursor, selected) = (i == cursor, selection.contains(&i));
-            draw_row(ctx, doc, i, area.width, at_cursor, selected, editing)
-        };
+        let draw = |i: usize| draw_row(ctx, doc, i, area.width, selection.contains(&i), editing);
         let draft_at = self.draft.as_ref().map(|(row, _)| *row);
         let draft_height = self
             .draft
@@ -343,6 +340,10 @@ impl DiffView {
                     f.render_widget(para(right, rs), right_rect);
                 }
             }
+            // A code row shows the cursor in its gutter; other rows, a bar on their first line.
+            if i == cursor && skip == 0 && !matches!(doc.window(i, 1)[0], Row::Code { .. }) {
+                cursor_bar(f, area, rect.y, ctx.theme);
+            }
             y += shown;
             if draft_at == Some(i)
                 && y < h
@@ -372,17 +373,9 @@ fn draw_row(
     doc: &Doc,
     i: usize,
     width: u16,
-    at_cursor: bool,
     selected: bool,
     editing: Option<usize>,
 ) -> Drawn {
-    let mark = |style: Style| {
-        if at_cursor {
-            style.add_modifier(Modifier::REVERSED)
-        } else {
-            style
-        }
-    };
     let theme = ctx.theme;
     let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
     let text = match &doc.window(i, 1)[0] {
@@ -404,21 +397,20 @@ fn draw_row(
                 Span::styled(status.to_string(), status_style(*status, theme)),
                 Span::raw(format!(" {text}")),
             ]);
-            return Drawn::Full(vec![line], mark(header));
+            return Drawn::Full(vec![line], header);
         }
         Row::Fold { hidden, .. } => {
             let text = match hidden {
                 Some(n) => format!("  ... {n} unchanged lines ..."),
                 None => "  ... more lines ...".to_string(),
             };
-            return Drawn::Full(vec![Line::raw(text)], mark(Style::new().fg(theme.dim)));
+            return Drawn::Full(vec![Line::raw(text)], Style::new().fg(theme.dim));
         }
         Row::Thread { idx } => {
             return Drawn::Full(
                 thread_lines(
                     ctx,
                     *idx,
-                    at_cursor,
                     !doc.at_top(i),
                     editing == Some(*idx),
                     width as usize,
@@ -469,7 +461,7 @@ fn draw_row(
             ]);
         }
     };
-    Drawn::Full(vec![Line::raw(text)], mark(header))
+    Drawn::Full(vec![Line::raw(text)], header)
 }
 
 /// One side of a code row, wrapped by grapheme to `width`.
@@ -558,7 +550,6 @@ fn code_lines(
 fn thread_lines(
     ctx: &Ctx,
     idx: usize,
-    at_cursor: bool,
     inline: bool,
     hide_last: bool,
     width: usize,
@@ -583,10 +574,7 @@ fn thread_lines(
     if outdated {
         header.push_str("  outdated");
     }
-    let mut header_style = Style::new().add_modifier(Modifier::BOLD);
-    if at_cursor {
-        header_style = header_style.add_modifier(Modifier::REVERSED);
-    }
+    let header_style = Style::new().add_modifier(Modifier::BOLD);
     let mut header = vec![Span::styled(header, header_style)];
     let links = file_view::thread_links(t, &ctx.files).len();
     if links > 0 {
