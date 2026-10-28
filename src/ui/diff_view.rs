@@ -19,6 +19,7 @@ use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
+use crate::ui::query::{self, Query};
 use crate::ui::scroll::Scroll;
 use crate::ui::{cursor_bar, status_style};
 
@@ -37,6 +38,8 @@ pub struct DiffView {
     draft: Option<(usize, Input)>,
     /// The links of the thread at the cursor to pick from; it takes all keys.
     links: Option<LinkPicker>,
+    /// The `/` search; while typing, it takes all keys.
+    search: Query,
 }
 
 /// What a row draws: full width with a style, or the two halves of a code row.
@@ -81,7 +84,28 @@ impl DiffView {
         self.draft = Some((row, input));
     }
 
-    /// Sends `key` to the link list or the draft, if one is open; None when neither is.
+    /// `/text ` for the title while searching.
+    pub fn search_title(&self) -> String {
+        self.search.title()
+    }
+
+    /// Moves to the next (or previous) search match.
+    fn find(&mut self, ctx: &mut Ctx, forward: bool) {
+        let (cursor, len) = (self.scroll.cursor, ctx.doc.len());
+        if let Some(row) = self
+            .search
+            .find(&mut ctx.doc, cursor, forward, &ctx.session.threads)
+        {
+            self.scroll.cursor = row;
+            // Expanding a file shifts the rows under it.
+            if ctx.doc.len() != len {
+                self.mark = None;
+            }
+        }
+    }
+
+    /// Sends `key` to the link list, the draft or the search being typed, if any;
+    /// None when there is none.
     pub fn modal_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Option<Outcome>> {
         if let Some(picker) = &mut self.links {
             let Some(picked) = picker.key(key) else {
@@ -93,6 +117,12 @@ impl DiffView {
                 None => Outcome::Consumed,
             }));
         }
+        if self.search.typing {
+            if self.search.key(key) {
+                self.find(ctx, true);
+            }
+            return Ok(Some(Outcome::Consumed));
+        }
         let Some((_, input)) = &mut self.draft else {
             return Ok(None);
         };
@@ -103,7 +133,9 @@ impl DiffView {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if let Some((_, input)) = &mut self.draft {
+        if self.search.typing {
+            self.search.paste(text);
+        } else if let Some((_, input)) = &mut self.draft {
             input.paste(text);
         }
     }
@@ -120,6 +152,10 @@ impl DiffView {
         }
         let cursor = self.scroll.cursor;
         match action {
+            "filter" => self.search = Query::start(),
+            "next_thread" | "prev_thread" if !self.search.text.is_empty() => {
+                self.find(ctx, action == "next_thread")
+            }
             "next_thread" | "prev_thread" => {
                 if let Some(i) = ctx.doc.next_thread(cursor, action == "next_thread") {
                     self.scroll.cursor = i;
@@ -154,7 +190,8 @@ impl DiffView {
                     Some(cursor)
                 }
             }
-            "cancel" => self.mark = None,
+            "cancel" if self.mark.is_some() => self.mark = None,
+            "cancel" => self.search = Query::default(),
             "comment" => {
                 if let Some(idx) = self.thread_at_cursor(ctx) {
                     self.start(cursor, Input::reply(idx));
@@ -204,10 +241,11 @@ impl DiffView {
         self.scroll.cursor = self.scroll.cursor.min(doc.len() - 1);
         let selection = self.selection();
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
+        let search = &self.search.text;
         let draw = |i: usize| {
             let accent = Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent);
             let mark = selection.contains(&i).then_some(accent);
-            draw_row(ctx, doc, i, area.width, mark, editing)
+            draw_row(ctx, doc, i, area.width, mark, editing, search)
         };
         let draft_at = self.draft.as_ref().map(|(row, _)| *row);
         let draft_height = self
@@ -321,6 +359,7 @@ pub fn draw_rows(
 
 /// `mark`: the gutter's style, for the selection or a file view's linked lines.
 /// `editing`: the thread whose last message the draft replaces.
+/// `search`: the text whose matches to mark.
 pub fn draw_row(
     ctx: &Ctx,
     doc: &Doc,
@@ -328,6 +367,7 @@ pub fn draw_row(
     width: u16,
     mark: Option<Style>,
     editing: Option<usize>,
+    search: &str,
 ) -> Drawn {
     let theme = ctx.theme;
     let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
@@ -339,17 +379,22 @@ pub fn draw_row(
             path,
             note,
         } => {
-            let mut text = path.clone();
+            let mut rest = String::new();
             if let Some(note) = note {
-                text.push_str(&format!("  ({note})"));
+                rest.push_str(&format!("  ({note})"));
             }
             if doc.collapsed(*file) {
-                text.push_str("  (reviewed)");
+                rest.push_str("  (reviewed)");
             }
-            let line = Line::from(vec![
+            // Only the path is searched.
+            let mut spans = vec![
                 Span::styled(status.to_string(), status_style(*status, theme)),
-                Span::raw(format!(" {text}")),
-            ]);
+                Span::raw(" "),
+            ];
+            let path = vec![Span::raw(path.clone())];
+            spans.extend(query::mark(path, search, query::hit_style(theme)));
+            spans.push(Span::raw(rest));
+            let line = Line::from(spans);
             return Drawn::Full(vec![line], header);
         }
         Row::Fold { hidden, .. } => {
@@ -367,6 +412,7 @@ pub fn draw_row(
                     !doc.at_top(i),
                     editing == Some(*idx),
                     width as usize,
+                    search,
                 ),
                 Style::new().bg(theme.surface),
             );
@@ -383,8 +429,15 @@ pub fn draw_row(
                     Some(_) => (right, colors(right, right_rev, new_path)),
                     None => (left, colors(left, left_rev, old_path)),
                 };
-                let (lines, style) =
-                    code_lines(side.as_ref(), colors, width as usize, mark, theme, ctx.wrap);
+                let (lines, style) = code_lines(
+                    side.as_ref(),
+                    colors,
+                    width as usize,
+                    mark,
+                    theme,
+                    ctx.wrap,
+                    search,
+                );
                 return Drawn::Full(lines, style);
             }
             let half = width / 2;
@@ -396,6 +449,7 @@ pub fn draw_row(
                     mark,
                     theme,
                     ctx.wrap,
+                    search,
                 ),
                 code_lines(
                     right.as_ref(),
@@ -404,6 +458,7 @@ pub fn draw_row(
                     mark,
                     theme,
                     ctx.wrap,
+                    search,
                 ),
             ]);
         }
@@ -411,7 +466,8 @@ pub fn draw_row(
     Drawn::Full(vec![Line::raw(text)], header)
 }
 
-/// One side of a code row, wrapped by grapheme to `width`; `mark` styles the gutter.
+/// One side of a code row, wrapped by grapheme to `width`; `mark` styles the gutter,
+/// and the matches of `search` are marked.
 fn code_lines(
     side: Option<&Side>,
     colors: Option<&Colors>,
@@ -419,10 +475,12 @@ fn code_lines(
     mark: Option<Style>,
     theme: &Theme,
     wrap: bool,
+    search: &str,
 ) -> (Vec<Line<'static>>, Style) {
     let Some(s) = side else {
         return (Vec::new(), Style::new());
     };
+    let hits = query::hits(&s.text, search);
     // Changes show in the line background and number color; changed words in `emph`.
     let (color, bg, emph) = match s.kind {
         Kind::Ctx => (theme.dim, theme.bg, theme.bg),
@@ -480,6 +538,9 @@ fn code_lines(
         if s.emph.iter().any(|r| r.contains(&at)) {
             style = style.bg(emph);
         }
+        if hits.iter().any(|r| r.contains(&at)) {
+            style = style.patch(query::hit_style(theme));
+        }
         if style != chunk_style && !chunk.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut chunk), chunk_style));
         }
@@ -500,6 +561,7 @@ fn thread_lines(
     inline: bool,
     hide_last: bool,
     width: usize,
+    search: &str,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t: &Thread = &ctx.session.threads[idx];
@@ -562,14 +624,17 @@ fn thread_lines(
                     " ".repeat(indent)
                 };
                 first = false;
-                let mut spans = vec![Span::styled(prefix, who)];
+                let mut body = Vec::new();
                 let mut at = 0;
                 for (range, _) in file_view::links(&part, &ctx.files) {
-                    spans.push(Span::raw(part[at..range.start].to_string()));
-                    spans.push(Span::styled(part[range.clone()].to_string(), link));
+                    body.push(Span::raw(part[at..range.start].to_string()));
+                    body.push(Span::styled(part[range.clone()].to_string(), link));
                     at = range.end;
                 }
-                spans.push(Span::raw(part[at..].to_string()));
+                body.push(Span::raw(part[at..].to_string()));
+                // Only the body is searched.
+                let mut spans = vec![Span::styled(prefix, who)];
+                spans.extend(query::mark(body, search, query::hit_style(theme)));
                 lines.push(line(spans));
             }
         }

@@ -1,4 +1,5 @@
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -6,6 +7,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::{Ctx, View};
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
+use crate::ui::query::Query;
 use crate::ui::{boxed, check, cursor_bar, status_style, step};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
@@ -19,6 +21,8 @@ pub struct Sidebar {
     /// While the commits box has focus: the checked views first..=last, or None for none.
     /// Outside it (None) the box marks the views shown.
     checked: Option<Option<(usize, usize)>>,
+    /// The files box's `/` filter on paths.
+    filter: Query,
 }
 
 #[derive(Clone, Copy)]
@@ -66,7 +70,7 @@ impl Sidebar {
 
     fn items(&self, ctx: &Ctx) -> Vec<Item> {
         if self.files {
-            files(ctx)
+            files(ctx, &self.filter.text)
         } else {
             views(ctx, self.checked)
         }
@@ -88,8 +92,34 @@ impl Sidebar {
         self.checked = focused.then_some(Some(shown));
     }
 
+    /// While typing the filter, takes `key`; false otherwise.
+    pub fn filter_key(&mut self, key: KeyEvent) -> bool {
+        if !self.filter.typing {
+            return false;
+        }
+        self.filter.key(key);
+        self.cursor = 0;
+        true
+    }
+
+    /// While typing the filter, adds pasted `text` to it.
+    pub fn paste(&mut self, text: &str) {
+        if self.filter.typing {
+            self.filter.paste(text);
+            self.cursor = 0;
+        }
+    }
+
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
         let len = self.items(ctx).len();
+        match action {
+            "filter" if self.files => self.filter.typing = true,
+            "cancel" if self.files => {
+                self.filter = Query::default();
+                self.cursor = 0;
+            }
+            _ => {}
+        }
         if action == "check" {
             if let Entry::View(v) = self.entry(ctx)
                 && let Some(checked) = &mut self.checked
@@ -141,7 +171,8 @@ impl Sidebar {
                 Line::from(spans)
             })
             .collect();
-        let title = if self.files { " Files " } else { " Commits " };
+        let name = if self.files { " Files " } else { " Commits " };
+        let title = name.to_string() + &self.filter.title();
         let block = boxed(title, focused, ctx.theme);
         let inner = block.inner(area);
         f.render_widget(Paragraph::new(lines).block(block), area);
@@ -179,11 +210,16 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
         .collect()
 }
 
-fn files(ctx: &Ctx) -> Vec<Item> {
+/// The files with `filter` in their path, any case, under their directories.
+fn files(ctx: &Ctx, filter: &str) -> Vec<Item> {
     let mut items = Vec::new();
+    let filter = filter.to_lowercase();
     // Files come in path order, so a directory's files are contiguous.
     let mut prev: Vec<&str> = Vec::new();
     for (file, (_, path)) in ctx.doc.paths().iter().enumerate() {
+        if !path.to_lowercase().contains(&filter) {
+            continue;
+        }
         let mut dirs: Vec<&str> = path.split('/').collect();
         let name = dirs.pop().unwrap_or_default();
         let same = prev.iter().zip(&dirs).take_while(|(a, b)| a == b).count();

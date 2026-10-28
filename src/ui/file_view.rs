@@ -17,6 +17,7 @@ use crate::ui::clear;
 use crate::ui::diff_view::{draw_row, draw_rows};
 use crate::ui::help::{Entry, Help};
 use crate::ui::popup::Popup;
+use crate::ui::query::Query;
 use crate::ui::scroll::Scroll;
 use crate::ui::settings::SettingsPopup;
 
@@ -24,12 +25,17 @@ const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
     (&["top", "bottom"], "top / bottom"),
+    (&["filter"], "search; Enter ends typing"),
+    (&["next_thread", "prev_thread"], "next / previous match"),
     (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
-    (&["quit", "cancel"], "back to the diff"),
+    (
+        &["quit", "cancel"],
+        "back to the diff; Esc clears the search first",
+    ),
 ];
 
-const HINTS: &str = " j/k move  C-d/C-u half page  gg/G top/bottom  s settings  ? help  q/Esc back";
+const HINTS: &str = " j/k move  C-d/C-u half page  gg/G top/bottom  / search  n/N match  s settings  ? help  q/Esc back";
 
 /// A whole file at the range end, opened from a link, read only and without threads;
 /// the linked lines are marked in the gutter. `q` / `Esc` go back.
@@ -40,6 +46,8 @@ pub struct FileView {
     /// The rows of the linked lines.
     linked: RangeInclusive<usize>,
     scroll: Scroll,
+    /// The `/` search; while typing, it takes all keys.
+    search: Query,
     keymap: Keymap,
 }
 
@@ -56,26 +64,56 @@ impl FileView {
             label: link.label(),
             linked: start..=end,
             scroll: Scroll::at(start),
+            search: Query::default(),
             keymap: Keymap::default(),
         }))
     }
 }
 
+impl FileView {
+    /// Moves to the next (or previous) search match.
+    fn find(&mut self, forward: bool) {
+        let cursor = self.scroll.cursor;
+        if let Some(row) = self.search.find(&mut self.doc, cursor, forward, &[]) {
+            self.scroll.cursor = row;
+        }
+    }
+}
+
 impl Component for FileView {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
+        if self.search.typing {
+            if self.search.key(key) {
+                self.find(true);
+            }
+            return Ok(Outcome::Consumed);
+        }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
         };
         match action {
-            "help" => Ok(Outcome::Push(Box::new(Help::new(HELP)))),
-            "settings" => Ok(Outcome::Push(Box::new(SettingsPopup::new(
-                ctx.theme, ctx.wrap,
-            )))),
-            "quit" | "cancel" => Ok(Outcome::Close),
+            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "settings" => {
+                return Ok(Outcome::Push(Box::new(SettingsPopup::new(
+                    ctx.theme, ctx.wrap,
+                ))));
+            }
+            "filter" => self.search = Query::start(),
+            "next_thread" | "prev_thread" if !self.search.text.is_empty() => {
+                self.find(action == "next_thread")
+            }
+            "cancel" if !self.search.text.is_empty() => self.search = Query::default(),
+            "quit" | "cancel" => return Ok(Outcome::Close),
             _ => {
                 self.scroll.act(action, self.doc.len());
-                Ok(Outcome::Consumed)
             }
+        }
+        Ok(Outcome::Consumed)
+    }
+
+    fn paste(&mut self, text: &str) {
+        if self.search.typing {
+            self.search.paste(text);
         }
     }
 
@@ -85,10 +123,12 @@ impl Component for FileView {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         clear(f, area, ctx.theme);
-        let block = boxed(format!(" {} ", self.label), true, ctx.theme);
+        let title = format!(" {} {}", self.label, self.search.title());
+        let block = boxed(title, true, ctx.theme);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let (doc, linked, cursor) = (&self.doc, &self.linked, self.scroll.cursor);
+        let search = &self.search.text;
         let draw = |i: usize| {
             // The cursor as an accent block; linked lines as bold blue numbers, apart from
             // it in themes whose accent is blue.
@@ -99,7 +139,7 @@ impl Component for FileView {
             } else {
                 None
             };
-            draw_row(ctx, doc, i, inner.width, mark, None)
+            draw_row(ctx, doc, i, inner.width, mark, None, search)
         };
         self.scroll.place(
             inner.height as usize,

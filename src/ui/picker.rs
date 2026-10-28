@@ -17,6 +17,7 @@ use crate::theme::Theme;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
+use crate::ui::query::Query;
 use crate::ui::settings::SettingsPopup;
 use crate::ui::{boxed, check, clear, cursor_bar, dialog, step};
 
@@ -84,9 +85,9 @@ pub fn run(
                     .collect();
                 name.insert_str(fits);
             }
-            Event::Paste(text) if p.typing => {
+            Event::Paste(text) if p.filter[p.pane()].typing => {
                 let pane = p.pane();
-                p.filter[pane].push_str(text.lines().next().unwrap_or(""));
+                p.filter[pane].paste(&text);
                 p.cursor[pane] = 0;
             }
             _ => {}
@@ -104,9 +105,7 @@ struct Picker {
     right: bool,
     /// Per pane, into its shown rows.
     cursor: [usize; 2],
-    filter: [String; 2],
-    /// Keys go to the filter of the focused pane.
-    typing: bool,
+    filter: [Query; 2],
     /// Checked rows of the range pane, top..=bottom into all its rows.
     checked: Option<(usize, usize)>,
     /// Rows a pane shows, as of the last render.
@@ -163,7 +162,7 @@ impl Picker {
 
     /// Indices into `all(pane)` that pass the filter.
     fn shown(&self, pane: usize) -> Vec<usize> {
-        let filter = self.filter[pane].to_lowercase();
+        let filter = self.filter[pane].text.to_lowercase();
         self.all(pane)
             .iter()
             .enumerate()
@@ -241,19 +240,8 @@ impl Picker {
             }
             return Ok(None);
         }
-        if self.typing {
-            match key.code {
-                KeyCode::Char(c) => self.filter[pane].push(c),
-                KeyCode::Backspace => {
-                    self.filter[pane].pop();
-                }
-                KeyCode::Enter => self.typing = false,
-                KeyCode::Esc => {
-                    self.filter[pane].clear();
-                    self.typing = false;
-                }
-                _ => {}
-            }
+        if self.filter[pane].typing {
+            self.filter[pane].key(key);
             self.cursor[pane] = 0;
             return Ok(None);
         }
@@ -274,7 +262,7 @@ impl Picker {
                     }
                 }
             }
-            "filter" => self.typing = true,
+            "filter" => self.filter[pane].typing = true,
             "delete_session" if !self.right => self.deleting = at.is_some(),
             "rename_session" if !self.right => {
                 if let Some(i) = at {
@@ -293,7 +281,7 @@ impl Picker {
                 if self.right && self.checked.is_some() {
                     self.checked = None;
                 } else {
-                    self.filter[pane].clear();
+                    self.filter[pane] = Query::default();
                     self.cursor[pane] = 0;
                 }
             }
@@ -362,9 +350,7 @@ impl Picker {
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
             let mut title = [" Sessions ", " New review "][pane].to_string();
-            if !self.filter[pane].is_empty() || (focused && self.typing) {
-                title.push_str(&format!("/{} ", self.filter[pane]));
-            }
+            title.push_str(&self.filter[pane].title());
             let height = area.height.saturating_sub(2) as usize;
             let cursor = self.cursor[pane];
             let skip = (cursor + 1).saturating_sub(height);
