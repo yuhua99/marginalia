@@ -117,28 +117,14 @@ impl Sidebar {
         .min(last);
     }
 
-    /// `file`, when set, is marked instead of the cursor.
-    pub fn render(
-        &mut self,
-        f: &mut Frame,
-        area: Rect,
-        ctx: &Ctx,
-        focused: bool,
-        file: Option<usize>,
-    ) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, focused: bool) {
         let items = self.items(ctx);
         self.height = area.height.saturating_sub(2) as usize;
         self.cursor = self.cursor.min(items.len().saturating_sub(1));
-        let marked = match file {
-            Some(file) => items
-                .iter()
-                .position(|i| matches!(i.entry, Entry::File(n) if n == file)),
-            None => focused.then_some(self.cursor),
-        };
-        let shown = marked.unwrap_or(self.cursor);
-        self.top = self.top.min(shown);
-        if shown >= self.top + self.height {
-            self.top = shown + 1 - self.height;
+        let marked = focused.then_some(self.cursor);
+        self.top = self.top.min(self.cursor);
+        if self.cursor >= self.top + self.height {
+            self.top = self.cursor + 1 - self.height;
         }
         let columns = Columns::new(ctx.views.iter().filter_map(|v| match v {
             View::Commit(c) => Some(c),
