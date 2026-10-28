@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::{Component, Ctx, Outcome, View};
+use crate::app::{Component, Ctx, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::ui::boxed;
 use crate::ui::diff_view::DiffView;
@@ -155,15 +155,13 @@ impl Component for Review {
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
         let [left, right] =
             Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(bottom);
-        self.commits
-            .render(f, top, ctx, self.focus == COMMITS, None);
-        // With the diff focused, the files box marks the diff's file.
-        let file = (self.focus == DIFF)
-            .then(|| self.diff.current_file(ctx))
-            .flatten();
-        self.files.render(f, left, ctx, self.focus == FILES, file);
+        self.commits.render(f, top, ctx, self.focus == COMMITS);
+        self.files.render(f, left, ctx, self.focus == FILES);
         let block = boxed(
-            Span::styled(header(ctx), Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                header(ctx, self.diff.current_file(ctx)),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
             self.focus == DIFF,
             ctx.theme,
         );
@@ -173,26 +171,18 @@ impl Component for Review {
     }
 }
 
-/// The name, range, id, thread counts and the views shown.
-fn header(ctx: &Ctx) -> String {
-    let s = &ctx.session;
-    let name = s.name.as_ref().map_or(String::new(), |n| format!(" {n} /"));
-    let mut header = format!(
-        "{name} {} / {} / {} open / {} waiting on you",
-        s.range,
-        s.id,
-        s.open_count(),
-        s.waiting_on_user_count()
-    );
-    let label = |v: usize| match &ctx.views[v] {
-        View::Commit(c) => &c.sha[..7],
-        _ => &s.end,
+/// The path of `file` and its open threads, else the session name, if any.
+fn header(ctx: &Ctx, file: Option<usize>) -> String {
+    let Some(file) = file else {
+        return ctx
+            .session
+            .name
+            .as_ref()
+            .map_or(String::new(), |n| format!(" {n} "));
     };
-    match ctx.view {
-        (0, 0) => {}
-        (first, last) if first == last => header.push_str(&format!(" / viewing {}", label(first))),
-        (first, last) => header.push_str(&format!(" / viewing {}..{}", label(first), label(last))),
-    }
-    header.push(' ');
-    header
+    format!(
+        " {} / {} open ",
+        ctx.doc.paths()[file].1,
+        ctx.doc.open_in(&ctx.session.threads, file)
+    )
 }

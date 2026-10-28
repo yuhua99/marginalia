@@ -5,7 +5,7 @@ use anyhow::Result;
 use similar::{ChangeTag, TextDiff};
 
 use crate::repo::{FileDiff, Kind};
-use crate::session::{Anchor, Owner, Thread};
+use crate::session::{Anchor, Owner, Status, Thread};
 
 /// The logical rows of a side-by-side diff, with threads placed under what they anchor to.
 pub struct Doc {
@@ -494,15 +494,31 @@ impl Doc {
         &self.paths
     }
 
+    /// The file `anchor` is on in this view.
+    fn file_of(&self, anchor: &Anchor) -> Option<usize> {
+        match self.spot(anchor) {
+            Spot::File(f) | Spot::Line(f, ..) => Some(f),
+            _ => None,
+        }
+    }
+
     /// Per file, its threads waiting on the user.
     pub fn waiting_per_file(&self, threads: &[Thread]) -> Vec<usize> {
         let mut n = vec![0; self.paths.len()];
         for t in threads.iter().filter(|t| t.waiting_on_user()) {
-            if let Spot::File(f) | Spot::Line(f, ..) = self.spot(&t.anchor) {
+            if let Some(f) = self.file_of(&t.anchor) {
                 n[f] += 1;
             }
         }
         n
+    }
+
+    /// The open threads on `file`.
+    pub fn open_in(&self, threads: &[Thread], file: usize) -> usize {
+        threads
+            .iter()
+            .filter(|t| t.status == Status::Open && self.file_of(&t.anchor) == Some(file))
+            .count()
     }
 
     /// Thread indices in row order, then those hidden in this view.
