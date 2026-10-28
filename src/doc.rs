@@ -23,6 +23,10 @@ pub struct Doc {
     /// Empty for the whole range, which places lines by their rev and shows every thread;
     /// otherwise lines go by their owner, and threads of other commits are left out.
     commits: Vec<String>,
+    /// Per commit shown, the diffs that carry its lines to the sides here, [kept, deleted]:
+    /// from it to the right side for lines it keeps, from its parent to the left side for
+    /// lines it deletes; None for the side that is its own.
+    carry: Vec<[Option<Vec<FileDiff>>; 2]>,
     /// Per collapsed file, its rows other than the header; its threads are left out.
     collapsed: HashMap<usize, Vec<Row>>,
     /// Where each of the session threads goes, as of `set_threads`.
@@ -85,6 +89,7 @@ impl Doc {
         right_rev: String,
         files: Vec<FileDiff>,
         commits: Vec<String>,
+        carry: Vec<[Option<Vec<FileDiff>>; 2]>,
     ) -> Doc {
         let mut rows = vec![Row::Session];
         let mut paths = Vec::new();
@@ -203,6 +208,7 @@ impl Doc {
             one_sided,
             rows,
             commits,
+            carry,
             collapsed: HashMap::new(),
             spots: Vec::new(),
         }
@@ -234,6 +240,7 @@ impl Doc {
             one_sided: vec![true],
             rows: [header].into_iter().chain(lines).collect(),
             commits: Vec::new(),
+            carry: Vec::new(),
             collapsed: HashMap::new(),
             spots: Vec::new(),
         }
@@ -332,13 +339,17 @@ impl Doc {
                 let Some(i) = self.commits.iter().position(|c| *c == o.commit) else {
                     return Spot::Top;
                 };
-                // A side shows deleted lines of the oldest commit, the others of the newest.
-                if i != if o.deleted { 0 } else { self.commits.len() - 1 } {
-                    return Spot::Whole;
-                }
+                // Lines a later shown commit changes, or an earlier one adds, have no side.
+                let (file, line) = match &self.carry[i][o.deleted as usize] {
+                    None => (o.file.clone(), o.line),
+                    Some(files) => match carry(files, &o.file, o.line) {
+                        Some(at) => at,
+                        None => return Spot::Whole,
+                    },
+                };
                 let right = !o.deleted;
-                match find(&|p| if right { p.1 == o.file } else { p.0 == o.file }) {
-                    Some(f) => Spot::Line(f, right, o.line),
+                match find(&|p| if right { p.1 == file } else { p.0 == file }) {
+                    Some(f) => Spot::Line(f, right, line),
                     None => Spot::Whole,
                 }
             }
@@ -611,6 +622,30 @@ impl Spot {
     }
 }
 
+/// Line `line` of `path` on the old side of `files`, a diff without context, on their
+/// new side; None when they change or delete it.
+fn carry(files: &[FileDiff], path: &str, line: u32) -> Option<(String, u32)> {
+    let Some(f) = files.iter().find(|f| f.old_path == path) else {
+        return Some((path.to_string(), line));
+    };
+    if f.status == 'D' {
+        return None;
+    }
+    // Where the last hunk before `line` ends, old and new.
+    let (mut old_end, mut new_end) = (1, 1);
+    for h in &f.hunks {
+        let (old, new) = (first(h.old_start, h.old_len), first(h.new_start, h.new_len));
+        if line < old {
+            break;
+        }
+        if line < old + h.old_len {
+            return None;
+        }
+        (old_end, new_end) = (old + h.old_len, new + h.new_len);
+    }
+    Some((f.new_path.clone(), line - old_end + new_end))
+}
+
 /// First line of a hunk side; an empty side's start is the line before the change.
 fn first(start: u32, len: u32) -> u32 {
     if len == 0 { start + 1 } else { start }
@@ -697,7 +732,7 @@ mod tests {
                 ],
             }],
         };
-        Doc::new("b".into(), "e".into(), vec![file], Vec::new())
+        Doc::new("b".into(), "e".into(), vec![file], Vec::new(), Vec::new())
     }
 
     fn thread(anchor: Anchor) -> Thread {
@@ -717,6 +752,50 @@ mod tests {
         (0..doc.len())
             .filter(|&i| matches!(doc.window(i, 1)[0], Row::Thread { .. }))
             .collect()
+    }
+
+    #[test]
+    fn carry_shifts_kept_lines() {
+        let line = |kind, text: &str| Line {
+            kind,
+            text: text.into(),
+        };
+        // Renamed `a` -> `b`, line 2 changed to two lines, then line 9 deleted.
+        let files = [FileDiff {
+            status: 'R',
+            old_path: "a".into(),
+            new_path: "b".into(),
+            binary: false,
+            skipped: false,
+            hunks: vec![
+                Hunk {
+                    old_start: 2,
+                    old_len: 1,
+                    new_start: 2,
+                    new_len: 2,
+                    lines: vec![
+                        line(Kind::Del, "x"),
+                        line(Kind::Add, "y"),
+                        line(Kind::Add, "z"),
+                    ],
+                },
+                Hunk {
+                    old_start: 9,
+                    old_len: 1,
+                    new_start: 9,
+                    new_len: 0,
+                    lines: vec![line(Kind::Del, "9")],
+                },
+            ],
+        }];
+        let at = |path, n| carry(&files, path, n);
+        assert_eq!(at("a", 1), Some(("b".into(), 1)));
+        assert_eq!(at("a", 2), None);
+        assert_eq!(at("a", 3), Some(("b".into(), 4)));
+        assert_eq!(at("a", 5), Some(("b".into(), 6)));
+        assert_eq!(at("a", 9), None);
+        assert_eq!(at("a", 10), Some(("b".into(), 10)));
+        assert_eq!(at("c", 7), Some(("c".into(), 7)));
     }
 
     #[test]

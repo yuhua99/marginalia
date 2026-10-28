@@ -132,10 +132,11 @@ impl Repo {
         Ok(())
     }
 
-    /// Files changed from `base` to `end`. With `end = unstaged`, untracked files
-    /// over the size limit come last with `skipped` set.
-    pub fn diff(&mut self, base: &str, end: &str) -> Result<Vec<FileDiff>> {
+    /// Files changed from `base` to `end`, with `context` lines around each change. With
+    /// `end = unstaged`, untracked files over the size limit come last with `skipped` set.
+    pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
         let to = self.object(end)?;
+        let context = format!("-U{context}");
         let out = run(&mut self.git(&[
             "diff",
             "--histogram",
@@ -145,7 +146,9 @@ impl Repo {
             "--no-textconv",
             "--no-relative",
             "--submodule=short",
-            "-U3",
+            &context,
+            // Not the user's: context between hunks would put kept lines in them.
+            "--inter-hunk-context=0",
             "-O/dev/null",
             "--raw",
             "-z",
