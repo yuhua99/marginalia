@@ -16,14 +16,10 @@ const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
     (&["top", "bottom"], "top / bottom"),
-    (
-        &["next_waiting", "prev_waiting"],
-        "next / previous thread waiting on you",
-    ),
+    (&["next_thread", "prev_thread"], "next / previous thread"),
     (&["open"], "follow a thread's link"),
     (&["select"], "select lines"),
     (&["comment"], "comment; on a thread, reply"),
-    (&["resolve"], "resolve or reopen the thread"),
     (
         &["edit", "delete"],
         "edit / delete your last unanswered message",

@@ -19,10 +19,7 @@ const HELP: &[help::Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
     (&["top", "bottom"], "top / bottom"),
-    (
-        &["next_waiting", "prev_waiting"],
-        "next / previous thread waiting on you",
-    ),
+    (&["next_thread", "prev_thread"], "next / previous thread"),
     (&["next_file", "prev_file"], "next / previous file"),
     (
         &["focus_left", "focus_right"],
@@ -36,7 +33,6 @@ const HELP: &[help::Entry] = &[
     (&["select"], "select lines"),
     (&["cancel"], "clear the selection"),
     (&["comment"], "comment; on a thread, reply"),
-    (&["resolve"], "resolve or reopen the thread"),
     (
         &["edit", "delete"],
         "edit / delete your last unanswered message",
@@ -171,18 +167,11 @@ impl Component for Review {
     }
 }
 
-/// The path of `file` and its open threads, else the session name, if any.
+/// The path of `file`, else the session name, if any.
 fn header(ctx: &Ctx, file: Option<usize>) -> String {
-    let Some(file) = file else {
-        return ctx
-            .session
-            .name
-            .as_ref()
-            .map_or(String::new(), |n| format!(" {n} "));
+    let name = match file {
+        Some(file) => Some(&ctx.doc.paths()[file].1),
+        None => ctx.session.name.as_ref(),
     };
-    format!(
-        " {} / {} open ",
-        ctx.doc.paths()[file].1,
-        ctx.doc.open_in(&ctx.session.threads, file)
-    )
+    name.map_or(String::new(), |n| format!(" {n} "))
 }

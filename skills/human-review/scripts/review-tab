@@ -45,17 +45,15 @@ mux_send() {
     fi
 }
 
-# Approved (no open threads) sends nothing.
+# Nothing waiting on the agent sends nothing.
 notify() {
-    local open waiting
-    if ! read -r open waiting < <(mrg list | jq -r --arg id "$MRG_SESSION" '.[] | select(.id == $id) | "\(.open) \(.waiting_on_agent)"'); then
+    local waiting
+    if ! read -r waiting < <(mrg list | jq -r --arg id "$MRG_SESSION" '.[] | select(.id == $id) | .waiting_on_agent'); then
         mux_send "$1" "mrg $MRG_SESSION: quit, but reading its state failed; run mrg show" submit
         return
     fi
     if [ "$waiting" -gt 0 ]; then
         mux_send "$1" "mrg $MRG_SESSION: $waiting threads waiting on agent" submit
-    elif [ "$open" -gt 0 ]; then
-        mux_send "$1" "mrg $MRG_SESSION: quit with $open threads open"
     fi
 }
 

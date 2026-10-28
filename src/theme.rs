@@ -41,7 +41,7 @@ pub struct Theme {
     pub bg: Color,
     /// Default text.
     pub text: Color,
-    /// Muted text: hints, line numbers, resolved threads.
+    /// Muted text: hints, line numbers.
     pub dim: Color,
     /// Code comments, as in helix's theme of the same name.
     pub comment: Color,

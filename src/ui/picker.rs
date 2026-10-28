@@ -139,11 +139,10 @@ impl Picker {
                     format!("{n}{}  ", " ".repeat(w - n.width()))
                 });
                 let text = format!(
-                    "{}  {name}{}{pad}  {:>3} open  {:>3} waiting on you",
+                    "{}  {name}{}{pad}  {:>3} waiting on agent",
                     s.id,
                     s.range,
-                    s.open_count(),
-                    s.waiting_on_user_count()
+                    s.waiting_on_agent_count()
                 );
                 (text, s.id.clone())
             })
@@ -386,9 +385,7 @@ impl Picker {
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
                     let mut spans = vec![mark(checked, theme)];
                     match i.checked_sub(self.uncommitted.len()) {
-                        Some(c) => {
-                            spans.extend(columns.row(&self.commits[c], 0, width, style, theme))
-                        }
+                        Some(c) => spans.extend(columns.row(&self.commits[c], width, style, theme)),
                         None => spans.push(Span::styled(all[i].0.clone(), style)),
                     }
                     Line::from(spans)

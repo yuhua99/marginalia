@@ -28,19 +28,11 @@ pub struct Session {
 #[derive(Serialize, Deserialize)]
 pub struct Thread {
     pub id: String,
-    pub status: Status,
     pub anchor: Anchor,
     /// The anchored lines when the thread was created, for `lines` anchors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub messages: Vec<Message>,
-}
-
-#[derive(Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Status {
-    Open,
-    Resolved,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -76,17 +68,6 @@ pub struct Owner {
     pub file: String,
     /// The last anchored line there.
     pub line: u32,
-}
-
-impl Anchor {
-    /// The commit the thread belongs to: the owner of lines, or the commit anchored.
-    pub fn commit(&self) -> Option<&str> {
-        match self {
-            Anchor::Lines { owner: Some(o), .. } => Some(&o.commit),
-            Anchor::Commit { commit } => Some(commit),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -168,24 +149,16 @@ impl Session {
         Ok(touched)
     }
 
-    /// Resolves, or deletes, threads the agent started, such as outdated explanations.
-    /// Deleting also needs the user not to have replied.
-    pub fn close(&mut self, ids: &[String], delete: bool) -> Result<()> {
+    /// Deletes notes, threads only the agent wrote in, such as outdated explanations.
+    pub fn delete_notes(&mut self, ids: &[String]) -> Result<()> {
         for id in ids {
             let Some(i) = self.threads.iter().position(|t| t.id == *id) else {
                 bail!("no thread {id}");
             };
-            let t = &mut self.threads[i];
-            if t.messages[0].from == "user" {
-                bail!("{id} was started by the user");
+            if self.threads[i].messages.iter().any(|m| m.from == "user") {
+                bail!("{id} has a message from the user");
             }
-            if !delete {
-                t.status = Status::Resolved;
-            } else if t.messages.iter().any(|m| m.from == "user") {
-                bail!("{id} has a reply from the user; resolve it instead");
-            } else {
-                self.threads.remove(i);
-            }
+            self.threads.remove(i);
         }
         Ok(())
     }
@@ -235,7 +208,6 @@ impl Session {
             .unwrap_or(0);
         self.threads.push(Thread {
             id: format!("t{}", n + 1),
-            status: Status::Open,
             anchor,
             text,
             messages: vec![Message {
@@ -340,12 +312,10 @@ impl Session {
         }))
     }
 
-    /// Replying reopens a resolved thread.
     pub fn reply(&mut self, id: &str, from: &str, body: String) -> Result<()> {
         let Some(t) = self.threads.iter_mut().find(|t| t.id == id) else {
             bail!("no thread {id}");
         };
-        t.status = Status::Open;
         t.messages.push(Message {
             from: from.to_string(),
             body,
@@ -374,19 +344,12 @@ impl Session {
         true
     }
 
-    pub fn open_count(&self) -> usize {
-        self.threads
-            .iter()
-            .filter(|t| t.status == Status::Open)
-            .count()
-    }
-
-    pub fn waiting_on_user_count(&self) -> usize {
-        self.threads.iter().filter(|t| t.waiting_on_user()).count()
+    pub fn waiting_on_agent_count(&self) -> usize {
+        self.threads.iter().filter(|t| t.waiting_on_agent()).count()
     }
 
     /// The session as JSON, with derived fields added to each thread.
-    /// `waiting_on` is null for resolved threads; `outdated` means the anchored
+    /// `waiting_on` is `agent` or null; `outdated` means the anchored
     /// lines no longer match the stored `text`.
     pub fn view(&self, repo: &mut Repo) -> Result<Value> {
         let mut v = serde_json::to_value(self)?;
@@ -397,7 +360,7 @@ impl Session {
             .zip(v["threads"].as_array_mut().expect("threads array"))
             .zip(outdated)
         {
-            tv["waiting_on"] = (t.status == Status::Open).then(|| t.waiting_on()).into();
+            tv["waiting_on"] = t.waiting_on_agent().then_some("agent").into();
             tv["outdated"] = outdated.into();
         }
         Ok(v)
@@ -448,12 +411,12 @@ impl Session {
         }
     }
 
-    /// Open threads waiting on the agent, in `order`, as markdown; None if there are none.
+    /// Threads waiting on the agent, in `order`, as markdown; None if there are none.
     pub fn markdown(&self, order: &[usize]) -> Option<String> {
         let mut out = format!("# mrg review {} / {}\n", self.id, self.range);
         let mut any = false;
         for t in order.iter().map(|&i| &self.threads[i]) {
-            if t.status != Status::Open || t.waiting_on() != "agent" {
+            if !t.waiting_on_agent() {
                 continue;
             }
             any = true;
@@ -471,16 +434,9 @@ impl Session {
 }
 
 impl Thread {
-    /// The last speaker being `user` means the agent should answer, otherwise the user.
-    pub fn waiting_on_user(&self) -> bool {
-        self.status == Status::Open && self.waiting_on() == "user"
-    }
-
-    pub fn waiting_on(&self) -> &'static str {
-        match self.messages.last() {
-            Some(m) if m.from == "user" => "agent",
-            _ => "user",
-        }
+    /// The last speaker being `user` means the agent should answer.
+    pub fn waiting_on_agent(&self) -> bool {
+        self.messages.last().is_some_and(|m| m.from == "user")
     }
 }
 
@@ -627,7 +583,10 @@ mod tests {
             owner: None,
         };
         s.comment(anchor, "agent", "x".into(), &mut repo).unwrap();
-        assert_eq!(s.threads.last().unwrap().anchor.commit(), Some("unstaged"));
+        assert!(matches!(
+            &s.threads.last().unwrap().anchor,
+            Anchor::Lines { owner: Some(o), .. } if o.commit == "unstaged"
+        ));
     }
 
     #[test]
@@ -652,7 +611,10 @@ mod tests {
         }
         s.version = 0;
         assert!(s.migrate(&mut repo).unwrap());
-        assert_eq!(s.threads[0].anchor.commit(), Some(c[1].as_str()));
+        assert!(matches!(
+            &s.threads[0].anchor,
+            Anchor::Lines { owner: Some(o), .. } if o.commit == c[1]
+        ));
         assert!(!s.migrate(&mut repo).unwrap());
     }
 }

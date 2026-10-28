@@ -60,14 +60,7 @@ enum Cmd {
         #[arg(long)]
         on_quit: Option<String>,
     },
-    /// Resolve threads the agent started
-    Resolve {
-        #[arg(long)]
-        session: String,
-        #[arg(required = true)]
-        threads: Vec<String>,
-    },
-    /// Delete threads the agent started that the user has not replied to
+    /// Delete notes: threads only the agent wrote in
     Delete {
         #[arg(long)]
         session: String,
@@ -78,7 +71,7 @@ enum Cmd {
     Show {
         #[arg(long)]
         session: String,
-        /// Only threads waiting on the agent, or open ones whose anchored lines changed since
+        /// Only threads waiting on the agent, or those whose anchored lines changed since
         #[arg(long, value_parser = ["waiting", "outdated"])]
         only: Option<String>,
     },
@@ -135,14 +128,9 @@ fn main() -> Result<()> {
             repo.verify(&session.base, &session.end)?;
             tui(store, repo, Some(session), on_quit)
         }
-        Some(Cmd::Resolve { session, threads }) => {
-            let mut session = store.load(&session)?;
-            session.close(&threads, false)?;
-            store.save(&session)
-        }
         Some(Cmd::Delete { session, threads }) => {
             let mut session = store.load(&session)?;
-            session.close(&threads, true)?;
+            session.delete_notes(&threads)?;
             store.save(&session)
         }
         Some(Cmd::Show { session, only }) => {
@@ -151,8 +139,7 @@ fn main() -> Result<()> {
                 let threads = view["threads"].as_array_mut().expect("threads array");
                 threads.retain(|t| match only.as_str() {
                     "waiting" => t["waiting_on"] == "agent",
-                    // Open ones; resolved threads are done with.
-                    _ => t["outdated"] == true && !t["waiting_on"].is_null(),
+                    _ => t["outdated"] == true,
                 });
             }
             println!("{}", serde_json::to_string_pretty(&view)?);
@@ -168,9 +155,7 @@ fn main() -> Result<()> {
                         "name": s.name,
                         "range": s.range,
                         "updated": updated,
-                        "open": s.open_count(),
-                        "waiting_on_user": s.waiting_on_user_count(),
-                        "waiting_on_agent": s.open_count() - s.waiting_on_user_count(),
+                        "waiting_on_agent": s.waiting_on_agent_count(),
                     })
                 })
                 .collect();
