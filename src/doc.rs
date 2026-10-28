@@ -23,6 +23,8 @@ pub struct Doc {
     /// Empty for the whole range, which places lines by their rev and shows every thread;
     /// otherwise lines go by their owner, and threads of other commits are left out.
     commits: Vec<String>,
+    /// Per collapsed file, its rows other than the header; its threads are left out.
+    collapsed: HashMap<usize, Vec<Row>>,
 }
 
 pub enum Row {
@@ -48,7 +50,8 @@ pub enum Row {
         hidden: Option<u32>,
     },
     /// Index into the session threads. Threads that have no row in the diff
-    /// (session, commits, lines in folds or of other revs) come right after `Session`.
+    /// (session, commits, lines in folds or of other revs) come right after `Session`;
+    /// those of collapsed files have none.
     Thread { idx: usize },
 }
 
@@ -196,6 +199,7 @@ impl Doc {
             rows,
             single: false,
             commits,
+            collapsed: HashMap::new(),
         }
     }
 
@@ -225,6 +229,7 @@ impl Doc {
             rows: [header].into_iter().chain(lines).collect(),
             single: true,
             commits: Vec::new(),
+            collapsed: HashMap::new(),
         }
     }
 
@@ -251,6 +256,7 @@ impl Doc {
         let mut rows = Vec::with_capacity(old.len() + threads.len());
         for row in old {
             let spots = match &row {
+                Row::File { file, .. } if self.collapsed.contains_key(file) => [None, None],
                 Row::File { file, .. } => [Some(Spot::File(*file)), None],
                 Row::Code { file, left, right } => [
                     left.as_ref().map(|s| Spot::Line(*file, false, s.lineno)),
@@ -265,10 +271,14 @@ impl Doc {
             }
         }
         if !self.single {
-            // Left over are threads in folds, `Whole` ones, and `Top` ones (whole range only).
+            // Left over are threads in folds, `Whole` ones, `Top` ones (whole range only),
+            // and those of collapsed files, which stay out.
             let mut rest: Vec<usize> = at
                 .into_iter()
                 .filter(|(spot, _)| self.commits.is_empty() || *spot != Spot::Top)
+                .filter(|(spot, _)| {
+                    !matches!(spot, Spot::File(f) | Spot::Line(f, ..) if self.collapsed.contains_key(f))
+                })
                 .flat_map(|(_, idx)| idx)
                 .collect();
             rest.sort();
@@ -450,6 +460,34 @@ impl Doc {
         self.find(from, forward, |r| matches!(r, Row::Thread { .. }))
     }
 
+    pub fn collapsed(&self, file: usize) -> bool {
+        self.collapsed.contains_key(&file)
+    }
+
+    /// Collapses `file` to its header. Returns the header row.
+    pub fn collapse_file(&mut self, file: usize, threads: &[Thread]) -> usize {
+        let row = self.file_row(file);
+        let end = self.next_file(row, true).unwrap_or(self.rows.len());
+        let rows = self
+            .rows
+            .drain(row + 1..end)
+            .filter(|r| !matches!(r, Row::Thread { .. }))
+            .collect();
+        self.collapsed.insert(file, rows);
+        self.set_threads(threads);
+        self.file_row(file)
+    }
+
+    /// Expands `file` if collapsed. Returns the header row.
+    pub fn expand_file(&mut self, file: usize, threads: &[Thread]) -> usize {
+        let row = self.file_row(file);
+        if let Some(rows) = self.collapsed.remove(&file) {
+            self.rows.splice(row + 1..row + 1, rows);
+            self.set_threads(threads);
+        }
+        self.file_row(file)
+    }
+
     /// The next (or previous) file header row.
     pub fn next_file(&self, from: usize, forward: bool) -> Option<usize> {
         self.find(from, forward, |r| matches!(r, Row::File { .. }))
@@ -490,17 +528,28 @@ impl Doc {
         &self.paths
     }
 
-    /// Thread indices in row order, then those hidden in this view.
-    pub fn thread_order(&self, threads: usize) -> Vec<usize> {
-        let mut order: Vec<usize> = self
-            .rows
-            .iter()
-            .filter_map(|r| match r {
-                Row::Thread { idx } => Some(*idx),
-                _ => None,
-            })
-            .collect();
-        let hidden: Vec<usize> = (0..threads).filter(|i| !order.contains(i)).collect();
+    /// The file `anchor` is on in this view.
+    pub fn file_of(&self, anchor: &Anchor) -> Option<usize> {
+        match self.spot(anchor) {
+            Spot::File(f) | Spot::Line(f, ..) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Thread indices in row order, those of a collapsed file at its header,
+    /// then those hidden in this view.
+    pub fn thread_order(&self, threads: &[Thread]) -> Vec<usize> {
+        let mut order: Vec<usize> = Vec::new();
+        for r in &self.rows {
+            match r {
+                Row::Thread { idx } => order.push(*idx),
+                Row::File { file, .. } if self.collapsed(*file) => order.extend(
+                    (0..threads.len()).filter(|&i| self.file_of(&threads[i].anchor) == Some(*file)),
+                ),
+                _ => {}
+            }
+        }
+        let hidden: Vec<usize> = (0..threads.len()).filter(|i| !order.contains(i)).collect();
         order.extend(hidden);
         order
     }
