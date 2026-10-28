@@ -5,16 +5,11 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::repo::{self, Repo, short};
 
-/// The session format; sessions before 1 have no line owners.
-const VERSION: u32 = 1;
-
 /// The widest a session name may be, in columns.
 pub const NAME_MAX: usize = 32;
 
 #[derive(Serialize, Deserialize)]
 pub struct Session {
-    #[serde(default)]
-    pub version: u32,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -98,7 +93,6 @@ pub struct NewComment {
 impl Session {
     pub fn new(id: String, range: String, base: String, end: String) -> Session {
         Session {
-            version: VERSION,
             id,
             name: None,
             range,
@@ -220,35 +214,6 @@ impl Session {
             outdated: false,
         });
         Ok(())
-    }
-
-    /// Fills in the line owners a session from before them lacks; returns whether it did.
-    pub fn migrate(&mut self, repo: &mut Repo) -> Result<bool> {
-        if self.version >= VERSION {
-            return Ok(false);
-        }
-        let commits = self.commits(repo)?;
-        let owners: Vec<Option<Owner>> = self
-            .threads
-            .iter()
-            .map(|t| match &t.anchor {
-                // Lines gone from their rev stay unowned rather than keep the session shut.
-                Anchor::Lines {
-                    rev: Some(rev),
-                    file,
-                    end,
-                    ..
-                } => self.owner(repo, &commits, rev, file, *end).ok().flatten(),
-                _ => None,
-            })
-            .collect();
-        for (t, found) in self.threads.iter_mut().zip(owners) {
-            if let Anchor::Lines { owner, .. } = &mut t.anchor {
-                *owner = found;
-            }
-        }
-        self.version = VERSION;
-        Ok(true)
     }
 
     /// Shas of the range commits, oldest first.
@@ -603,22 +568,5 @@ mod tests {
         assert!(s.set_name("a\nb").is_err());
         s.set_name(&"中".repeat(16)).unwrap();
         assert!(s.set_name(&"中".repeat(17)).is_err());
-    }
-
-    #[test]
-    fn migrate_fills_owners() {
-        let (mut repo, _, c) = repo("migrate", &VERSIONS);
-        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), c[3].clone());
-        owner(&mut s, &mut repo, &c[3], 3);
-        if let Anchor::Lines { owner, .. } = &mut s.threads[0].anchor {
-            *owner = None;
-        }
-        s.version = 0;
-        assert!(s.migrate(&mut repo).unwrap());
-        assert!(matches!(
-            &s.threads[0].anchor,
-            Anchor::Lines { owner: Some(o), .. } if o.commit == c[1]
-        ));
-        assert!(!s.migrate(&mut repo).unwrap());
     }
 }
