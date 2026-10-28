@@ -1,5 +1,6 @@
 pub mod commit_row;
 pub mod delete_prompt;
+pub mod dialog;
 pub mod diff_view;
 pub mod file_view;
 pub mod help;
@@ -32,6 +33,34 @@ pub fn clear(f: &mut Frame, area: Rect, theme: &Theme) {
     f.render_widget(Clear, area);
     f.buffer_mut()
         .set_style(area, Style::new().fg(theme.text).bg(theme.bg));
+}
+
+/// Smallest width and height of a modal box, borders included.
+const MODAL_MIN: (u16, u16) = (40, 6);
+
+/// A box of `width` x `height` (at least `MODAL_MIN`, at most `area`) centered in `area`,
+/// cleared and framed in the accent color; returns its inner area.
+pub fn modal(
+    f: &mut Frame,
+    area: Rect,
+    width: u16,
+    height: u16,
+    title: &str,
+    theme: &Theme,
+) -> Rect {
+    let width = width.max(MODAL_MIN.0).min(area.width);
+    let height = height.max(MODAL_MIN.1).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = boxed(format!(" {title} "), true, theme);
+    clear(f, rect, theme);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    inner
 }
 
 /// Space on row `i` of a contiguous check: extends it to `i`, or clears it when `i` is in it.

@@ -5,8 +5,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
+use ratatui_textarea::TextArea;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::keymap::{Feed, Keymap};
 use crate::repo::{Commit, Repo};
@@ -17,7 +18,7 @@ use crate::ui::commit_row::{Columns, mark};
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{boxed, check, clear};
+use crate::ui::{boxed, check, clear, dialog};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -65,7 +66,23 @@ pub fn run(
                 }
             }
             Event::Paste(text) if p.renaming.is_some() => {
-                p.rename_push(text.lines().next().unwrap_or(""));
+                let name = p.renaming.as_mut().expect("renaming");
+                // As much as fits in NAME_MAX columns.
+                let mut room = NAME_MAX.saturating_sub(name.lines()[0].width());
+                let fits: String = text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take_while(|c| {
+                        let w = c.width().unwrap_or(0);
+                        let fits = w <= room;
+                        room = room.saturating_sub(w);
+                        fits
+                    })
+                    .collect();
+                name.insert_str(fits);
             }
             Event::Paste(text) if p.typing => {
                 let pane = p.pane();
@@ -99,7 +116,7 @@ struct Picker {
     /// Waiting for y/n to delete the session at the cursor.
     deleting: bool,
     /// The name being typed for the session at the cursor.
-    renaming: Option<String>,
+    renaming: Option<TextArea<'static>>,
     error: Option<String>,
     keymap: Keymap,
 }
@@ -189,17 +206,14 @@ impl Picker {
             }
             return Ok(None);
         }
-        if let Some(name) = &self.renaming {
+        if let Some(text) = &mut self.renaming {
             match key.code {
-                KeyCode::Char(c) => self.rename_push(&c.to_string()),
-                KeyCode::Backspace => {
-                    self.renaming.as_mut().expect("renaming").pop();
-                }
                 KeyCode::Enter => {
                     if let Some(i) = at {
+                        let name = text.lines().join("\n");
                         // Reloaded so changes saved since the list was read are kept.
                         let mut session = store.load(&self.sessions[i].0.id)?;
-                        if let Err(e) = session.set_name(name) {
+                        if let Err(e) = session.set_name(&name) {
                             self.error = Some(format!("{e:#}"));
                             return Ok(None);
                         }
@@ -211,7 +225,16 @@ impl Picker {
                     self.renaming = None;
                 }
                 KeyCode::Esc => self.renaming = None,
-                _ => {}
+                // Kept to one line; no wider past NAME_MAX, so a stored longer name can shrink.
+                _ => {
+                    let before = text.clone();
+                    let width = text.lines()[0].width();
+                    if text.input(key)
+                        && (text.lines().len() > 1 || text.lines()[0].width() > NAME_MAX.max(width))
+                    {
+                        *text = before;
+                    }
+                }
             }
             return Ok(None);
         }
@@ -266,7 +289,10 @@ impl Picker {
             "delete_session" if !self.right => self.deleting = at.is_some(),
             "rename_session" if !self.right => {
                 if let Some(i) = at {
-                    self.renaming = Some(self.sessions[i].0.name.clone().unwrap_or_default());
+                    let mut text = TextArea::default();
+                    text.set_cursor_line_style(Style::new());
+                    text.insert_str(self.sessions[i].0.name.as_deref().unwrap_or(""));
+                    self.renaming = Some(text);
                 }
             }
             "help" => self.help = Some(help::popup(HELP)),
@@ -290,17 +316,6 @@ impl Picker {
             _ => {}
         }
         Ok(None)
-    }
-
-    /// Adds `text` to the name being typed, as far as it fits.
-    fn rename_push(&mut self, text: &str) {
-        let name = self.renaming.as_mut().expect("renaming");
-        for c in text.chars().filter(|c| !c.is_control()) {
-            if format!("{name}{c}").width() > NAME_MAX {
-                break;
-            }
-            name.push(c);
-        }
     }
 
     /// Enter on row `i`: resumes that session, or makes a session of the checked rows
@@ -398,16 +413,6 @@ impl Picker {
         }
         let (text, style) = if let Some(e) = &self.error {
             (e.clone(), Style::new().fg(theme.red))
-        } else if let Some(name) = &self.renaming {
-            (
-                format!("name: {name}▏  Enter save  Esc cancel"),
-                Style::new().fg(theme.on_accent).bg(theme.accent),
-            )
-        } else if self.deleting {
-            (
-                "delete this session? y/n".to_string(),
-                Style::new().fg(theme.on_accent).bg(theme.accent),
-            )
         } else {
             (HINTS.to_string(), Style::new().fg(theme.dim))
         };
@@ -417,6 +422,27 @@ impl Picker {
         }
         if let Some(settings) = &self.settings {
             settings.draw(f, f.area(), theme);
+        }
+        if self.deleting {
+            dialog::confirm(
+                f,
+                f.area(),
+                "Delete",
+                "delete this session?",
+                "y delete  n/Esc cancel",
+                theme,
+            );
+        }
+        if let Some(text) = &self.renaming {
+            dialog::input(
+                f,
+                f.area(),
+                "Rename session",
+                text,
+                NAME_MAX as u16 + 1,
+                "Enter save  Esc cancel  blank clears",
+                theme,
+            );
         }
     }
 }

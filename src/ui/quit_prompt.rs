@@ -2,11 +2,9 @@ use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::Paragraph;
 
 use crate::app::{Component, Ctx, Outcome};
-use crate::ui::clear;
+use crate::ui::dialog;
 
 /// `save to clipboard? y/n` when quitting a session without an on-quit hook.
 pub struct QuitPrompt;
@@ -25,16 +23,13 @@ impl Component for QuitPrompt {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        let rect = Rect {
-            y: area.bottom() - 1,
-            height: 1,
-            ..area
-        };
-        clear(f, rect, ctx.theme);
-        let text = "save threads waiting on the agent to clipboard? y/n (Esc to stay)";
-        f.render_widget(
-            Paragraph::new(text).style(Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent)),
-            rect,
+        dialog::confirm(
+            f,
+            area,
+            "Quit",
+            "save threads waiting on the agent to clipboard?",
+            "y save  n don't save  Esc stay",
+            ctx.theme,
         );
     }
 }
