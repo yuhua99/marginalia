@@ -37,7 +37,7 @@ impl Entry {
                 View::Commit(c) => Anchor::Commit {
                     commit: c.sha.clone(),
                 },
-                _ => Anchor::Session,
+                View::Uncommitted => Anchor::Session,
             }),
             Entry::File(file) => Some(Anchor::File {
                 file: ctx.doc.paths()[file].1.clone(),
@@ -84,10 +84,7 @@ impl Sidebar {
 
     /// Entering the commits box checks the views shown; leaving it drops the checks.
     pub fn focus(&mut self, ctx: &Ctx, focused: bool) {
-        let shown = match ctx.view {
-            (0, 0) => (1, ctx.views.len() - 1),
-            view => view,
-        };
+        let shown = ctx.shown.bounds(ctx.views.len());
         self.checked = focused.then_some(Some(shown));
     }
 
@@ -165,21 +162,20 @@ impl Sidebar {
 
 fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
     let within = |range: (usize, usize), v| (range.0..=range.1).contains(&v);
-    // View 0, all, is every row checked.
+    let shown = ctx.shown.bounds(ctx.views.len());
     ctx.views
         .iter()
         .enumerate()
-        .skip(1)
         .map(|(v, view)| {
             // The checks while the box has focus, else the views shown.
             let on = match checked {
                 Some(range) => range.is_some_and(|range| within(range, v)),
-                None => ctx.view == (0, 0) || within(ctx.view, v),
+                None => within(shown, v),
             };
             let text = match view {
                 // Drawn by `Columns::row`.
                 View::Commit(_) => String::new(),
-                _ => ctx.session.end.clone(),
+                View::Uncommitted => ctx.session.end.clone(),
             };
             Item {
                 entry: Entry::View(v),
