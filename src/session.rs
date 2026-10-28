@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::repo::Repo;
+use crate::repo::{self, Repo, short};
 
 /// The session format; sessions before 1 have no line owners.
 const VERSION: u32 = 1;
@@ -184,7 +184,7 @@ impl Session {
             }
             let rev = rev.get_or_insert_with(|| self.end.clone());
             // Commits become shas; only the range end and the worktree states stay symbolic.
-            if *rev != self.end && !matches!(rev.as_str(), "staged" | "unstaged") {
+            if *rev != self.end && !repo::worktree(rev) {
                 *rev = repo.commit(rev)?;
             }
             text = Some(
@@ -291,13 +291,13 @@ impl Session {
         }
         // Lines the base or an older rev has, kept, are not the range's. (Blaming a rev
         // the base excludes would blame HEAD instead.)
-        if !in_range && rev != self.end && !matches!(rev, "staged" | "unstaged") {
+        if !in_range && rev != self.end && !repo::worktree(rev) {
             return Ok(None);
         }
         // Stop at the base: older lines are not the range's, and need not be traced.
         let since = (self.base != repo.empty_tree()?).then_some(self.base.as_str());
         let b = repo.blame(rev, since, file, line)?;
-        let commit = if b.commit.bytes().all(|c| c == b'0') {
+        let commit = if b.uncommitted() {
             rev.to_string()
         } else if commits.contains(&b.commit) {
             b.commit
@@ -437,15 +437,6 @@ impl Thread {
     /// The last speaker being `user` means the agent should answer.
     pub fn waiting_on_agent(&self) -> bool {
         self.messages.last().is_some_and(|m| m.from == "user")
-    }
-}
-
-/// A commit sha shortened for display; other revs as is.
-fn short(rev: &str) -> &str {
-    if rev.len() >= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
-        &rev[..7]
-    } else {
-        rev
     }
 }
 

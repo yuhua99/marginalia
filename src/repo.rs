@@ -45,6 +45,13 @@ pub struct Blame {
     pub line: u32,
 }
 
+impl Blame {
+    /// The line is not committed yet.
+    pub fn uncommitted(&self) -> bool {
+        self.commit.bytes().all(|c| c == b'0')
+    }
+}
+
 struct CatFile {
     _child: Child,
     stdin: ChildStdin,
@@ -98,9 +105,10 @@ impl Repo {
         } else {
             self.commit(base)?
         };
-        let end = match end {
-            "HEAD" | "staged" | "unstaged" => end.to_string(),
-            _ => self.commit(end)?,
+        let end = if end == "HEAD" || worktree(end) {
+            end.to_string()
+        } else {
+            self.commit(end)?
         };
         self.verify(&base, &end)?;
         Ok((base, end))
@@ -209,7 +217,7 @@ impl Repo {
 
     /// A tree-ish for `rev`: commits as is, `staged` / `unstaged` as a written tree.
     fn object(&mut self, rev: &str) -> Result<String> {
-        if !matches!(rev, "staged" | "unstaged") {
+        if !worktree(rev) {
             return Ok(rev.to_string());
         }
         if let Some(tree) = self.trees.get(rev) {
@@ -376,7 +384,7 @@ impl Repo {
             &lines,
         ];
         args.extend(not.as_deref());
-        let out = if matches!(rev, "staged" | "unstaged") {
+        let out = if worktree(rev) {
             let content = self
                 .read(rev, path)?
                 .with_context(|| format!("{path} not found at {rev}"))?;
@@ -457,11 +465,22 @@ impl Repo {
     }
 }
 
+/// `staged` or `unstaged`: a state of the worktree on top of HEAD, not a commit.
+pub fn worktree(rev: &str) -> bool {
+    matches!(rev, "staged" | "unstaged")
+}
+
 /// The commit an end stands on: `staged` / `unstaged` stand on HEAD.
 fn tip(end: &str) -> &str {
-    match end {
-        "staged" | "unstaged" => "HEAD",
-        _ => end,
+    if worktree(end) { "HEAD" } else { end }
+}
+
+/// A commit sha shortened for display; other revs as is.
+pub fn short(rev: &str) -> &str {
+    if rev.len() >= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        &rev[..7]
+    } else {
+        rev
     }
 }
 
