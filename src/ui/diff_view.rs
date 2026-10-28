@@ -16,7 +16,7 @@ use crate::highlight::Colors;
 use crate::repo::Kind;
 use crate::session::Thread;
 use crate::theme::Theme;
-use crate::ui::delete_prompt::DeletePrompt;
+use crate::ui::confirm::Confirm;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
 use crate::ui::query::{self, Query};
@@ -217,7 +217,20 @@ impl DiffView {
                     if action == "edit" {
                         self.start(cursor, Input::edit(idx, &ctx.session));
                     } else {
-                        return Ok(Outcome::Push(Box::new(DeletePrompt(idx))));
+                        let t = &ctx.session.threads[idx];
+                        let question = if t.messages.len() == 1 {
+                            format!("delete thread {}?", t.id)
+                        } else {
+                            "delete your last message?".to_string()
+                        };
+                        return Ok(Outcome::Push(Box::new(
+                            Confirm::new("Delete", question, "y delete  n/Esc cancel")
+                                .on('y', move |ctx: &mut Ctx| {
+                                    ctx.delete(idx)?;
+                                    Ok(Outcome::Close)
+                                })
+                                .on('n', |_| Ok(Outcome::Close)),
+                        )));
                     }
                 }
             }
@@ -243,7 +256,9 @@ impl DiffView {
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
         let search = &self.search.text;
         let draw = |i: usize| {
-            let accent = Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent);
+            let accent = Style::new()
+                .fg(ctx.look.theme.on_accent)
+                .bg(ctx.look.theme.accent);
             let mark = selection.contains(&i).then_some(accent);
             draw_row(ctx, doc, i, area.width, mark, editing, search)
         };
@@ -265,7 +280,7 @@ impl DiffView {
             area,
             &self.scroll,
             doc,
-            ctx.theme,
+            ctx.look.theme,
             draw,
             |f, i, rest| match draft {
                 Some((row, input)) if *row == i => {
@@ -284,7 +299,7 @@ impl DiffView {
             },
         );
         if let Some(picker) = &mut self.links {
-            picker.render(f, area, ctx.theme);
+            picker.render(f, area, ctx.look.theme);
         }
     }
 }
@@ -369,7 +384,7 @@ pub fn draw_row(
     editing: Option<usize>,
     search: &str,
 ) -> Drawn {
-    let theme = ctx.theme;
+    let theme = ctx.look.theme;
     let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "# session".to_string(),
@@ -435,7 +450,7 @@ pub fn draw_row(
                     width as usize,
                     mark,
                     theme,
-                    ctx.wrap,
+                    ctx.look.wrap,
                     search,
                 );
                 return Drawn::Full(lines, style);
@@ -448,7 +463,7 @@ pub fn draw_row(
                     half as usize,
                     mark,
                     theme,
-                    ctx.wrap,
+                    ctx.look.wrap,
                     search,
                 ),
                 code_lines(
@@ -457,7 +472,7 @@ pub fn draw_row(
                     (width - half) as usize,
                     mark,
                     theme,
-                    ctx.wrap,
+                    ctx.look.wrap,
                     search,
                 ),
             ]);
@@ -563,7 +578,7 @@ fn thread_lines(
     width: usize,
     search: &str,
 ) -> Vec<Line<'static>> {
-    let theme = ctx.theme;
+    let theme = ctx.look.theme;
     let t: &Thread = &ctx.session.threads[idx];
     let outdated = t.outdated;
     let line = |spans: Vec<Span<'static>>| {

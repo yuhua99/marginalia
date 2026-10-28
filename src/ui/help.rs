@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 
-use crate::app::{Component, Ctx, Outcome};
+use crate::app::{Component, Look, Outcome};
 use crate::keymap::{self, Feed, Keymap};
 use crate::ui::popup::Popup;
 
@@ -11,7 +11,7 @@ use crate::ui::popup::Popup;
 pub type Entry = (&'static [&'static str], &'static str);
 
 /// The keys of `entries` as a popup; actions on one row join their keys with `/`.
-pub fn popup(entries: &[Entry]) -> Popup {
+fn popup(entries: &[Entry]) -> Popup {
     let rows = entries
         .iter()
         .map(|(actions, text)| {
@@ -22,7 +22,7 @@ pub fn popup(entries: &[Entry]) -> Popup {
     Popup::new("Keys", rows)
 }
 
-/// `?`: the keys of the layer below; `?`, `q` or `Esc` close it.
+/// `?`: the keys of the layer below; `?`, `q`, `Esc` or `h` close it.
 pub struct Help {
     popup: Popup,
     keymap: Keymap,
@@ -37,10 +37,10 @@ impl Help {
     }
 }
 
-impl Component for Help {
-    fn handle_key(&mut self, key: KeyEvent, _ctx: &mut Ctx) -> Result<Outcome> {
+impl<C: AsRef<Look>> Component<C> for Help {
+    fn handle_key(&mut self, key: KeyEvent, _ctx: &mut C) -> Result<Outcome<C>> {
         Ok(match self.keymap.feed(key) {
-            Feed::Action("help" | "quit" | "cancel") => Outcome::Close,
+            Feed::Action("help" | "quit" | "cancel" | "focus_left") => Outcome::Close,
             Feed::Action(action) => {
                 self.popup.act(action);
                 Outcome::Consumed
@@ -49,7 +49,7 @@ impl Component for Help {
         })
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        self.popup.render(f, area, ctx.theme);
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C) {
+        self.popup.render(f, area, ctx.as_ref().theme);
     }
 }

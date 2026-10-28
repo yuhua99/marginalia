@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 
-use crate::app::{Component, Ctx, Outcome};
+use crate::app::{Component, Look, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::settings::Settings;
 use crate::theme::{Theme, themes};
@@ -22,17 +22,18 @@ pub struct SettingsPopup {
 }
 
 impl SettingsPopup {
-    pub fn new(theme: &Theme, wrap: bool) -> SettingsPopup {
+    pub fn new(look: &Look) -> SettingsPopup {
         SettingsPopup {
-            list: list(theme, wrap, None),
+            list: list(look.theme, look.wrap, None),
             themes: None,
             keymap: Keymap::default(),
         }
     }
 
-    /// Handles a key, changing `theme` to preview or apply, or `wrap`; true when the
+    /// Handles a key, changing the theme to preview or apply, or wrap; true when the
     /// popup closes.
-    pub fn key(&mut self, key: KeyEvent, theme: &mut &'static Theme, wrap: &mut bool) -> bool {
+    fn key(&mut self, key: KeyEvent, look: &mut Look) -> bool {
+        let Look { theme, wrap } = look;
         let Feed::Action(action) = self.keymap.feed(key) else {
             return false;
         };
@@ -77,7 +78,7 @@ impl SettingsPopup {
         false
     }
 
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
+    fn draw(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.list.render(f, area, theme);
         if let Some((popup, _)) = &mut self.themes {
             popup.render(f, area, theme);
@@ -108,16 +109,16 @@ fn save(theme: &Theme, wrap: bool) -> Result<()> {
     settings.save()
 }
 
-impl Component for SettingsPopup {
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        Ok(if self.key(key, &mut ctx.theme, &mut ctx.wrap) {
+impl<C: AsRef<Look> + AsMut<Look>> Component<C> for SettingsPopup {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut C) -> Result<Outcome<C>> {
+        Ok(if self.key(key, ctx.as_mut()) {
             Outcome::Close
         } else {
             Outcome::Consumed
         })
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        self.draw(f, area, ctx.theme);
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C) {
+        self.draw(f, area, ctx.as_ref().theme);
     }
 }

@@ -181,7 +181,10 @@ fn tui(
     mut on_quit: Option<String>,
 ) -> Result<()> {
     let settings = settings::Settings::load()?;
-    let (mut theme, mut wrap) = (theme::find(&settings.theme), settings.wrap);
+    let mut look = app::Look {
+        theme: theme::find(&settings.theme),
+        wrap: settings.wrap,
+    };
     loop {
         let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
             // Pasted newlines must not send; Shift-Enter must differ from Enter. The key
@@ -191,16 +194,18 @@ fn tui(
                 EnableBracketedPaste,
                 PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
             )?;
-            let session = match session {
-                Some(session) => session,
+            let (session, store, repo, look) = match session {
+                Some(session) => (session, store, repo, look),
                 None => {
-                    match ui::picker::run(terminal, &store, &mut repo, &mut theme, &mut wrap)? {
-                        Some(session) => session,
-                        None => return Ok(None),
-                    }
+                    let mut pick = ui::picker::Pick::new(store, repo, look)?;
+                    ui::picker::run(terminal, &mut pick)?;
+                    let Some(session) = pick.open else {
+                        return Ok(None);
+                    };
+                    (session, pick.store, pick.repo, pick.look)
                 }
             };
-            let mut ctx = app::Ctx::new(session, repo, store, theme, wrap)?;
+            let mut ctx = app::Ctx::new(session, repo, store, look)?;
             ctx.on_quit = on_quit.take();
             app::run(terminal, &mut ctx)?;
             Ok(Some(ctx))
@@ -233,6 +238,6 @@ fn tui(
         if !ctx.back {
             return Ok(());
         }
-        (store, repo, session, theme, wrap) = (ctx.store, ctx.repo, None, ctx.theme, ctx.wrap);
+        (store, repo, session, look) = (ctx.store, ctx.repo, None, ctx.look);
     }
 }

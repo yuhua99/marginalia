@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -9,14 +9,14 @@ use ratatui_textarea::TextArea;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::app::{Component, Layers, Look, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::repo::{self, Commit, Repo, short};
 use crate::session::{NAME_MAX, Session};
 use crate::store::Store;
-use crate::theme::Theme;
 use crate::ui::commit_row::{Columns, mark};
-use crate::ui::help::{self, Entry};
-use crate::ui::popup::Popup;
+use crate::ui::confirm::Confirm;
+use crate::ui::help::{Entry, Help};
 use crate::ui::query::Query;
 use crate::ui::settings::SettingsPopup;
 use crate::ui::{boxed, check, clear, cursor_bar, dialog, step};
@@ -42,62 +42,75 @@ const HELP: &[Entry] = &[
     (&["quit"], "quit"),
 ];
 
+/// State the picker's layers share.
+pub struct Pick {
+    pub store: Store,
+    pub repo: Repo,
+    pub look: Look,
+    sessions: Vec<(Session, u64)>,
+    /// Shown in the footer until the next key.
+    error: Option<String>,
+    /// The session to open after the picker quits; None quits mrg.
+    pub open: Option<Session>,
+}
+
+impl Pick {
+    pub fn new(store: Store, repo: Repo, look: Look) -> Result<Pick> {
+        Ok(Pick {
+            sessions: store.list()?,
+            store,
+            repo,
+            look,
+            error: None,
+            open: None,
+        })
+    }
+}
+
+impl AsRef<Look> for Pick {
+    fn as_ref(&self) -> &Look {
+        &self.look
+    }
+}
+
+impl AsMut<Look> for Pick {
+    fn as_mut(&mut self) -> &mut Look {
+        &mut self.look
+    }
+}
+
 /// What `mrg` shows first: sessions to resume on the left, a new range on the right
-/// (rows checked with Space, or the cursor row). Returns the session to open, or None to quit.
-pub fn run(
-    terminal: &mut DefaultTerminal,
-    store: &Store,
-    repo: &mut Repo,
-    theme: &mut &'static Theme,
-    wrap: &mut bool,
-) -> Result<Option<Session>> {
-    let mut p = Picker {
-        sessions: store.list()?,
-        commits: repo.recent(COMMITS)?,
-        uncommitted: repo.uncommitted()?,
-        ..Picker::default()
-    };
-    p.right = p.sessions.is_empty();
+/// (rows checked with Space, or the cursor row). Ends with the session to open in
+/// `pick.open`, or None to quit.
+pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
+    let mut layers = Layers::new(Picker::new(pick)?);
     loop {
-        terminal.draw(|f| p.render(f, theme))?;
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if let Some(done) = p.key(key, store, repo, theme, wrap)? {
-                    return Ok(done);
-                }
+        terminal.draw(|f| {
+            let foot = layers.render(f, pick);
+            if let Some(e) = &pick.error {
+                let theme = pick.look.theme;
+                clear(f, foot, theme);
+                f.render_widget(
+                    Paragraph::new(e.as_str()).style(Style::new().fg(theme.red)),
+                    foot,
+                );
             }
-            Event::Paste(text) if p.renaming.is_some() => {
-                let name = p.renaming.as_mut().expect("renaming");
-                // As much as fits in NAME_MAX columns.
-                let mut room = NAME_MAX.saturating_sub(name.lines()[0].width());
-                let fits: String = text
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take_while(|c| {
-                        let w = c.width().unwrap_or(0);
-                        let fits = w <= room;
-                        room = room.saturating_sub(w);
-                        fits
-                    })
-                    .collect();
-                name.insert_str(fits);
-            }
-            Event::Paste(text) if p.filter[p.pane()].typing => {
-                let pane = p.pane();
-                p.filter[pane].paste(&text);
-                p.cursor[pane] = 0;
-            }
-            _ => {}
+        })?;
+        let event = event::read()?;
+        if let Event::Key(key) = &event
+            && key.kind == KeyEventKind::Press
+        {
+            pick.error = None;
+        }
+        if layers.event(event, pick)? {
+            return Ok(());
         }
     }
 }
 
+/// The bottom layer: the two panes.
 #[derive(Default)]
 struct Picker {
-    sessions: Vec<(Session, u64)>,
     commits: Vec<Commit>,
     /// The rows of the range pane above the commits: `unstaged` / `staged` when not empty.
     uncommitted: Vec<&'static str>,
@@ -110,25 +123,25 @@ struct Picker {
     checked: Option<(usize, usize)>,
     /// Rows a pane shows, as of the last render.
     height: usize,
-    /// The `?` popup.
-    help: Option<Popup>,
-    /// The `s` popup.
-    settings: Option<SettingsPopup>,
-    /// Waiting for y/n to delete the session at the cursor.
-    deleting: bool,
-    /// The name being typed for the session at the cursor.
-    renaming: Option<TextArea<'static>>,
-    error: Option<String>,
     keymap: Keymap,
 }
 
 impl Picker {
+    fn new(pick: &Pick) -> Result<Picker> {
+        Ok(Picker {
+            commits: pick.repo.recent(COMMITS)?,
+            uncommitted: pick.repo.uncommitted()?,
+            right: pick.sessions.is_empty(),
+            ..Picker::default()
+        })
+    }
+
     fn pane(&self) -> usize {
         self.right as usize
     }
 
     /// (text, value) of every row of a pane: session ids, or unstaged, staged and commit shas.
-    fn all(&self, pane: usize) -> Vec<(String, String)> {
+    fn all(&self, pane: usize, sessions: &[(Session, u64)]) -> Vec<(String, String)> {
         if pane == 1 {
             let commits = self
                 .commits
@@ -141,12 +154,11 @@ impl Picker {
                 .chain(commits)
                 .collect();
         }
-        let name_width = self
-            .sessions
+        let name_width = sessions
             .iter()
             .filter_map(|(s, _)| s.name.as_ref().map(|n| n.width()))
             .max();
-        self.sessions
+        sessions
             .iter()
             .map(|(s, _)| {
                 // A name column only when some session has a name.
@@ -161,9 +173,9 @@ impl Picker {
     }
 
     /// Indices into `all(pane)` that pass the filter.
-    fn shown(&self, pane: usize) -> Vec<usize> {
+    fn shown(&self, pane: usize, sessions: &[(Session, u64)]) -> Vec<usize> {
         let filter = self.filter[pane].text.to_lowercase();
-        self.all(pane)
+        self.all(pane, sessions)
             .iter()
             .enumerate()
             .filter(|(_, (text, _))| text.to_lowercase().contains(&filter))
@@ -171,83 +183,61 @@ impl Picker {
             .collect()
     }
 
-    fn key(
-        &mut self,
-        key: KeyEvent,
-        store: &Store,
-        repo: &mut Repo,
-        theme: &mut &'static Theme,
-        wrap: &mut bool,
-    ) -> Result<Option<Option<Session>>> {
-        self.error = None;
-        if let Some(settings) = &mut self.settings {
-            if settings.key(key, theme, wrap) {
-                self.settings = None;
+    /// Enter on row `i`: resumes that session, or makes a session of the checked rows
+    /// (or row `i` alone): from the parent of the bottom commit (or before the root) to the top row.
+    fn open(&self, i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        if !self.right {
+            let session = ctx.store.load(&ctx.sessions[i].0.id)?;
+            if let Err(e) = ctx.repo.verify(&session.base, &session.end) {
+                ctx.error = Some(format!("{e:#}"));
+                return Ok(Outcome::Consumed);
             }
-            return Ok(None);
+            ctx.open = Some(session);
+            return Ok(Outcome::Quit);
         }
+        let (top, bottom) = self.checked.unwrap_or((i, i));
+        let all = self.all(1, &ctx.sessions);
+        let (end, bottom) = (&all[top].1, &all[bottom].1);
+        let base = if repo::worktree(bottom) {
+            "HEAD".to_string()
+        } else {
+            // Left out for the root commit: the range starts before it.
+            ctx.repo.parent(bottom)?.unwrap_or_default()
+        };
+        match ctx.repo.resolve(&format!("{base}..{end}")) {
+            Ok((resolved, end)) => {
+                let from = if base.is_empty() {
+                    ""
+                } else {
+                    short(&resolved)
+                };
+                let range = format!("{from}..{}", short(&end));
+                let session = Session::new(ctx.store.new_id(), range, resolved, end);
+                ctx.store.save(&session)?;
+                ctx.open = Some(session);
+                Ok(Outcome::Quit)
+            }
+            Err(e) => {
+                ctx.error = Some(format!("{e:#}"));
+                Ok(Outcome::Consumed)
+            }
+        }
+    }
+}
+
+impl Component<Pick> for Picker {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let pane = self.pane();
-        let shown = self.shown(pane);
-        let at = shown.get(self.cursor[pane]).copied();
-        if self.deleting {
-            self.deleting = false;
-            if key.code == KeyCode::Char('y')
-                && let Some(i) = at
-            {
-                store.delete(&self.sessions[i].0.id)?;
-                self.sessions = store.list()?;
-                self.cursor[0] = self.cursor[0].min(self.shown(0).len().saturating_sub(1));
-            }
-            return Ok(None);
-        }
-        if let Some(text) = &mut self.renaming {
-            match key.code {
-                KeyCode::Enter => {
-                    if let Some(i) = at {
-                        let name = text.lines().join("\n");
-                        // Reloaded so changes saved since the list was read are kept.
-                        let mut session = store.load(&self.sessions[i].0.id)?;
-                        if let Err(e) = session.set_name(&name) {
-                            self.error = Some(format!("{e:#}"));
-                            return Ok(None);
-                        }
-                        store.save(&session)?;
-                        self.sessions[i].0 = session;
-                        // The row may leave the filter with its old name.
-                        self.cursor[0] = self.cursor[0].min(self.shown(0).len().saturating_sub(1));
-                    }
-                    self.renaming = None;
-                }
-                KeyCode::Esc => self.renaming = None,
-                // Kept to one line; no wider past NAME_MAX, so a stored longer name can shrink.
-                _ => {
-                    let before = text.clone();
-                    let width = text.lines()[0].width();
-                    if text.input(key)
-                        && (text.lines().len() > 1 || text.lines()[0].width() > NAME_MAX.max(width))
-                    {
-                        *text = before;
-                    }
-                }
-            }
-            return Ok(None);
-        }
-        if let Some(popup) = &mut self.help {
-            match self.keymap.feed(key) {
-                Feed::Action("help" | "quit" | "cancel") => self.help = None,
-                Feed::Action(action) => popup.act(action),
-                _ => {}
-            }
-            return Ok(None);
-        }
         if self.filter[pane].typing {
             self.filter[pane].key(key);
             self.cursor[pane] = 0;
-            return Ok(None);
+            return Ok(Outcome::Consumed);
         }
         let Feed::Action(action) = self.keymap.feed(key) else {
-            return Ok(None);
+            return Ok(Outcome::Consumed);
         };
+        let shown = self.shown(pane, &ctx.sessions);
+        let at = shown.get(self.cursor[pane]).copied();
         let last = shown.len().saturating_sub(1);
         let cursor = self.cursor[pane];
         if let Some(to) = step(cursor, action, shown.len(), self.height) {
@@ -263,20 +253,30 @@ impl Picker {
                 }
             }
             "filter" => self.filter[pane].typing = true,
-            "delete_session" if !self.right => self.deleting = at.is_some(),
-            "rename_session" if !self.right => {
+            "delete_session" if !self.right => {
                 if let Some(i) = at {
-                    let mut text = TextArea::default();
-                    text.set_cursor_line_style(Style::new());
-                    text.insert_str(self.sessions[i].0.name.as_deref().unwrap_or(""));
-                    self.renaming = Some(text);
+                    let id = ctx.sessions[i].0.id.clone();
+                    return Ok(Outcome::Push(Box::new(
+                        Confirm::new("Delete", "delete this session?", "y delete  n/Esc cancel")
+                            .on('y', move |ctx: &mut Pick| {
+                                ctx.store.delete(&id)?;
+                                ctx.sessions = ctx.store.list()?;
+                                Ok(Outcome::Close)
+                            })
+                            .on('n', |_| Ok(Outcome::Close)),
+                    )));
                 }
             }
-            "help" => self.help = Some(help::popup(HELP)),
-            "settings" => self.settings = Some(SettingsPopup::new(theme, *wrap)),
+            "rename_session" if !self.right => {
+                if let Some(i) = at {
+                    return Ok(Outcome::Push(Box::new(Rename::new(&ctx.sessions[i].0))));
+                }
+            }
+            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "settings" => return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look)))),
             "focus_left" => self.right = false,
             "focus_right" => self.right = true,
-            "quit" => return Ok(Some(None)),
+            "quit" => return Ok(Outcome::Quit),
             "cancel" => {
                 if self.right && self.checked.is_some() {
                     self.checked = None;
@@ -287,66 +287,34 @@ impl Picker {
             }
             "open" => {
                 if let Some(i) = at {
-                    return self.open(i, store, repo);
+                    return self.open(i, ctx);
                 }
             }
             _ => {}
         }
-        Ok(None)
+        Ok(Outcome::Consumed)
     }
 
-    /// Enter on row `i`: resumes that session, or makes a session of the checked rows
-    /// (or row `i` alone): from the parent of the bottom commit (or before the root) to the top row.
-    fn open(
-        &mut self,
-        i: usize,
-        store: &Store,
-        repo: &mut Repo,
-    ) -> Result<Option<Option<Session>>> {
-        if !self.right {
-            let session = store.load(&self.sessions[i].0.id)?;
-            if let Err(e) = repo.verify(&session.base, &session.end) {
-                self.error = Some(format!("{e:#}"));
-                return Ok(None);
-            }
-            return Ok(Some(Some(session)));
-        }
-        let (top, bottom) = self.checked.unwrap_or((i, i));
-        let all = self.all(1);
-        let (end, bottom) = (&all[top].1, &all[bottom].1);
-        let base = if repo::worktree(bottom) {
-            "HEAD".to_string()
-        } else {
-            // Left out for the root commit: the range starts before it.
-            repo.parent(bottom)?.unwrap_or_default()
-        };
-        match repo.resolve(&format!("{base}..{end}")) {
-            Ok((resolved, end)) => {
-                let from = if base.is_empty() {
-                    ""
-                } else {
-                    short(&resolved)
-                };
-                let range = format!("{from}..{}", short(&end));
-                let session = Session::new(store.new_id(), range, resolved, end);
-                store.save(&session)?;
-                Ok(Some(Some(session)))
-            }
-            Err(e) => {
-                self.error = Some(format!("{e:#}"));
-                Ok(None)
-            }
+    fn paste(&mut self, text: &str) {
+        let pane = self.pane();
+        if self.filter[pane].typing {
+            self.filter[pane].paste(text);
+            self.cursor[pane] = 0;
         }
     }
 
-    fn render(&mut self, f: &mut Frame, theme: &Theme) {
-        clear(f, f.area(), theme);
-        let [body, foot] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+    fn hints(&self) -> Option<&'static str> {
+        Some(HINTS)
+    }
+
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {
+        let theme = ctx.look.theme;
+        // Sessions change under the layers above: deleted, or renamed out of the filter.
+        self.cursor[0] = self.cursor[0].min(self.shown(0, &ctx.sessions).len().saturating_sub(1));
         let panes: [_; 2] =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .areas(body);
-        self.height = body.height.saturating_sub(2) as usize;
+                .areas(area);
+        self.height = area.height.saturating_sub(2) as usize;
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
             let mut title = [" Sessions ", " New review "][pane].to_string();
@@ -354,11 +322,11 @@ impl Picker {
             let height = area.height.saturating_sub(2) as usize;
             let cursor = self.cursor[pane];
             let skip = (cursor + 1).saturating_sub(height);
-            let all = self.all(pane);
+            let all = self.all(pane, &ctx.sessions);
             let columns = Columns::new(&self.commits);
             // Inside the borders, after the mark.
             let width = (area.width as usize).saturating_sub(2 + 2);
-            let shown = self.shown(pane);
+            let shown = self.shown(pane, &ctx.sessions);
             let rows = shown.len();
             let lines: Vec<Line> = shown
                 .into_iter()
@@ -384,38 +352,88 @@ impl Picker {
                 cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
             }
         }
-        let (text, style) = if let Some(e) = &self.error {
-            (e.clone(), Style::new().fg(theme.red))
-        } else {
-            (HINTS.to_string(), Style::new().fg(theme.dim))
-        };
-        f.render_widget(Paragraph::new(text).style(style), foot);
-        if let Some(popup) = &mut self.help {
-            popup.render(f, f.area(), theme);
+    }
+}
+
+/// `R`: the name being typed for session `id`; Enter saves it, Esc cancels.
+struct Rename {
+    id: String,
+    text: TextArea<'static>,
+}
+
+impl Rename {
+    fn new(session: &Session) -> Rename {
+        let mut text = TextArea::default();
+        text.set_cursor_line_style(Style::new());
+        text.insert_str(session.name.as_deref().unwrap_or(""));
+        Rename {
+            id: session.id.clone(),
+            text,
         }
-        if let Some(settings) = &mut self.settings {
-            settings.draw(f, f.area(), theme);
+    }
+}
+
+impl Component<Pick> for Rename {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        let text = &mut self.text;
+        match key.code {
+            KeyCode::Enter => {
+                let name = text.lines().join("\n");
+                // Reloaded so changes saved since the list was read are kept.
+                let mut session = ctx.store.load(&self.id)?;
+                if let Err(e) = session.set_name(&name) {
+                    ctx.error = Some(format!("{e:#}"));
+                    return Ok(Outcome::Consumed);
+                }
+                ctx.store.save(&session)?;
+                if let Some(row) = ctx.sessions.iter_mut().find(|(s, _)| s.id == self.id) {
+                    row.0 = session;
+                }
+                return Ok(Outcome::Close);
+            }
+            KeyCode::Esc => return Ok(Outcome::Close),
+            // Kept to one line; no wider past NAME_MAX, so a stored longer name can shrink.
+            _ => {
+                let before = text.clone();
+                let width = text.lines()[0].width();
+                if text.input(key)
+                    && (text.lines().len() > 1 || text.lines()[0].width() > NAME_MAX.max(width))
+                {
+                    *text = before;
+                }
+            }
         }
-        if self.deleting {
-            dialog::confirm(
-                f,
-                f.area(),
-                "Delete",
-                "delete this session?",
-                "y delete  n/Esc cancel",
-                theme,
-            );
-        }
-        if let Some(text) = &self.renaming {
-            dialog::input(
-                f,
-                f.area(),
-                "Rename session",
-                text,
-                NAME_MAX as u16 + 1,
-                "Enter save  Esc cancel  blank clears",
-                theme,
-            );
-        }
+        Ok(Outcome::Consumed)
+    }
+
+    fn paste(&mut self, text: &str) {
+        // As much as fits in NAME_MAX columns.
+        let mut room = NAME_MAX.saturating_sub(self.text.lines()[0].width());
+        let fits: String = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take_while(|c| {
+                let w = c.width().unwrap_or(0);
+                let fits = w <= room;
+                room = room.saturating_sub(w);
+                fits
+            })
+            .collect();
+        self.text.insert_str(fits);
+    }
+
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {
+        dialog::input(
+            f,
+            area,
+            "Rename session",
+            &self.text,
+            NAME_MAX as u16 + 1,
+            "Enter save  Esc cancel  blank clears",
+            ctx.look.theme,
+        );
     }
 }

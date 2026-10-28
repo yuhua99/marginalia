@@ -94,9 +94,7 @@ impl Component for FileView {
         match action {
             "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
             "settings" => {
-                return Ok(Outcome::Push(Box::new(SettingsPopup::new(
-                    ctx.theme, ctx.wrap,
-                ))));
+                return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look))));
             }
             "filter" => self.search = Query::start(),
             "next_thread" | "prev_thread" if !self.search.text.is_empty() => {
@@ -122,9 +120,9 @@ impl Component for FileView {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        clear(f, area, ctx.theme);
+        clear(f, area, ctx.look.theme);
         let title = format!(" {} {}", self.label, self.search.title());
-        let block = boxed(title, true, ctx.theme);
+        let block = boxed(title, true, ctx.look.theme);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let (doc, linked, cursor) = (&self.doc, &self.linked, self.scroll.cursor);
@@ -133,9 +131,17 @@ impl Component for FileView {
             // The cursor as an accent block; linked lines as bold blue numbers, apart from
             // it in themes whose accent is blue.
             let mark = if i == cursor {
-                Some(Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent))
+                Some(
+                    Style::new()
+                        .fg(ctx.look.theme.on_accent)
+                        .bg(ctx.look.theme.accent),
+                )
             } else if linked.contains(&i) {
-                Some(Style::new().fg(ctx.theme.blue).add_modifier(Modifier::BOLD))
+                Some(
+                    Style::new()
+                        .fg(ctx.look.theme.blue)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 None
             };
@@ -147,7 +153,15 @@ impl Component for FileView {
             |i| draw(i).height(),
             false,
         );
-        draw_rows(f, inner, &self.scroll, doc, ctx.theme, draw, |_, _, _| 0);
+        draw_rows(
+            f,
+            inner,
+            &self.scroll,
+            doc,
+            ctx.look.theme,
+            draw,
+            |_, _, _| 0,
+        );
     }
 }
 

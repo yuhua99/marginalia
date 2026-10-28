@@ -17,7 +17,7 @@ use crate::theme::Theme;
 use crate::ui;
 use crate::ui::review::Review;
 
-/// State shared by all layers; layers keep only their own UI state.
+/// State the review's layers share; layers keep only their own UI state.
 pub struct Ctx {
     pub session: Session,
     pub repo: Repo,
@@ -33,11 +33,28 @@ pub struct Ctx {
     pub views: Vec<View>,
     pub shown: Shown,
     pub highlighter: Highlighter,
+    pub look: Look,
+    /// Paths of the files at the range end, which links in threads may open.
+    pub files: HashSet<String>,
+}
+
+/// What the settings change; the picker and the review share it.
+pub struct Look {
     pub theme: &'static Theme,
     /// Wrap long code lines.
     pub wrap: bool,
-    /// Paths of the files at the range end, which links in threads may open.
-    pub files: HashSet<String>,
+}
+
+impl AsRef<Look> for Ctx {
+    fn as_ref(&self) -> &Look {
+        &self.look
+    }
+}
+
+impl AsMut<Look> for Ctx {
+    fn as_mut(&mut self) -> &mut Look {
+        &mut self.look
+    }
 }
 
 pub enum View {
@@ -75,13 +92,7 @@ impl Shown {
 }
 
 impl Ctx {
-    pub fn new(
-        mut session: Session,
-        mut repo: Repo,
-        store: Store,
-        theme: &'static Theme,
-        wrap: bool,
-    ) -> Result<Ctx> {
+    pub fn new(mut session: Session, mut repo: Repo, store: Store, look: Look) -> Result<Ctx> {
         session.check_outdated(&mut repo)?;
         let mut views: Vec<View> = repo
             .commits(&session.base, &session.end)?
@@ -104,8 +115,7 @@ impl Ctx {
             views,
             shown: Shown::All,
             highlighter: Highlighter::new(),
-            theme,
-            wrap,
+            look,
             files,
         })
     }
@@ -212,18 +222,19 @@ fn rev(session: &Session, view: &View) -> String {
     }
 }
 
-pub enum Outcome {
+pub enum Outcome<C = Ctx> {
     Consumed,
-    Push(Box<dyn Component>),
+    Push(Box<dyn Component<C>>),
     Close,
     Quit,
 }
 
-/// A layer of the screen. Layers render bottom-up; keys go to the top layer only.
-pub trait Component {
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx);
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
-    /// Pasted text; only a draft takes it.
+/// A layer of the screen over the state `C` the layers share: the review's `Ctx`, or
+/// the picker's. Layers render bottom-up; keys go to the top layer only.
+pub trait Component<C = Ctx> {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C);
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut C) -> Result<Outcome<C>>;
+    /// Pasted text; only text being typed takes it.
     fn paste(&mut self, _text: &str) {}
     /// Footer hints; None leaves the footer to the layers below.
     fn hints(&self) -> Option<&'static str> {
@@ -231,24 +242,62 @@ pub trait Component {
     }
 }
 
-const HINTS: &str = " c comment/reply  r collapse  e/d edit/delete  n/N next thread/match  / search/filter  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
+/// The layers of a screen, the bottom one first; it never closes.
+pub struct Layers<C>(Vec<Box<dyn Component<C>>>);
+
+impl<C: AsRef<Look>> Layers<C> {
+    pub fn new(bottom: impl Component<C> + 'static) -> Layers<C> {
+        Layers(vec![Box::new(bottom)])
+    }
+
+    /// Renders the layers over the body and the top hints in the footer; returns the footer.
+    pub fn render(&mut self, f: &mut Frame, ctx: &C) -> Rect {
+        let theme = ctx.as_ref().theme;
+        ui::clear(f, f.area(), theme);
+        let [body, foot] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
+        f.render_widget(
+            Paragraph::new(
+                self.0
+                    .iter()
+                    .rev()
+                    .find_map(|l| l.hints())
+                    .unwrap_or_default(),
+            )
+            .style(Style::new().fg(theme.dim)),
+            foot,
+        );
+        for layer in &mut self.0 {
+            layer.render(f, body, ctx);
+        }
+        foot
+    }
+
+    /// Gives a key press or pasted text to the top layer; true when it quits.
+    pub fn event(&mut self, event: Event, ctx: &mut C) -> Result<bool> {
+        let top = self.0.last_mut().expect("the bottom layer");
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match top.handle_key(key, ctx)? {
+                Outcome::Consumed => {}
+                Outcome::Push(layer) => self.0.push(layer),
+                Outcome::Close => {
+                    self.0.pop();
+                }
+                Outcome::Quit => return Ok(true),
+            },
+            Event::Paste(text) => top.paste(&text),
+            _ => {}
+        }
+        Ok(false)
+    }
+}
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
-    let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::new())];
+    let mut layers = Layers::new(Review::new());
     'draw: loop {
         ctx.highlighter.receive();
         terminal.draw(|f| {
-            ui::clear(f, f.area(), ctx.theme);
-            let [body, foot] =
-                Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
-            f.render_widget(
-                Paragraph::new(layers.iter().rev().find_map(|l| l.hints()).unwrap_or(HINTS))
-                    .style(Style::new().fg(ctx.theme.dim)),
-                foot,
-            );
-            for layer in &mut layers {
-                layer.render(f, body, ctx);
-            }
+            layers.render(f, ctx);
         })?;
         ctx.highlighter.flush(&mut ctx.repo);
         // Wait for a key, redrawing as colors arrive.
@@ -257,19 +306,8 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
                 continue 'draw;
             }
         }
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                match layers.last_mut().unwrap().handle_key(key, ctx)? {
-                    Outcome::Consumed => {}
-                    Outcome::Push(layer) => layers.push(layer),
-                    Outcome::Close => {
-                        layers.pop();
-                    }
-                    Outcome::Quit => return Ok(()),
-                }
-            }
-            Event::Paste(text) => layers.last_mut().unwrap().paste(&text),
-            _ => {}
+        if layers.event(event::read()?, ctx)? {
+            return Ok(());
         }
     }
 }
