@@ -140,7 +140,6 @@ impl Picker {
                 .chain(commits)
                 .collect();
         }
-        let width = self.sessions.iter().map(|(s, _)| s.range.width()).max();
         let name_width = self
             .sessions
             .iter()
@@ -149,18 +148,12 @@ impl Picker {
         self.sessions
             .iter()
             .map(|(s, _)| {
-                let pad = " ".repeat(width.unwrap_or(0) - s.range.width());
                 // A name column only when some session has a name.
                 let name = name_width.map_or(String::new(), |w| {
                     let n = s.name.as_deref().unwrap_or("");
                     format!("{n}{}  ", " ".repeat(w - n.width()))
                 });
-                let text = format!(
-                    "{}  {name}{}{pad}  {:>3} waiting on agent",
-                    s.id,
-                    s.range,
-                    s.waiting_on_agent_count()
-                );
+                let text = format!("{}  {name}{}", s.id, s.range);
                 (text, s.id.clone())
             })
             .collect()
