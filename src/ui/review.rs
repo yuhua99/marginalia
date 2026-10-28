@@ -108,8 +108,8 @@ impl Component for Review {
                     ("open", Entry::View(view)) => {
                         let run = self.commits.checked().unwrap_or((view, view));
                         ctx.show(Shown::of(run, ctx.views.len()))?;
-                        self.commits.focus(ctx, true);
                         self.diff = DiffView::default();
+                        self.focus = DIFF;
                     }
                     ("open", Entry::File(file)) => {
                         self.diff.jump(ctx.doc.file_row(file));
