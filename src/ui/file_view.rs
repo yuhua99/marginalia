@@ -1,10 +1,11 @@
 use std::collections::HashSet;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 
 use crate::app::{Component, Ctx, Outcome};
 use crate::doc::Doc;
@@ -13,9 +14,10 @@ use crate::session::Thread;
 use crate::theme::Theme;
 use crate::ui::boxed;
 use crate::ui::clear;
-use crate::ui::diff_view::DiffView;
+use crate::ui::diff_view::{draw_row, draw_rows};
 use crate::ui::help::{Entry, Help};
 use crate::ui::popup::Popup;
+use crate::ui::scroll::Scroll;
 use crate::ui::settings::SettingsPopup;
 
 const HELP: &[Entry] = &[
@@ -30,16 +32,30 @@ const HELP: &[Entry] = &[
 /// A whole file at the range end, opened from a link, read only and without threads;
 /// the linked lines are marked in the gutter. `q` / `Esc` go back.
 pub struct FileView {
-    view: DiffView,
+    doc: Doc,
+    /// The link it was opened from, as `path:line`.
+    label: String,
+    /// The rows of the linked lines.
+    linked: RangeInclusive<usize>,
+    scroll: Scroll,
     keymap: Keymap,
 }
 
 impl FileView {
-    pub fn new(start: usize, end: usize, link: &Link) -> FileView {
-        FileView {
-            view: DiffView::file(start, end, link),
+    /// The file of `link` at the range end, from its first linked line; None when absent.
+    pub fn open(ctx: &mut Ctx, link: &Link) -> Result<Option<FileView>> {
+        let Some(text) = ctx.repo.read(&ctx.session.end, &link.path)? else {
+            return Ok(None);
+        };
+        let doc = Doc::file(ctx.session.end.clone(), link.path.clone(), &text);
+        let (start, end) = (doc.line_row(link.start), doc.line_row(link.end));
+        Ok(Some(FileView {
+            doc,
+            label: link.label(),
+            linked: start..=end,
+            scroll: Scroll::at(start),
             keymap: Keymap::default(),
-        }
+        }))
     }
 }
 
@@ -53,20 +69,39 @@ impl Component for FileView {
             "settings" => Ok(Outcome::Push(Box::new(SettingsPopup::new(
                 ctx.theme, ctx.wrap,
             )))),
-            "quit" | "cancel" => {
-                ctx.file = None;
-                Ok(Outcome::Close)
+            "quit" | "cancel" => Ok(Outcome::Close),
+            _ => {
+                self.scroll.act(action, self.doc.len());
+                Ok(Outcome::Consumed)
             }
-            _ => self.view.act(action, ctx),
         }
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         clear(f, area, ctx.theme);
-        let block = boxed(format!(" {} ", self.view.link()), true, ctx.theme);
+        let block = boxed(format!(" {} ", self.label), true, ctx.theme);
         let inner = block.inner(area);
         f.render_widget(block, area);
-        self.view.render(f, inner, ctx);
+        let (doc, linked, cursor) = (&self.doc, &self.linked, self.scroll.cursor);
+        let draw = |i: usize| {
+            // The cursor as an accent block; linked lines as bold blue numbers, apart from
+            // it in themes whose accent is blue.
+            let mark = if i == cursor {
+                Some(Style::new().fg(ctx.theme.on_accent).bg(ctx.theme.accent))
+            } else if linked.contains(&i) {
+                Some(Style::new().fg(ctx.theme.blue).add_modifier(Modifier::BOLD))
+            } else {
+                None
+            };
+            draw_row(ctx, doc, i, inner.width, mark, None)
+        };
+        self.scroll.place(
+            inner.height as usize,
+            doc.len(),
+            |i| draw(i).height(),
+            false,
+        );
+        draw_rows(f, inner, &self.scroll, doc, ctx.theme, draw, |_, _, _| 0);
     }
 }
 
@@ -126,18 +161,6 @@ pub fn thread_links(t: &Thread, files: &HashSet<String>) -> Vec<Link> {
         }
     }
     out
-}
-
-/// Opens the file of `link` at the range end as `ctx.file`; returns the rows of the
-/// linked first and last line.
-pub fn open(ctx: &mut Ctx, link: &Link) -> Result<Option<(usize, usize)>> {
-    let Some(text) = ctx.repo.read(&ctx.session.end, &link.path)? else {
-        return Ok(None);
-    };
-    let doc = Doc::file(ctx.session.end.clone(), link.path.clone(), &text);
-    let rows = (doc.line_row(link.start), doc.line_row(link.end));
-    ctx.file = Some(doc);
-    Ok(Some(rows))
 }
 
 /// Enter on a thread with several links: a list of them to pick one.
