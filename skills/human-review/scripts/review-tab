@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # review-tab SESSION: open an mrg session in a herdr tab or tmux window beside this agent.
 # On quit, the hook (review-tab --notify PANE) tells the agent pane how the review ended.
+# Outside both, print the command for the human to run instead.
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
+mux=
 if [ "${HERDR_ENV:-}" = 1 ]; then
     mux=herdr
     agent_pane="${HERDR_PANE_ID:?HERDR_PANE_ID unset}"
 elif [ -n "${TMUX:-}" ]; then
     mux=tmux
     agent_pane="${TMUX_PANE:?TMUX_PANE unset}"
-else
-    die "not in herdr or tmux; restart the agent inside one."
 fi
 
 # Runs CMD in a new focused tab named review-ID, in the current directory; the tab closes when CMD
@@ -63,6 +63,10 @@ case "${1:-}" in
     *)
         # A bad id fails here, where the agent sees it.
         mrg show --session "$1" >/dev/null
+        if [ -z "$mux" ]; then
+            printf 'Not in herdr or tmux. Ask the human to run this in another terminal:\n  cd %q && mrg resume --session %q\nand to come back when done, pasting the threads if saved to the clipboard on quit.\n' "$PWD" "$1"
+            exit 0
+        fi
         hook="$(printf '%q --notify %q' "$(realpath "$0")" "$agent_pane")"
         mux_open "$(printf 'mrg resume --session %q --on-quit %q' "$1" "$hook")" "$1"
         ;;

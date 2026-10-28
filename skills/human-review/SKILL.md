@@ -16,7 +16,7 @@ Run every command from the repo root; sessions belong to the repo.
   - `{"kind": "lines", "file": PATH, "start": N, "end": M}` anchors new-side lines at the range end. Add `"rev": BASE` (`base` in `mrg show`) for deleted lines.
 - `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you, `--only outdated` those whose lines changed since.
 - `mrg delete --session ID THREAD...` deletes your notes: threads the user never wrote in.
-- `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits.
+- `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux it prints a command to relay to the human.
 
 Ask once if the scope is missing.
 
@@ -26,7 +26,9 @@ Ask once if the scope is missing.
    Done when you can explain the old and new behavior of each meaningful changed block.
 
 2. Group hunks by concern and draft all comments into a temp comments file.
-   Split each hunk into logical blocks of one or a few adjacent lines. Explain each block's old behavior -> change -> new behavior, and why; explain intent and effects rather than paraphrasing syntax.
+   Split each hunk into logical blocks of one or a few adjacent lines.
+   Keep each comment to one point a reader takes in at a glance, at most three short lines; split rather than lengthen. The session sketch is exempt.
+   Explain each block's old behavior -> change -> new behavior, and why; explain intent and effects rather than paraphrasing syntax.
    Give distinct changes within a function separate comments, anchored to the relevant lines.
    Summarize tests, codegen, and pure moves in one line per logical group; still name any behavior or test-expectation changes. For copied blocks, link the source in one line; explain any differences from the source and their behavioral effects separately.
    Cite code outside the diff (a caller, a definition, a copy source) as a link: a repo-relative `path:line` or `path:start-end` at the range end.
@@ -40,8 +42,7 @@ Ask once if the scope is missing.
    - File anchors: only context not already covered by the session or lines comments.
 
 4. Follow-up:
-   - `waiting on agent` → `mrg show --only waiting`; for each thread, answer or fix, then reply in it with `reply_to`. After fixing, `delete` your notes (threads with no `user` message) in `mrg show --only outdated` that the fix made wrong. Post replies and comments on any new delta, then `review-tab` the same ID.
+   - The human is back (a `waiting on agent` notice, pasted threads, or done) → `mrg show --only waiting`; nothing waiting ends the review. Otherwise, for each thread, answer or fix, then reply in it with `reply_to`. After fixing, `delete` your notes (threads with no `user` message) in `mrg show --only outdated` that the fix made wrong. Post replies and comments on any new delta, then `review-tab` the same ID.
 
 ## Gotchas
 - History rewritten below the base → `mrg resume` fails in the review tab and nothing arrives; `mrg new` a new session.
-- Abnormal exit sends nothing; run `mrg show` when the human says done.
