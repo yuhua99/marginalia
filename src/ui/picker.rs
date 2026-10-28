@@ -22,9 +22,6 @@ use crate::ui::{boxed, check, clear};
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-/// The rows of the range pane above the commits.
-const UNCOMMITTED: [&str; 2] = ["unstaged", "staged"];
-
 const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  X delete session  Esc clear  s settings  ? help  q quit";
 
 const HELP: &[Entry] = &[
@@ -54,6 +51,7 @@ pub fn run(
     let mut p = Picker {
         sessions: store.list()?,
         commits: repo.recent(COMMITS)?,
+        uncommitted: repo.uncommitted()?,
         ..Picker::default()
     };
     p.right = p.sessions.is_empty();
@@ -79,6 +77,8 @@ pub fn run(
 struct Picker {
     sessions: Vec<(Session, u64)>,
     commits: Vec<Commit>,
+    /// The rows of the range pane above the commits: `unstaged` / `staged` when not empty.
+    uncommitted: Vec<&'static str>,
     /// Focus on the range pane.
     right: bool,
     /// Per pane, into its shown rows.
@@ -110,9 +110,10 @@ impl Picker {
                 .commits
                 .iter()
                 .map(|c| (format!("{} {}", &c.sha[..7], c.subject), c.sha.clone()));
-            return UNCOMMITTED
+            return self
+                .uncommitted
+                .iter()
                 .map(|s| (s.to_string(), s.to_string()))
-                .into_iter()
                 .chain(commits)
                 .collect();
         }
@@ -326,7 +327,7 @@ impl Picker {
                     }
                     let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
                     let mut spans = vec![mark(checked, theme)];
-                    match i.checked_sub(UNCOMMITTED.len()) {
+                    match i.checked_sub(self.uncommitted.len()) {
                         Some(c) => {
                             spans.extend(columns.row(&self.commits[c], 0, width, style, theme))
                         }
