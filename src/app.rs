@@ -160,34 +160,59 @@ impl Ctx {
 
 /// The diff of `shown`: from the left side of its first view to the right side of the last.
 fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<Doc> {
-    let (left, right, commits) = match shown {
-        Shown::All => (session.base.clone(), session.end.clone(), Vec::new()),
+    let (left, right, commits, carry) = match shown {
+        Shown::All => (
+            session.base.clone(),
+            session.end.clone(),
+            Vec::new(),
+            Vec::new(),
+        ),
         Shown::Run(first, last) => {
-            let left = match &views[first] {
-                View::Commit(c) => match repo.parent(&c.sha)? {
-                    Some(parent) => parent,
-                    None => repo.empty_tree()?,
-                },
-                View::Uncommitted => repo.commit("HEAD")?,
-            };
-            let right = match &views[last] {
-                View::Commit(c) => c.sha.clone(),
-                View::Uncommitted => session.end.clone(),
-            };
-            let commits = views[first..=last]
-                .iter()
-                .map(|v| match v {
-                    View::Commit(c) => c.sha.clone(),
-                    View::Uncommitted => session.end.clone(),
-                })
-                .collect();
-            (left, right, commits)
+            let run = &views[first..=last];
+            let left = parent(repo, &run[0])?;
+            let commits: Vec<String> = run.iter().map(|v| rev(session, v)).collect();
+            let right = commits[commits.len() - 1].clone();
+            let mut carry = Vec::new();
+            for (i, v) in run.iter().enumerate() {
+                let kept = if i + 1 < run.len() {
+                    Some(repo.diff(&commits[i], &right, 0)?)
+                } else {
+                    None
+                };
+                let deleted = if i > 0 {
+                    let from = parent(repo, v)?;
+                    Some(repo.diff(&from, &left, 0)?)
+                } else {
+                    None
+                };
+                carry.push([kept, deleted]);
+            }
+            (left, right, commits, carry)
         }
     };
-    let files = repo.diff(&left, &right)?;
-    let mut doc = Doc::new(left, right, files, commits);
+    let files = repo.diff(&left, &right, 3)?;
+    let mut doc = Doc::new(left, right, files, commits, carry);
     doc.set_threads(&session.threads);
     Ok(doc)
+}
+
+/// The left side of `view`.
+fn parent(repo: &Repo, view: &View) -> Result<String> {
+    match view {
+        View::Commit(c) => match repo.parent(&c.sha)? {
+            Some(parent) => Ok(parent),
+            None => repo.empty_tree(),
+        },
+        View::Uncommitted => repo.commit("HEAD"),
+    }
+}
+
+/// The right side of `view`.
+fn rev(session: &Session, view: &View) -> String {
+    match view {
+        View::Commit(c) => c.sha.clone(),
+        View::Uncommitted => session.end.clone(),
+    }
 }
 
 pub enum Outcome {
