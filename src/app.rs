@@ -228,6 +228,10 @@ pub trait Component {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome>;
     /// Pasted text; only a draft takes it.
     fn paste(&mut self, _text: &str) {}
+    /// Footer hints; None leaves the footer to the layers below.
+    fn hints(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 const HINTS: &str = " c comment/reply  r collapse  e/d edit/delete  n/N next thread  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
@@ -241,7 +245,8 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
             let [body, foot] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
             f.render_widget(
-                Paragraph::new(HINTS).style(Style::new().fg(ctx.theme.dim)),
+                Paragraph::new(layers.iter().rev().find_map(|l| l.hints()).unwrap_or(HINTS))
+                    .style(Style::new().fg(ctx.theme.dim)),
                 foot,
             );
             for layer in &mut layers {
