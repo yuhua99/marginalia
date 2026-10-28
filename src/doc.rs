@@ -51,9 +51,9 @@ pub enum Row {
         new: u32,
         hidden: Option<u32>,
     },
-    /// Index into the session threads. Threads that have no row in the diff
-    /// (session, commits, lines in folds or of other revs) come right after `Session`;
-    /// those of collapsed files have none.
+    /// Index into the session threads. Threads on lines in a fold come after the fold;
+    /// those that have no row in the diff (session, commits, lines of other revs) come
+    /// right after `Session`; those of collapsed files have none.
     Thread { idx: usize },
 }
 
@@ -271,14 +271,39 @@ impl Doc {
                 Row::Thread { .. } => continue,
                 _ => [None, None],
             };
+            let fold = match &row {
+                Row::Fold {
+                    file,
+                    old,
+                    new,
+                    hidden,
+                } => Some((*file, *old, *new, *hidden)),
+                _ => None,
+            };
             rows.push(row);
             for spot in spots.into_iter().flatten() {
                 rows.extend(at.remove(&spot).into_iter().flatten().map(thread_row));
             }
+            // Threads on lines the fold hides go under it.
+            if let Some((file, old, new, hidden)) = fold {
+                let inside = |spot: &Spot| match *spot {
+                    Spot::Line(f, right, line) => {
+                        let start = if right { new } else { old };
+                        f == file && line >= start && hidden.is_none_or(|n| line < start + n)
+                    }
+                    _ => false,
+                };
+                let mut idx: Vec<usize> = at
+                    .extract_if(|spot, _| inside(spot))
+                    .flat_map(|(_, idx)| idx)
+                    .collect();
+                idx.sort();
+                rows.extend(idx.into_iter().map(thread_row));
+            }
         }
         if !self.single {
-            // Left over are threads in folds, `Whole` ones, `Top` ones (whole range only),
-            // and those of collapsed files, which stay out.
+            // Left over are `Whole` ones, `Top` ones (whole range only), lines past the
+            // file's rows, and those of collapsed files, which stay out.
             let mut rest: Vec<usize> = at
                 .into_iter()
                 .filter(|(spot, _)| self.commits.is_empty() || *spot != Spot::Top)
@@ -393,7 +418,7 @@ impl Doc {
 
     /// Shows up to 20 lines of the fold at `row` (the ten at each end of a longer fold),
     /// reading the file with `read(rev, path)`. Returns the row the fold was at, which
-    /// shifts when threads move out of the top group into the shown lines.
+    /// shifts when threads on lines past the file's end move from under it to the top group.
     pub fn expand(
         &mut self,
         row: usize,
@@ -445,7 +470,7 @@ impl Doc {
         let top = self.top_threads();
         self.rows.splice(row..=row, shown);
         self.set_threads(threads);
-        Ok(row - (top - self.top_threads()))
+        Ok(row + (self.top_threads() - top))
     }
 
     /// Whether `row` is in the top thread group, away from what it anchors to.
