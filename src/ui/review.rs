@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::{Component, Ctx, Outcome};
+use crate::app::{Component, Ctx, Outcome, Shown};
 use crate::keymap::{Feed, Keymap};
 use crate::ui::boxed;
 use crate::ui::diff_view::DiffView;
@@ -106,12 +106,8 @@ impl Component for Review {
                 };
                 match (action, list.entry(ctx)) {
                     ("open", Entry::View(view)) => {
-                        let mut range = self.commits.checked().unwrap_or((view, view));
-                        // Every row is all.
-                        if range == (1, ctx.views.len() - 1) {
-                            range = (0, 0);
-                        }
-                        ctx.show(range)?;
+                        let run = self.commits.checked().unwrap_or((view, view));
+                        ctx.show(Shown::of(run, ctx.views.len()))?;
                         self.commits.focus(ctx, true);
                         self.diff = DiffView::default();
                     }
@@ -149,7 +145,7 @@ impl Component for Review {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         // Commits as tall as their rows, up to 4.
-        let rows = (ctx.views.len() - 1).min(4) as u16;
+        let rows = ctx.views.len().min(4) as u16;
         let [top, bottom] =
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
         let [left, right] =

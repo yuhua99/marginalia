@@ -31,10 +31,9 @@ pub struct Ctx {
     pub back: bool,
     /// Run on quitting; given to `mrg resume` for this run only.
     pub on_quit: Option<String>,
-    /// What the diff can show: the whole range, each commit, then uncommitted changes.
+    /// What the diff can show: each commit, then uncommitted changes.
     pub views: Vec<View>,
-    /// First and last of the `views` shown together (oldest to newest).
-    pub view: (usize, usize),
+    pub shown: Shown,
     pub highlighter: Highlighter,
     pub theme: &'static Theme,
     /// Wrap long code lines.
@@ -46,12 +45,37 @@ pub struct Ctx {
 }
 
 pub enum View {
-    /// `base end`.
-    All,
     /// `C^ C`.
     Commit(Commit),
     /// `HEAD staged` or `HEAD unstaged`.
     Uncommitted,
+}
+
+/// The views the diff shows: the whole range (`base end`), or a run of them as one diff.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Shown {
+    All,
+    /// First and last of the `views` (oldest to newest), not all of them.
+    Run(usize, usize),
+}
+
+impl Shown {
+    /// The run `first..=last` of `n` views; every one of them is the whole range.
+    pub fn of((first, last): (usize, usize), n: usize) -> Shown {
+        if first == 0 && last + 1 >= n {
+            Shown::All
+        } else {
+            Shown::Run(first, last)
+        }
+    }
+
+    /// First and last of the `n` views shown.
+    pub fn bounds(self, n: usize) -> (usize, usize) {
+        match self {
+            Shown::All => (0, n.saturating_sub(1)),
+            Shown::Run(first, last) => (first, last),
+        }
+    }
 }
 
 impl Ctx {
@@ -66,14 +90,15 @@ impl Ctx {
             store.save(&session)?;
         }
         let outdated = session.outdated(&mut repo)?;
-        let mut views = vec![View::All];
-        for commit in repo.commits(&session.base, &session.end)? {
-            views.push(View::Commit(commit));
-        }
+        let mut views: Vec<View> = repo
+            .commits(&session.base, &session.end)?
+            .into_iter()
+            .map(View::Commit)
+            .collect();
         if repo::worktree(&session.end) {
             views.push(View::Uncommitted);
         }
-        let doc = load(&mut repo, &session, &views, (0, 0))?;
+        let doc = load(&mut repo, &session, &views, Shown::All)?;
         let files = repo.files(&session.end)?;
         Ok(Ctx {
             session,
@@ -85,7 +110,7 @@ impl Ctx {
             back: false,
             on_quit: None,
             views,
-            view: (0, 0),
+            shown: Shown::All,
             highlighter: Highlighter::new(),
             theme,
             wrap,
@@ -94,10 +119,10 @@ impl Ctx {
         })
     }
 
-    /// Switches the diff to `views[first..=last]` as one diff.
-    pub fn show(&mut self, view: (usize, usize)) -> Result<()> {
-        self.doc = load(&mut self.repo, &self.session, &self.views, view)?;
-        self.view = view;
+    /// Switches the diff to `shown`.
+    pub fn show(&mut self, shown: Shown) -> Result<()> {
+        self.doc = load(&mut self.repo, &self.session, &self.views, shown)?;
+        self.shown = shown;
         Ok(())
     }
 
@@ -110,34 +135,33 @@ impl Ctx {
     }
 }
 
-/// The diff from the left side of the first view to the right side of the last.
-fn load(
-    repo: &mut Repo,
-    session: &Session,
-    views: &[View],
-    (first, last): (usize, usize),
-) -> Result<Doc> {
-    let left = match &views[first] {
-        View::All => session.base.clone(),
-        View::Commit(c) => match repo.parent(&c.sha)? {
-            Some(parent) => parent,
-            None => repo.empty_tree()?,
-        },
-        View::Uncommitted => repo.commit("HEAD")?,
-    };
-    let right = match &views[last] {
-        View::All | View::Uncommitted => session.end.clone(),
-        View::Commit(c) => c.sha.clone(),
+/// The diff of `shown`: from the left side of its first view to the right side of the last.
+fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<Doc> {
+    let (left, right, commits) = match shown {
+        Shown::All => (session.base.clone(), session.end.clone(), Vec::new()),
+        Shown::Run(first, last) => {
+            let left = match &views[first] {
+                View::Commit(c) => match repo.parent(&c.sha)? {
+                    Some(parent) => parent,
+                    None => repo.empty_tree()?,
+                },
+                View::Uncommitted => repo.commit("HEAD")?,
+            };
+            let right = match &views[last] {
+                View::Commit(c) => c.sha.clone(),
+                View::Uncommitted => session.end.clone(),
+            };
+            let commits = views[first..=last]
+                .iter()
+                .map(|v| match v {
+                    View::Commit(c) => c.sha.clone(),
+                    View::Uncommitted => session.end.clone(),
+                })
+                .collect();
+            (left, right, commits)
+        }
     };
     let files = repo.diff(&left, &right)?;
-    let commits = views[first..=last]
-        .iter()
-        .filter_map(|v| match v {
-            View::All => None,
-            View::Commit(c) => Some(c.sha.clone()),
-            View::Uncommitted => Some(session.end.clone()),
-        })
-        .collect();
     let mut doc = Doc::new(left, right, files, commits);
     doc.set_threads(&session.threads);
     Ok(doc)
@@ -197,5 +221,21 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
             Event::Paste(text) => layers.last_mut().unwrap().paste(&text),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_view_is_all() {
+        assert!(Shown::of((0, 3), 4) == Shown::All);
+        assert!(Shown::of((0, 0), 1) == Shown::All);
+        assert!(Shown::of((1, 3), 4) == Shown::Run(1, 3));
+        assert!(Shown::of((0, 2), 4) == Shown::Run(0, 2));
+        assert_eq!(Shown::All.bounds(4), (0, 3));
+        assert_eq!(Shown::All.bounds(0), (0, 0));
+        assert_eq!(Shown::Run(1, 2).bounds(4), (1, 2));
     }
 }
