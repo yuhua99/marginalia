@@ -8,7 +8,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::doc::Doc;
+use crate::doc::{Doc, Scope, Step};
 use crate::highlight::Highlighter;
 use crate::repo::{self, Commit, Repo};
 use crate::session::{Anchor, Session};
@@ -167,22 +167,17 @@ impl Ctx {
 
 /// The diff of `shown`: from the left side of its first view to the right side of the last.
 fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<Doc> {
-    let (left, right, commits, carry) = match shown {
-        Shown::All => (
-            session.base.clone(),
-            session.end.clone(),
-            Vec::new(),
-            Vec::new(),
-        ),
+    let (left, right, scope) = match shown {
+        Shown::All => (session.base.clone(), session.end.clone(), Scope::Range),
         Shown::Run(first, last) => {
             let run = &views[first..=last];
             let left = parent(repo, &run[0])?;
             let commits: Vec<String> = run.iter().map(|v| rev(session, v)).collect();
             let right = commits[commits.len() - 1].clone();
-            let mut carry = Vec::new();
-            for (i, v) in run.iter().enumerate() {
+            let mut steps = Vec::new();
+            for (i, (v, commit)) in run.iter().zip(commits).enumerate() {
                 let kept = if i + 1 < run.len() {
-                    Some(repo.diff(&commits[i], &right, 0)?)
+                    Some(repo.diff(&commit, &right, 0)?)
                 } else {
                     None
                 };
@@ -192,13 +187,17 @@ fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Res
                 } else {
                     None
                 };
-                carry.push([kept, deleted]);
+                steps.push(Step {
+                    commit,
+                    kept,
+                    deleted,
+                });
             }
-            (left, right, commits, carry)
+            (left, right, Scope::Run(steps))
         }
     };
     let files = repo.diff(&left, &right, 3)?;
-    let mut doc = Doc::new(left, right, files, commits, carry);
+    let mut doc = Doc::new(left, right, files, scope);
     doc.set_threads(&session.threads);
     Ok(doc)
 }

@@ -19,18 +19,31 @@ pub struct Doc {
     /// Per file, added or deleted: only one side has lines.
     one_sided: Vec<bool>,
     rows: Vec<Row>,
-    /// The commits shown, oldest first: shas, or the range end for uncommitted changes.
-    /// Empty for the whole range, which places lines by their rev and shows every thread;
-    /// otherwise lines go by their owner, and threads of other commits are left out.
-    commits: Vec<String>,
-    /// Per commit shown, the diffs that carry its lines to the sides here, [kept, deleted]:
-    /// from it to the right side for lines it keeps, from its parent to the left side for
-    /// lines it deletes; None for the side that is its own.
-    carry: Vec<[Option<Vec<FileDiff>>; 2]>,
+    scope: Scope,
     /// Per collapsed file, its rows other than the header; its threads are left out.
     collapsed: HashMap<usize, Vec<Row>>,
     /// Where each of the session threads goes, as of `set_threads`.
     spots: Vec<Spot>,
+}
+
+/// What the diff shows.
+pub enum Scope {
+    /// The whole range: lines go by their rev, and every thread shows.
+    Range,
+    /// A run of commits, oldest first: lines go by their owner, and threads of other
+    /// commits are left out.
+    Run(Vec<Step>),
+}
+
+/// A commit of a run, with the diffs that carry its lines to the sides here; None for
+/// the side that is its own.
+pub struct Step {
+    /// Its sha, or the range end for uncommitted changes.
+    pub commit: String,
+    /// From it to the right side, for lines it keeps.
+    pub kept: Option<Vec<FileDiff>>,
+    /// From its parent to the left side, for lines it deletes.
+    pub deleted: Option<Vec<FileDiff>>,
 }
 
 pub enum Row {
@@ -84,13 +97,7 @@ enum Spot {
 }
 
 impl Doc {
-    pub fn new(
-        left_rev: String,
-        right_rev: String,
-        files: Vec<FileDiff>,
-        commits: Vec<String>,
-        carry: Vec<[Option<Vec<FileDiff>>; 2]>,
-    ) -> Doc {
+    pub fn new(left_rev: String, right_rev: String, files: Vec<FileDiff>, scope: Scope) -> Doc {
         let mut rows = vec![Row::Session];
         let mut paths = Vec::new();
         let mut statuses = Vec::new();
@@ -207,8 +214,7 @@ impl Doc {
             statuses,
             one_sided,
             rows,
-            commits,
-            carry,
+            scope,
             collapsed: HashMap::new(),
             spots: Vec::new(),
         }
@@ -239,8 +245,7 @@ impl Doc {
             statuses: vec![' '],
             one_sided: vec![true],
             rows: [header].into_iter().chain(lines).collect(),
-            commits: Vec::new(),
-            carry: Vec::new(),
+            scope: Scope::Range,
             collapsed: HashMap::new(),
             spots: Vec::new(),
         }
@@ -318,7 +323,7 @@ impl Doc {
         // file's rows, and those of collapsed files, which stay out.
         let mut rest: Vec<usize> = at
             .into_iter()
-            .filter(|(spot, _)| self.commits.is_empty() || *spot != Spot::Top)
+            .filter(|(spot, _)| matches!(self.scope, Scope::Range) || *spot != Spot::Top)
             .filter(|(spot, _)| {
                 !matches!(spot, Spot::File(f) | Spot::Line(f, ..) if self.collapsed.contains_key(f))
             })
@@ -331,16 +336,17 @@ impl Doc {
 
     fn spot(&self, anchor: &Anchor) -> Spot {
         let find = |f: &dyn Fn(&(String, String)) -> bool| self.paths.iter().position(f);
-        match anchor {
-            Anchor::Lines { owner, .. } if !self.commits.is_empty() => {
+        match (anchor, &self.scope) {
+            (Anchor::Lines { owner, .. }, Scope::Run(steps)) => {
                 let Some(o) = owner else {
                     return Spot::Top;
                 };
-                let Some(i) = self.commits.iter().position(|c| *c == o.commit) else {
+                let Some(step) = steps.iter().find(|s| s.commit == o.commit) else {
                     return Spot::Top;
                 };
+                let carried = if o.deleted { &step.deleted } else { &step.kept };
                 // Lines a later shown commit changes, or an earlier one adds, have no side.
-                let (file, line) = match &self.carry[i][o.deleted as usize] {
+                let (file, line) = match carried {
                     None => (o.file.clone(), o.line),
                     Some(files) => match carry(files, &o.file, o.line) {
                         Some(at) => at,
@@ -353,12 +359,15 @@ impl Doc {
                     None => Spot::Whole,
                 }
             }
-            Anchor::Lines {
-                rev: Some(rev),
-                file,
-                end,
-                ..
-            } => {
+            (
+                Anchor::Lines {
+                    rev: Some(rev),
+                    file,
+                    end,
+                    ..
+                },
+                _,
+            ) => {
                 let right = *rev == self.right_rev;
                 if !right && *rev != self.left_rev {
                     return Spot::Top;
@@ -368,12 +377,16 @@ impl Doc {
                     None => Spot::Top,
                 }
             }
-            Anchor::File { file } => match find(&|p| p.0 == *file || p.1 == *file) {
+            (Anchor::File { file }, _) => match find(&|p| p.0 == *file || p.1 == *file) {
                 Some(i) => Spot::File(i),
                 None => Spot::Top,
             },
-            Anchor::Session => Spot::Whole,
-            Anchor::Commit { commit } if self.commits.contains(commit) => Spot::Whole,
+            (Anchor::Session, _) => Spot::Whole,
+            (Anchor::Commit { commit }, Scope::Run(steps))
+                if steps.iter().any(|s| s.commit == *commit) =>
+            {
+                Spot::Whole
+            }
             _ => Spot::Top,
         }
     }
@@ -406,14 +419,17 @@ impl Doc {
             };
             let end = *lines.iter().max().unwrap();
             // A commit's own view knows whose lines these are, context lines too.
-            let owner = match &self.commits[..] {
-                [commit] => Some(Owner {
-                    commit: commit.clone(),
+            let owner = if let Scope::Run(steps) = &self.scope
+                && let [step] = &steps[..]
+            {
+                Some(Owner {
+                    commit: step.commit.clone(),
                     deleted,
                     file: path.clone(),
                     line: end,
-                }),
-                _ => None,
+                })
+            } else {
+                None
             };
             return Anchor::Lines {
                 rev: Some(rev.clone()),
@@ -785,7 +801,7 @@ mod tests {
                 ],
             }],
         };
-        Doc::new("b".into(), "e".into(), vec![file], Vec::new(), Vec::new())
+        Doc::new("b".into(), "e".into(), vec![file], Scope::Range)
     }
 
     fn thread(anchor: Anchor) -> Thread {
