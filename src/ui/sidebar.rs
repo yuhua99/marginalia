@@ -7,10 +7,10 @@ use ratatui::widgets::Paragraph;
 use crate::app::{Ctx, View};
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
-use crate::ui::{boxed, check};
+use crate::ui::{boxed, check, status_style};
 
-/// A box: the commits (and uncommitted changes), `[x]` on those shown, where Space checks
-/// another run for Enter to show; or the files of the shown diff as a tree.
+/// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
+/// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
 #[derive(Default)]
 pub struct Sidebar {
     files: bool,
@@ -50,8 +50,10 @@ impl Entry {
 
 struct Item {
     entry: Entry,
-    /// `[x]` or `[ ]` on a view.
+    /// `☒` or `☐` on a view or file.
     checked: Option<bool>,
+    /// Columns before the mark: a file's or directory's depth in the tree.
+    indent: usize,
     text: String,
 }
 
@@ -130,7 +132,7 @@ impl Sidebar {
             _ => None,
         }));
         // Inside the borders, after the mark.
-        let width = (area.width as usize).saturating_sub(2 + 4);
+        let width = (area.width as usize).saturating_sub(2 + 2);
         let lines: Vec<Line> = items
             .iter()
             .enumerate()
@@ -141,11 +143,12 @@ impl Sidebar {
                 if Some(i) == marked {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
-                let mut spans: Vec<Span> = item
-                    .checked
-                    .map(|on| mark(on, ctx.theme))
-                    .into_iter()
-                    .collect();
+                let mut spans = vec![Span::raw(" ".repeat(item.indent))];
+                spans.extend(item.checked.map(|on| mark(on, ctx.theme)));
+                if let Entry::File(file) = item.entry {
+                    let s = ctx.doc.status(file);
+                    spans.push(Span::styled(format!("{s} "), status_style(s, ctx.theme)));
+                }
                 if let Entry::View(v) = item.entry
                     && let View::Commit(c) = &ctx.views[v]
                 {
@@ -185,6 +188,7 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
             Item {
                 entry: Entry::View(v),
                 checked: Some(on),
+                indent: 0,
                 text,
             }
         })
@@ -203,13 +207,15 @@ fn files(ctx: &Ctx) -> Vec<Item> {
             items.push(Item {
                 entry: Entry::Other,
                 checked: None,
-                text: format!("{}{dir}/", "  ".repeat(depth)),
+                indent: 2 * depth,
+                text: format!("{dir}/"),
             });
         }
         items.push(Item {
             entry: Entry::File(file),
-            checked: None,
-            text: format!("{}{name}", "  ".repeat(dirs.len())),
+            checked: Some(ctx.doc.collapsed(file)),
+            indent: 2 * dirs.len(),
+            text: name.to_string(),
         });
         prev = dirs;
     }
