@@ -228,21 +228,11 @@ impl Repo {
         run(&mut git(&["add", "-u"]))?;
         let mut add = Vec::new();
         let mut skipped = Vec::new();
-        let untracked = run(&mut git(&[
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ]))?;
-        for path in untracked.split(|&b| b == 0) {
-            // Nested repos are listed as `dir/`; leave them out.
-            if path.is_empty() || path.ends_with(b"/") {
-                continue;
-            }
-            if fs::symlink_metadata(Path::new(&self.root).join(OsStr::from_bytes(path)))?.len()
+        for path in self.untracked()? {
+            if fs::symlink_metadata(Path::new(&self.root).join(OsStr::from_bytes(&path)))?.len()
                 > UNTRACKED_MAX_BYTES
             {
-                skipped.push(String::from_utf8_lossy(path).into_owned());
+                skipped.push(String::from_utf8_lossy(&path).into_owned());
             } else {
                 add.push(path);
             }
@@ -269,6 +259,17 @@ impl Repo {
         Ok(tree)
     }
 
+    /// Untracked files that go into the unstaged tree.
+    fn untracked(&self) -> Result<Vec<Vec<u8>>> {
+        let out = run(&mut self.git(&["ls-files", "--others", "--exclude-standard", "-z"]))?;
+        Ok(out
+            .split(|&b| b == 0)
+            // Nested repos are listed as `dir/`; leave them out.
+            .filter(|p| !p.is_empty() && !p.ends_with(b"/"))
+            .map(<[u8]>::to_vec)
+            .collect())
+    }
+
     /// Commits in `base..end`, oldest first.
     pub fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
         // A tree as base (before the root) is ignored by git log, listing all history.
@@ -278,6 +279,29 @@ impl Repo {
             self.ranges.insert(range.clone(), commits);
         }
         Ok(self.ranges[&range].clone())
+    }
+
+    /// `unstaged` / `staged` when their tree differs from HEAD, as `index_tree` builds it.
+    pub fn uncommitted(&self) -> Result<Vec<&'static str>> {
+        let differs = |args: &[&str]| -> Result<bool> {
+            let mut cmd = self.git(args);
+            let out = cmd.output().context("run git")?;
+            match out.status.code() {
+                Some(0) => Ok(false),
+                Some(1) => Ok(true),
+                _ => bail!("{:?}: {}", cmd, String::from_utf8_lossy(&out.stderr).trim()),
+            }
+        };
+        let mut revs = Vec::new();
+        if !self.untracked()?.is_empty()
+            || differs(&["diff", "--quiet", "--ignore-submodules=dirty", "HEAD"])?
+        {
+            revs.push("unstaged");
+        }
+        if differs(&["diff", "--quiet", "--cached", "HEAD"])? {
+            revs.push("staged");
+        }
+        Ok(revs)
     }
 
     /// Up to `n` first-parent commits back from HEAD, newest first.
