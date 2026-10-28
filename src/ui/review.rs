@@ -27,7 +27,7 @@ const HELP: &[help::Entry] = &[
     ),
     (
         &["open"],
-        "expand fold, follow a thread's link, show the checked commits (or this one) or open a file",
+        "expand fold, follow a thread's link (from a list when several), show the checked commits (or this one) or open a file",
     ),
     (&["check"], "check commits for Enter to show together"),
     (&["select"], "select lines"),
@@ -73,8 +73,8 @@ impl Review {
 
 impl Component for Review {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        if self.diff.draft_key(key, ctx)? {
-            return Ok(Outcome::Consumed);
+        if let Some(outcome) = self.diff.modal_key(key, ctx)? {
+            return Ok(outcome);
         }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);

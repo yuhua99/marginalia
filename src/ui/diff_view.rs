@@ -17,7 +17,7 @@ use crate::repo::Kind;
 use crate::session::{Anchor, Thread};
 use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
-use crate::ui::file_view::{self, FileView};
+use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
 use crate::ui::status_style;
 
@@ -37,10 +37,12 @@ pub struct DiffView {
     overflow: bool,
     /// Start of a `v` selection.
     mark: Option<usize>,
-    /// Shows `ctx.file` instead of `ctx.doc`.
-    file: bool,
+    /// Shows `ctx.file` instead of `ctx.doc`: the link it was opened from, as `path:line`.
+    file: Option<String>,
     /// A message being written, drawn under this row; it takes all keys.
     draft: Option<(usize, Input)>,
+    /// The links of the thread at the cursor to pick from; it takes all keys.
+    links: Option<LinkPicker>,
 }
 
 /// What a row draws: full width with a style, or the two halves of a code row.
@@ -65,18 +67,35 @@ impl DiffView {
         mark.min(self.cursor)..=mark.max(self.cursor)
     }
 
-    /// A view of `ctx.file` with lines `start..=end` selected.
-    pub fn file(start: usize, end: usize) -> DiffView {
+    /// A view of `ctx.file`, opened from `link`, with lines `start..=end` selected.
+    pub fn file(start: usize, end: usize, link: &Link) -> DiffView {
         DiffView {
             cursor: end,
             mark: (start != end).then_some(start),
-            file: true,
+            file: Some(link.label()),
             ..DiffView::default()
         }
     }
 
+    /// The link a file view was opened from.
+    pub fn link(&self) -> &str {
+        self.file.as_deref().unwrap_or_default()
+    }
+
+    /// Opens `link` in a file view, in place when this is one.
+    fn follow(&mut self, link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
+        let Some((start, end)) = file_view::open(ctx, link)? else {
+            return Ok(Outcome::Consumed);
+        };
+        if self.file.is_some() {
+            *self = DiffView::file(start, end, link);
+            return Ok(Outcome::Consumed);
+        }
+        Ok(Outcome::Push(Box::new(FileView::new(start, end, link))))
+    }
+
     fn doc<'a>(&self, ctx: &'a Ctx) -> &'a Doc {
-        if self.file {
+        if self.file.is_some() {
             ctx.file.as_ref().expect("file view without ctx.file")
         } else {
             &ctx.doc
@@ -102,15 +121,25 @@ impl DiffView {
         self.draft = Some((row, input));
     }
 
-    /// Sends `key` to the draft, if there is one.
-    pub fn draft_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<bool> {
+    /// Sends `key` to the link list or the draft, if one is open; None when neither is.
+    pub fn modal_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Option<Outcome>> {
+        if let Some(picker) = &mut self.links {
+            let Some(picked) = picker.key(key) else {
+                return Ok(Some(Outcome::Consumed));
+            };
+            self.links = None;
+            return Ok(Some(match picked {
+                Some(link) => self.follow(&link, ctx)?,
+                None => Outcome::Consumed,
+            }));
+        }
         let Some((_, input)) = &mut self.draft else {
-            return Ok(false);
+            return Ok(None);
         };
         if let Outcome::Close = input.handle_key(key, ctx)? {
             self.draft = None;
         }
-        Ok(true)
+        Ok(Some(Outcome::Consumed))
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -157,18 +186,17 @@ impl DiffView {
                 }
             }
             "open" => {
-                // On a thread: follow its first link to a file view.
+                // On a thread: follow its link to a file view, or list its links.
                 if let Some(idx) = self.thread_at_cursor(ctx) {
-                    if let Some((start, end)) = file_view::follow(ctx, idx)? {
-                        if self.file {
-                            *self = DiffView::file(start, end);
-                        } else {
-                            return Ok(Outcome::Push(Box::new(FileView::new(start, end))));
-                        }
+                    let mut links = file_view::thread_links(&ctx.session.threads[idx], &ctx.files);
+                    if links.len() > 1 {
+                        self.links = Some(LinkPicker::new(links));
+                    } else if let Some(link) = links.pop() {
+                        return self.follow(&link, ctx);
                     }
                     return Ok(Outcome::Consumed);
                 }
-                if self.file {
+                if self.file.is_some() {
                     return Ok(Outcome::Consumed);
                 }
                 let row = ctx
@@ -196,7 +224,7 @@ impl DiffView {
                     let mut row = *selection.end();
                     // A comment on a collapsed file would be hidden with it. Here, that is
                     // one on its header, whose rows the expanding shifts.
-                    if !self.file
+                    if self.file.is_none()
                         && let Some(file) = ctx.doc.file_of(&anchor)
                         && ctx.doc.collapsed(file)
                     {
@@ -218,7 +246,7 @@ impl DiffView {
                 }
             }
             "collapse" => {
-                if !self.file
+                if self.file.is_none()
                     && let Some(file) = self.current_file(ctx)
                 {
                     self.cursor = if ctx.doc.collapsed(file) {
@@ -331,6 +359,9 @@ impl DiffView {
             }
             i += 1;
             skip = 0;
+        }
+        if let Some(picker) = &self.links {
+            picker.render(f, area, ctx.theme);
         }
     }
 }
@@ -556,7 +587,16 @@ fn thread_lines(
     if at_cursor {
         header_style = header_style.add_modifier(Modifier::REVERSED);
     }
-    let mut lines = vec![line(vec![Span::styled(header, header_style)])];
+    let mut header = vec![Span::styled(header, header_style)];
+    let links = file_view::thread_links(t, &ctx.files).len();
+    if links > 0 {
+        let s = if links == 1 { "" } else { "s" };
+        header.push(Span::styled(
+            format!("  [{links} link{s}]"),
+            header_style.fg(theme.blue),
+        ));
+    }
+    let mut lines = vec![line(header)];
     if outdated && let Some(text) = &t.text {
         let dim = Style::new().fg(theme.dim);
         lines.push(line(vec![Span::styled("was:", dim)]));
@@ -564,6 +604,9 @@ fn thread_lines(
             lines.push(line(vec![Span::styled(format!("  {}", clean(l)), dim)]));
         }
     }
+    let link = Style::new()
+        .fg(theme.blue)
+        .add_modifier(Modifier::UNDERLINED);
     for m in &t.messages[..t.messages.len() - hide_last as usize] {
         let who = Style::new().fg(if m.from == "user" {
             theme.teal
@@ -572,19 +615,28 @@ fn thread_lines(
         });
         let indent = m.from.width() + 2;
         let body_width = inner.saturating_sub(indent).max(10);
+        // Broken at spaces only, so a link stays on one line unless longer than it.
+        let options = textwrap::Options::new(body_width)
+            .word_separator(textwrap::WordSeparator::AsciiSpace)
+            .word_splitter(textwrap::WordSplitter::NoHyphenation);
         let mut first = true;
         for l in m.body.lines() {
-            for part in textwrap::wrap(&clean(l), body_width) {
+            for part in textwrap::wrap(&clean(l), &options) {
                 let prefix = if first {
                     format!("{}: ", m.from)
                 } else {
                     " ".repeat(indent)
                 };
                 first = false;
-                lines.push(line(vec![
-                    Span::styled(prefix, who),
-                    Span::raw(part.into_owned()),
-                ]));
+                let mut spans = vec![Span::styled(prefix, who)];
+                let mut at = 0;
+                for (range, _) in file_view::links(&part, &ctx.files) {
+                    spans.push(Span::raw(part[at..range.start].to_string()));
+                    spans.push(Span::styled(part[range.clone()].to_string(), link));
+                    at = range.end;
+                }
+                spans.push(Span::raw(part[at..].to_string()));
+                lines.push(line(spans));
             }
         }
     }
