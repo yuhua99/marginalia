@@ -29,6 +29,8 @@ const HELP: &[Entry] = &[
     (&["quit", "cancel"], "back to the diff"),
 ];
 
+const HINTS: &str = " j/k move  C-d/C-u half page  gg/G top/bottom  s settings  ? help  q/Esc back";
+
 /// A whole file at the range end, opened from a link, read only and without threads;
 /// the linked lines are marked in the gutter. `q` / `Esc` go back.
 pub struct FileView {
@@ -75,6 +77,10 @@ impl Component for FileView {
                 Ok(Outcome::Consumed)
             }
         }
+    }
+
+    fn hints(&self) -> Option<&'static str> {
+        Some(HINTS)
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
