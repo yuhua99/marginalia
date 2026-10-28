@@ -142,7 +142,7 @@ impl Component for Input {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        let theme = ctx.theme;
+        let theme = ctx.look.theme;
         f.render_widget(Block::new().style(Style::new().bg(theme.surface)), area);
         let indent = INDENT as u16;
         let who = WHO.len() as u16;

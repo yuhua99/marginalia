@@ -1,5 +1,5 @@
 pub mod commit_row;
-pub mod delete_prompt;
+pub mod confirm;
 pub mod dialog;
 pub mod diff_view;
 pub mod file_view;
@@ -8,7 +8,6 @@ pub mod input;
 pub mod picker;
 pub mod popup;
 pub mod query;
-pub mod quit_prompt;
 pub mod review;
 pub mod scroll;
 pub mod settings;

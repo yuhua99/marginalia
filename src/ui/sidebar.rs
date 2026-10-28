@@ -156,15 +156,18 @@ impl Sidebar {
             .take(self.height)
             .map(|item| {
                 let mut spans = vec![Span::raw(" ".repeat(item.indent))];
-                spans.extend(item.checked.map(|on| mark(on, ctx.theme)));
+                spans.extend(item.checked.map(|on| mark(on, ctx.look.theme)));
                 if let Entry::File(file) = item.entry {
                     let s = ctx.doc.status(file);
-                    spans.push(Span::styled(format!("{s} "), status_style(s, ctx.theme)));
+                    spans.push(Span::styled(
+                        format!("{s} "),
+                        status_style(s, ctx.look.theme),
+                    ));
                 }
                 if let Entry::View(v) = item.entry
                     && let View::Commit(c) = &ctx.views[v]
                 {
-                    spans.extend(columns.row(c, width, ctx.theme));
+                    spans.extend(columns.row(c, width, ctx.look.theme));
                     return Line::from(spans);
                 }
                 spans.push(Span::raw(item.text.clone()));
@@ -173,12 +176,12 @@ impl Sidebar {
             .collect();
         let name = if self.files { " Files " } else { " Commits " };
         let title = name.to_string() + &self.filter.title();
-        let block = boxed(title, focused, ctx.theme);
+        let block = boxed(title, focused, ctx.look.theme);
         let inner = block.inner(area);
         f.render_widget(Paragraph::new(lines).block(block), area);
         if focused && self.cursor < items.len() && self.height > 0 {
             let y = inner.y + (self.cursor - self.top) as u16;
-            cursor_bar(f, inner, y, ctx.theme);
+            cursor_bar(f, inner, y, ctx.look.theme);
         }
     }
 }

@@ -8,10 +8,10 @@ use ratatui::text::Span;
 use crate::app::{Component, Ctx, Outcome, Shown};
 use crate::keymap::{Feed, Keymap};
 use crate::ui::boxed;
+use crate::ui::confirm::Confirm;
 use crate::ui::diff_view::DiffView;
 use crate::ui::help::{self, Help};
 use crate::ui::input::Input;
-use crate::ui::quit_prompt::QuitPrompt;
 use crate::ui::settings::SettingsPopup;
 use crate::ui::sidebar::{Entry, Sidebar};
 
@@ -53,6 +53,8 @@ const HELP: &[help::Entry] = &[
     (&["back"], "back to the picker"),
     (&["quit"], "quit"),
 ];
+
+const HINTS: &str = " c comment/reply  r collapse  e/d edit/delete  n/N next thread/match  / search/filter  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
 
 /// The bottom layer: commits across the top, files and the diff below.
 /// `h` / `l` move the focus along commits, files, diff.
@@ -98,16 +100,25 @@ impl Component for Review {
             "focus_right" => self.focus = (self.focus + 1).min(DIFF),
             "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
             "settings" => {
-                return Ok(Outcome::Push(Box::new(SettingsPopup::new(
-                    ctx.theme, ctx.wrap,
-                ))));
+                return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look))));
             }
             // Leaving for the picker ends the session like quitting does.
             "quit" | "back" => {
                 ctx.back = action == "back";
                 let order = ctx.doc.thread_order();
                 if ctx.on_quit.is_none() && ctx.session.markdown(&order).is_some() {
-                    return Ok(Outcome::Push(Box::new(QuitPrompt)));
+                    return Ok(Outcome::Push(Box::new(
+                        Confirm::new(
+                            "Quit",
+                            "save threads waiting on the agent to clipboard?",
+                            "y save  n don't save  Esc stay",
+                        )
+                        .on('y', |ctx: &mut Ctx| {
+                            ctx.copy = true;
+                            Ok(Outcome::Quit)
+                        })
+                        .on('n', |_| Ok(Outcome::Quit)),
+                    )));
                 }
                 return Ok(Outcome::Quit);
             }
@@ -170,11 +181,15 @@ impl Component for Review {
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             self.focus == DIFF,
-            ctx.theme,
+            ctx.look.theme,
         );
         let inner = block.inner(right);
         f.render_widget(block, right);
         self.diff.render(f, inner, ctx);
+    }
+
+    fn hints(&self) -> Option<&'static str> {
+        Some(HINTS)
     }
 }
 
