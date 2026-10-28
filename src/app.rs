@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -40,6 +41,8 @@ pub struct Ctx {
     pub wrap: bool,
     /// The doc of the file view layer while it is open.
     pub file: Option<Doc>,
+    /// Paths of the files at the range end, which links in threads may open.
+    pub files: HashSet<String>,
 }
 
 pub enum View {
@@ -71,6 +74,7 @@ impl Ctx {
             views.push(View::Uncommitted);
         }
         let doc = load(&mut repo, &session, &views, (0, 0))?;
+        let files = repo.files(&session.end)?;
         Ok(Ctx {
             session,
             repo,
@@ -86,6 +90,7 @@ impl Ctx {
             theme,
             wrap,
             file: None,
+            files,
         })
     }
 

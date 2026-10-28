@@ -1,6 +1,6 @@
 mod parse;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -149,6 +149,20 @@ impl Repo {
             files.sort_by(|a, b| a.new_path.cmp(&b.new_path));
         }
         Ok(files)
+    }
+
+    /// Paths of the files at `rev`, leaving out submodules.
+    pub fn files(&mut self, rev: &str) -> Result<HashSet<String>> {
+        let object = self.object(rev)?;
+        let out = run(&mut self.git(&["ls-tree", "-r", "-z", &object]))?;
+        // `<mode> <type> <object>\t<path>` per entry.
+        Ok(out
+            .split(|&b| b == 0)
+            .filter_map(|entry| {
+                let (meta, path) = std::str::from_utf8(entry).ok()?.split_once('\t')?;
+                (meta.split(' ').nth(1) == Some("blob")).then(|| path.to_string())
+            })
+            .collect())
     }
 
     /// Content of `path` at `rev` (commit, `HEAD`, `staged` or `unstaged`); None if absent.
