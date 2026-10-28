@@ -77,9 +77,9 @@ impl SettingsPopup {
         false
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.list.render(f, area, theme);
-        if let Some((popup, _)) = &self.themes {
+        if let Some((popup, _)) = &mut self.themes {
             popup.render(f, area, theme);
         }
     }

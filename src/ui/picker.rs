@@ -18,7 +18,7 @@ use crate::ui::commit_row::{Columns, mark};
 use crate::ui::help::{self, Entry};
 use crate::ui::popup::Popup;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{boxed, check, clear, cursor_bar, dialog};
+use crate::ui::{boxed, check, clear, cursor_bar, dialog, step};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -109,6 +109,8 @@ struct Picker {
     typing: bool,
     /// Checked rows of the range pane, top..=bottom into all its rows.
     checked: Option<(usize, usize)>,
+    /// Rows a pane shows, as of the last render.
+    height: usize,
     /// The `?` popup.
     help: Option<Popup>,
     /// The `s` popup.
@@ -260,15 +262,9 @@ impl Picker {
         };
         let last = shown.len().saturating_sub(1);
         let cursor = self.cursor[pane];
-        self.cursor[pane] = match action {
-            "down" => (cursor + 1).min(last),
-            "up" => cursor.saturating_sub(1),
-            "half_page_down" => (cursor + 10).min(last),
-            "half_page_up" => cursor.saturating_sub(10),
-            "top" => 0,
-            "bottom" => last,
-            _ => cursor,
-        };
+        if let Some(to) = step(cursor, action, shown.len(), self.height) {
+            self.cursor[pane] = to;
+        }
         match action {
             "check" if self.right => {
                 if let Some(i) = at {
@@ -355,13 +351,14 @@ impl Picker {
         }
     }
 
-    fn render(&self, f: &mut Frame, theme: &Theme) {
+    fn render(&mut self, f: &mut Frame, theme: &Theme) {
         clear(f, f.area(), theme);
         let [body, foot] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
         let panes: [_; 2] =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .areas(body);
+        self.height = body.height.saturating_sub(2) as usize;
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
             let mut title = [" Sessions ", " New review "][pane].to_string();
@@ -407,10 +404,10 @@ impl Picker {
             (HINTS.to_string(), Style::new().fg(theme.dim))
         };
         f.render_widget(Paragraph::new(text).style(style), foot);
-        if let Some(popup) = &self.help {
+        if let Some(popup) = &mut self.help {
             popup.render(f, f.area(), theme);
         }
-        if let Some(settings) = &self.settings {
+        if let Some(settings) = &mut self.settings {
             settings.draw(f, f.area(), theme);
         }
         if self.deleting {
