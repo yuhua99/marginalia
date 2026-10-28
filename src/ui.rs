@@ -88,11 +88,57 @@ pub fn status_style(status: char, theme: &Theme) -> Style {
     Style::new().fg(color)
 }
 
+/// Where movement `action` takes a cursor over `len` rows on a screen of `height` rows,
+/// a half page being half of it; None for other actions.
+pub fn step(cursor: usize, action: &str, len: usize, height: usize) -> Option<usize> {
+    let half = (height / 2).max(1);
+    let last = len.saturating_sub(1);
+    let to = match action {
+        "down" => cursor + 1,
+        "up" => cursor.saturating_sub(1),
+        "half_page_down" => cursor + half,
+        "half_page_up" => cursor.saturating_sub(half),
+        "top" => 0,
+        "bottom" => last,
+        _ => return None,
+    };
+    Some(to.min(last))
+}
+
 /// Space on row `i` of a contiguous check: extends it to `i`, or clears it when `i` is in it.
 pub fn check(checked: Option<(usize, usize)>, i: usize) -> Option<(usize, usize)> {
     match checked {
         None => Some((i, i)),
         Some((first, last)) if (first..=last).contains(&i) => None,
         Some((first, last)) => Some((first.min(i), last.max(i))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps() {
+        assert_eq!(step(3, "down", 5, 10), Some(4));
+        assert_eq!(step(4, "down", 5, 10), Some(4));
+        assert_eq!(step(0, "up", 5, 10), Some(0));
+        assert_eq!(step(0, "half_page_down", 20, 10), Some(5));
+        assert_eq!(step(0, "half_page_down", 3, 10), Some(2));
+        assert_eq!(step(7, "half_page_up", 20, 10), Some(2));
+        // At least one row on a tiny screen.
+        assert_eq!(step(0, "half_page_down", 5, 1), Some(1));
+        assert_eq!(step(2, "top", 5, 10), Some(0));
+        assert_eq!(step(2, "bottom", 5, 10), Some(4));
+        assert_eq!(step(0, "bottom", 0, 10), Some(0));
+        assert_eq!(step(2, "open", 5, 10), None);
+    }
+
+    #[test]
+    fn checks() {
+        assert_eq!(check(None, 2), Some((2, 2)));
+        assert_eq!(check(Some((2, 2)), 4), Some((2, 4)));
+        assert_eq!(check(Some((2, 4)), 0), Some((0, 4)));
+        assert_eq!(check(Some((2, 4)), 3), None);
     }
 }

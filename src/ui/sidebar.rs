@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::{Ctx, View};
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
-use crate::ui::{boxed, check, cursor_bar, status_style};
+use crate::ui::{boxed, check, cursor_bar, status_style, step};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
 /// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
@@ -89,29 +89,21 @@ impl Sidebar {
     }
 
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
-        let last = self.items(ctx).len().saturating_sub(1);
+        let len = self.items(ctx).len();
         if action == "check" {
             if let Entry::View(v) = self.entry(ctx)
                 && let Some(checked) = &mut self.checked
             {
                 *checked = check(*checked, v);
                 if checked.is_some() {
-                    self.cursor = (self.cursor + 1).min(last);
+                    self.cursor = (self.cursor + 1).min(len.saturating_sub(1));
                 }
             }
             return;
         }
-        let half = (self.height / 2).max(1);
-        self.cursor = match action {
-            "down" => self.cursor + 1,
-            "up" => self.cursor.saturating_sub(1),
-            "half_page_down" => self.cursor + half,
-            "half_page_up" => self.cursor.saturating_sub(half),
-            "top" => 0,
-            "bottom" => last,
-            _ => self.cursor,
+        if let Some(cursor) = step(self.cursor, action, len, self.height) {
+            self.cursor = cursor;
         }
-        .min(last);
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, focused: bool) {

@@ -19,7 +19,7 @@ use crate::theme::Theme;
 use crate::ui::delete_prompt::DeletePrompt;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
-use crate::ui::{cursor_bar, status_style};
+use crate::ui::{cursor_bar, status_style, step};
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
@@ -145,8 +145,9 @@ impl DiffView {
         self.mark = None;
     }
 
-    pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
-        let last = self.doc(ctx).len() - 1;
+    /// Moves the cursor, or scrolls a cursor row taller than the screen, for movement
+    /// actions over `len` rows; false for other actions.
+    fn scroll(&mut self, action: &str, len: usize) -> bool {
         let half = (self.height / 2).max(1);
         // Inside a cursor row taller than the screen, j / k scroll the row first.
         let scrolled = self.top == self.cursor && self.off > 0;
@@ -155,12 +156,19 @@ impl DiffView {
             "half_page_down" if self.overflow => self.off += half,
             "up" if scrolled => self.off -= 1,
             "half_page_up" if scrolled => self.off = self.off.saturating_sub(half),
-            "down" => self.cursor = (self.cursor + 1).min(last),
-            "up" => self.cursor = self.cursor.saturating_sub(1),
-            "half_page_down" => self.cursor = (self.cursor + half).min(last),
-            "half_page_up" => self.cursor = self.cursor.saturating_sub(half),
-            "top" => self.cursor = 0,
-            "bottom" => self.cursor = last,
+            _ => match step(self.cursor, action, len, self.height) {
+                Some(cursor) => self.cursor = cursor,
+                None => return false,
+            },
+        }
+        true
+    }
+
+    pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
+        if self.scroll(action, self.doc(ctx).len()) {
+            return Ok(Outcome::Consumed);
+        }
+        match action {
             "next_thread" | "prev_thread" => {
                 if let Some(i) = self
                     .doc(ctx)
@@ -361,7 +369,7 @@ impl DiffView {
             i += 1;
             skip = 0;
         }
-        if let Some(picker) = &self.links {
+        if let Some(picker) = &mut self.links {
             picker.render(f, area, ctx.theme);
         }
     }

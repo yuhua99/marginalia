@@ -172,7 +172,7 @@ impl LinkPicker {
         }
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.popup.render(f, area, theme);
     }
 }
