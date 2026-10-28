@@ -234,7 +234,7 @@ pub trait Component {
     }
 }
 
-const HINTS: &str = " c comment/reply  r collapse  e/d edit/delete  n/N next thread  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
+const HINTS: &str = " c comment/reply  r collapse  e/d edit/delete  n/N next thread/match  / search/filter  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers: Vec<Box<dyn Component>> = vec![Box::new(Review::new())];

@@ -19,7 +19,10 @@ const HELP: &[help::Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
     (&["top", "bottom"], "top / bottom"),
-    (&["next_thread", "prev_thread"], "next / previous thread"),
+    (
+        &["next_thread", "prev_thread"],
+        "next / previous thread, or search match while searching",
+    ),
     (&["next_file", "prev_file"], "next / previous file"),
     (
         &["focus_left", "focus_right"],
@@ -31,7 +34,14 @@ const HELP: &[help::Entry] = &[
     ),
     (&["check"], "check commits for Enter to show together"),
     (&["select"], "select lines"),
-    (&["cancel"], "clear the selection"),
+    (
+        &["filter"],
+        "search the diff; in files, filter them; Enter ends typing",
+    ),
+    (
+        &["cancel"],
+        "clear the selection, then the search or filter",
+    ),
     (&["comment"], "comment; on a thread, reply"),
     (&["collapse"], "collapse or expand the file"),
     (
@@ -75,6 +85,9 @@ impl Component for Review {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
         if let Some(outcome) = self.diff.modal_key(key, ctx)? {
             return Ok(outcome);
+        }
+        if self.files.filter_key(key) {
+            return Ok(Outcome::Consumed);
         }
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
@@ -138,6 +151,7 @@ impl Component for Review {
     }
 
     fn paste(&mut self, text: &str) {
+        self.files.paste(text);
         self.diff.paste(text);
     }
 
@@ -152,7 +166,7 @@ impl Component for Review {
         self.files.render(f, left, ctx, self.focus == FILES);
         let block = boxed(
             Span::styled(
-                header(ctx, self.diff.current_file(ctx)),
+                header(ctx, self.diff.current_file(ctx)) + &self.diff.search_title(),
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             self.focus == DIFF,

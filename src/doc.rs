@@ -505,6 +505,59 @@ impl Doc {
         self.find(from, forward, |r| matches!(r, Row::Thread { .. }))
     }
 
+    /// The next (or previous) row `hit` is true of, going around from `from` and back to
+    /// it, the rows of a collapsed file included: that file is expanded.
+    pub fn search(
+        &mut self,
+        from: usize,
+        forward: bool,
+        hit: impl Fn(&Row) -> bool,
+    ) -> Option<usize> {
+        let len = self.rows.len();
+        let order: Vec<usize> = if forward {
+            (from..len).chain(0..from).collect()
+        } else {
+            (0..from).rev().chain((from..len).rev()).collect()
+        };
+        for i in order {
+            // A collapsed file's rows come after its header.
+            let on_row = i != from && hit(&self.rows[i]);
+            if forward && on_row {
+                return Some(i);
+            }
+            if let Row::File { file, .. } = self.rows[i]
+                && self.hides(file, &hit)
+            {
+                let header = self.expand_file(file);
+                let end = self.next_file(header, true).unwrap_or(self.rows.len());
+                // A thread of the file whose line has no row goes to the top group instead.
+                let rows = 0..self.rows.len();
+                let hit_at = |&r: &usize| hit(&self.rows[r]);
+                return if forward {
+                    self.find(header, true, &hit)
+                        .or_else(|| rows.clone().find(hit_at))
+                } else {
+                    self.find(end, false, &hit)
+                        .or_else(|| rows.rev().find(hit_at))
+                };
+            }
+            if on_row {
+                return Some(i);
+            }
+        }
+        hit(&self.rows[from]).then_some(from)
+    }
+
+    /// Whether `hit` is true of a row collapsed `file` hides, its threads included.
+    fn hides(&self, file: usize, hit: impl Fn(&Row) -> bool) -> bool {
+        let Some(rows) = self.collapsed.get(&file) else {
+            return false;
+        };
+        rows.iter().any(&hit)
+            || (0..self.spots.len())
+                .any(|idx| self.spots[idx].file() == Some(file) && hit(&Row::Thread { idx }))
+    }
+
     pub fn collapsed(&self, file: usize) -> bool {
         self.collapsed.contains_key(&file)
     }
@@ -818,5 +871,17 @@ mod tests {
         assert_eq!(doc.thread_order(), [0, 1]);
         doc.expand_file(0);
         assert_eq!(thread_rows(&doc), [1, 5]);
+    }
+
+    #[test]
+    fn search_goes_around_and_into_collapsed_files() {
+        let mut doc = doc();
+        // Session, the file, line 1, the changed line 2, line 3.
+        let y = |r: &Row| matches!(r, Row::Code { right: Some(s), .. } if s.text == "y");
+        assert_eq!(doc.search(4, true, y), Some(3));
+        assert_eq!(doc.search(3, true, y), Some(3));
+        doc.collapse_file(0);
+        assert_eq!(doc.search(0, false, y), Some(3));
+        assert!(!doc.collapsed(0));
     }
 }

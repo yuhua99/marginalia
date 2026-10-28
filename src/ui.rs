@@ -7,6 +7,7 @@ pub mod help;
 pub mod input;
 pub mod picker;
 pub mod popup;
+pub mod query;
 pub mod quit_prompt;
 pub mod review;
 pub mod scroll;
