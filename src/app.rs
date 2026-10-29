@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
@@ -229,12 +229,20 @@ pub enum Outcome<C = Ctx> {
 }
 
 /// A layer of the screen over the state `C` the layers share: the review's `Ctx`, or
-/// the picker's. Layers render bottom-up; keys go to the top layer only.
+/// the picker's. Layers render bottom-up; keys and the mouse go to the top layer only.
 pub trait Component<C = Ctx> {
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C);
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut C) -> Result<Outcome<C>>;
     /// Pasted text; only text being typed takes it.
     fn paste(&mut self, _text: &str) {}
+    /// A wheel turn over the cell `at`, as the movement `action`: "down" or "up".
+    fn wheel(&mut self, _action: &str, _at: Position, _ctx: &mut C) -> Result<()> {
+        Ok(())
+    }
+    /// A left click on the cell `at`.
+    fn click(&mut self, _at: Position, _ctx: &mut C) -> Result<Outcome<C>> {
+        Ok(Outcome::Consumed)
+    }
     /// Footer hints; None leaves the footer to the layers below.
     fn hints(&self) -> Option<&'static str> {
         None
@@ -272,20 +280,37 @@ impl<C: AsRef<Look>> Layers<C> {
         foot
     }
 
-    /// Gives a key press or pasted text to the top layer; true when it quits.
+    /// Gives a key press, pasted text, a wheel turn or a click to the top layer; true when
+    /// it quits.
     pub fn event(&mut self, event: Event, ctx: &mut C) -> Result<bool> {
         let top = self.0.last_mut().expect("the bottom layer");
-        match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match top.handle_key(key, ctx)? {
-                Outcome::Consumed => {}
-                Outcome::Push(layer) => self.0.push(layer),
-                Outcome::Close => {
-                    self.0.pop();
+        let outcome = match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => top.handle_key(key, ctx)?,
+            Event::Paste(text) => {
+                top.paste(&text);
+                Outcome::Consumed
+            }
+            Event::Mouse(m) => {
+                let at = Position::new(m.column, m.row);
+                match m.kind {
+                    MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                        let down = m.kind == MouseEventKind::ScrollDown;
+                        top.wheel(if down { "down" } else { "up" }, at, ctx)?;
+                        Outcome::Consumed
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => top.click(at, ctx)?,
+                    _ => Outcome::Consumed,
                 }
-                Outcome::Quit => return Ok(true),
-            },
-            Event::Paste(text) => top.paste(&text),
-            _ => {}
+            }
+            _ => Outcome::Consumed,
+        };
+        match outcome {
+            Outcome::Consumed => {}
+            Outcome::Push(layer) => self.0.push(layer),
+            Outcome::Close => {
+                self.0.pop();
+            }
+            Outcome::Quit => return Ok(true),
         }
         Ok(false)
     }

@@ -1,6 +1,6 @@
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -20,7 +20,7 @@ use crate::ui::confirm::Confirm;
 use crate::ui::help::{Entry, Help};
 use crate::ui::query::Query;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{boxed, check, clear, cursor_bar, dialog, step};
+use crate::ui::{Panes, boxed, check, clear, cursor_bar, dialog, row_at, step};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -49,7 +49,7 @@ pub struct Pick {
     pub repo: Repo,
     pub look: Look,
     sessions: Vec<(Session, u64)>,
-    /// Shown in the footer until the next key.
+    /// Shown in the footer until the next key, click or wheel turn.
     error: Option<String>,
     /// The session to open after the picker quits; None quits mrg.
     pub open: Option<Session>,
@@ -98,8 +98,9 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
             }
         })?;
         let event = event::read()?;
-        if let Event::Key(key) = &event
-            && key.kind == KeyEventKind::Press
+        // Not on a button's release, which follows the click that made the error.
+        if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press)
+            || matches!(&event, Event::Mouse(m) if !matches!(m.kind, MouseEventKind::Up(_)))
         {
             pick.error = None;
         }
@@ -127,6 +128,8 @@ struct Picker {
     /// Rows a pane shows, as of the last render.
     height: usize,
     keymap: Keymap,
+    /// The two panes, as of the last render.
+    panes: [Rect; 2],
 }
 
 impl Picker {
@@ -155,6 +158,11 @@ impl Picker {
 
     fn pane(&self) -> usize {
         self.right as usize
+    }
+
+    /// The first row `pane` shows: enough down for its cursor.
+    fn skip(&self, pane: usize) -> usize {
+        (self.cursor[pane] + 1).saturating_sub(self.height)
     }
 
     /// (text, value) of every row of a pane: session ids, or unstaged, staged and commit shas.
@@ -235,17 +243,9 @@ impl Picker {
     }
 }
 
-impl Component<Pick> for Picker {
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+impl Panes<Pick> for Picker {
+    fn act(&mut self, action: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let pane = self.pane();
-        if self.filter[pane].typing {
-            self.filter[pane].key(key);
-            self.cursor[pane] = 0;
-            return Ok(Outcome::Consumed);
-        }
-        let Feed::Action(action) = self.keymap.feed(key) else {
-            return Ok(Outcome::Consumed);
-        };
         // Down on the last row of the unfiltered range pane loads older commits.
         if self.right
             && action == "down"
@@ -315,6 +315,51 @@ impl Component<Pick> for Picker {
         Ok(Outcome::Consumed)
     }
 
+    fn panes(&self) -> &[Rect] {
+        &self.panes
+    }
+
+    fn focus(&mut self, pane: usize, _ctx: &Pick) {
+        self.right = pane == 1;
+    }
+
+    fn busy(&self) -> bool {
+        self.filter[self.pane()].typing
+    }
+
+    /// A session opens as Enter does, a range row checks as Space does.
+    fn pick(&mut self, pane: usize, y: u16, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        let len = self.shown(pane, &ctx.sessions).len();
+        let Some(row) = row_at(self.panes[pane], self.skip(pane), len, y) else {
+            return Ok(Outcome::Consumed);
+        };
+        self.cursor[pane] = row;
+        self.act(["open", "check"][pane], ctx)
+    }
+}
+
+impl Component<Pick> for Picker {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        let pane = self.pane();
+        if self.filter[pane].typing {
+            self.filter[pane].key(key);
+            self.cursor[pane] = 0;
+            return Ok(Outcome::Consumed);
+        }
+        let Feed::Action(action) = self.keymap.feed(key) else {
+            return Ok(Outcome::Consumed);
+        };
+        self.act(action, ctx)
+    }
+
+    fn wheel(&mut self, action: &str, at: Position, ctx: &mut Pick) -> Result<()> {
+        self.wheel_at(action, at, ctx)
+    }
+
+    fn click(&mut self, at: Position, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        self.click_at(at, ctx)
+    }
+
     fn paste(&mut self, text: &str) {
         let pane = self.pane();
         if self.filter[pane].typing {
@@ -335,6 +380,7 @@ impl Component<Pick> for Picker {
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .areas(area);
         self.height = area.height.saturating_sub(2) as usize;
+        self.panes = panes;
         let name_width = name_width(&ctx.sessions);
         let columns = Columns::new(&self.commits);
         for (pane, area) in panes.into_iter().enumerate() {
@@ -343,7 +389,7 @@ impl Component<Pick> for Picker {
             title.push_str(&self.filter[pane].title());
             let height = area.height.saturating_sub(2) as usize;
             let cursor = self.cursor[pane];
-            let skip = (cursor + 1).saturating_sub(height);
+            let skip = self.skip(pane);
             // Inside the borders.
             let inner_width = (area.width as usize).saturating_sub(2);
             // After the mark.

@@ -1,19 +1,19 @@
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::app::{Component, Ctx, Outcome, Shown};
 use crate::keymap::{Feed, Keymap};
-use crate::ui::boxed;
 use crate::ui::confirm::Confirm;
 use crate::ui::diff_view::DiffView;
 use crate::ui::help::{self, Help};
 use crate::ui::input::Input;
 use crate::ui::settings::SettingsPopup;
 use crate::ui::sidebar::{Entry, Sidebar};
+use crate::ui::{Panes, boxed};
 
 const HELP: &[help::Entry] = &[
     (&["down", "up"], "move"),
@@ -65,6 +65,8 @@ pub struct Review {
     /// 0 commits, 1 files, 2 diff.
     focus: usize,
     keymap: Keymap,
+    /// The commits, files and diff boxes, as of the last render.
+    panes: [Rect; 3],
 }
 
 const COMMITS: usize = 0;
@@ -79,21 +81,20 @@ impl Review {
             diff: DiffView::default(),
             focus: DIFF,
             keymap: Keymap::default(),
+            panes: [Rect::default(); 3],
+        }
+    }
+
+    /// Entering or leaving the commits box, from `focus`, checks or drops its views.
+    fn refocus(&mut self, focus: usize, ctx: &Ctx) {
+        if (focus == COMMITS) != (self.focus == COMMITS) {
+            self.commits.focus(ctx, self.focus == COMMITS);
         }
     }
 }
 
-impl Component for Review {
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        if let Some(outcome) = self.diff.modal_key(key, ctx)? {
-            return Ok(outcome);
-        }
-        if self.files.filter_key(key) {
-            return Ok(Outcome::Consumed);
-        }
-        let Feed::Action(action) = self.keymap.feed(key) else {
-            return Ok(Outcome::Consumed);
-        };
+impl Panes<Ctx> for Review {
+    fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
         let focus = self.focus;
         match action {
             "focus_left" => self.focus = self.focus.saturating_sub(1),
@@ -155,10 +156,60 @@ impl Component for Review {
             }
             _ => return self.diff.act(action, ctx),
         }
-        if (focus == COMMITS) != (self.focus == COMMITS) {
-            self.commits.focus(ctx, self.focus == COMMITS);
-        }
+        self.refocus(focus, ctx);
         Ok(Outcome::Consumed)
+    }
+
+    fn panes(&self) -> &[Rect] {
+        &self.panes
+    }
+
+    fn focus(&mut self, pane: usize, ctx: &Ctx) {
+        let focus = self.focus;
+        self.focus = pane;
+        self.refocus(focus, ctx);
+    }
+
+    fn busy(&self) -> bool {
+        self.diff.busy() || self.files.typing()
+    }
+
+    /// A commit checks as Space does, a file opens as Enter does; a diff row only takes
+    /// the cursor.
+    fn pick(&mut self, pane: usize, y: u16, ctx: &mut Ctx) -> Result<Outcome> {
+        let action = match pane {
+            COMMITS if self.commits.click(self.panes[COMMITS], y, ctx) => "check",
+            FILES if self.files.click(self.panes[FILES], y, ctx) => "open",
+            DIFF => {
+                self.diff.click(y);
+                return Ok(Outcome::Consumed);
+            }
+            _ => return Ok(Outcome::Consumed),
+        };
+        self.act(action, ctx)
+    }
+}
+
+impl Component for Review {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
+        if let Some(outcome) = self.diff.modal_key(key, ctx)? {
+            return Ok(outcome);
+        }
+        if self.files.filter_key(key) {
+            return Ok(Outcome::Consumed);
+        }
+        let Feed::Action(action) = self.keymap.feed(key) else {
+            return Ok(Outcome::Consumed);
+        };
+        self.act(action, ctx)
+    }
+
+    fn wheel(&mut self, action: &str, at: Position, ctx: &mut Ctx) -> Result<()> {
+        self.wheel_at(action, at, ctx)
+    }
+
+    fn click(&mut self, at: Position, ctx: &mut Ctx) -> Result<Outcome> {
+        self.click_at(at, ctx)
     }
 
     fn paste(&mut self, text: &str) {
@@ -173,6 +224,7 @@ impl Component for Review {
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
         let [left, right] =
             Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(bottom);
+        self.panes = [top, left, right];
         self.commits.render(f, top, ctx, self.focus == COMMITS);
         self.files.render(f, left, ctx, self.focus == FILES);
         let block = boxed(
