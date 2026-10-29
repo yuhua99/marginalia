@@ -23,7 +23,10 @@ const HELP: &[help::Entry] = &[
         &["next_thread", "prev_thread"],
         "next / previous thread, or search match while searching",
     ),
-    (&["prev_file", "next_file"], "previous / next file in the diff"),
+    (
+        &["prev_file", "next_file"],
+        "previous / next file in the diff",
+    ),
     (
         &["next_focus", "prev_focus"],
         "cycle focus: commits, files, diff",
