@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -20,13 +20,16 @@ pub struct Repo {
     root: String,
     common_dir: String,
     index: String,
-    /// `staged` / `unstaged` -> tree id, computed once per process.
+    /// `staged` / `unstaged` -> tree id, computed once per object directory.
     trees: HashMap<String, String>,
     /// `base..end` -> its commits, listed once per process.
     ranges: HashMap<String, Vec<Commit>>,
     /// Untracked files over the size limit, left out of the unstaged tree.
     skipped: Vec<String>,
     cat: Option<CatFile>,
+    /// Where the objects mrg writes go (trees of `staged` / `unstaged`), the repo's
+    /// own read through it, so nothing lands in `.git`; set by `use_objects`.
+    objects: Option<PathBuf>,
 }
 
 /// A commit of `git log`.
@@ -55,7 +58,7 @@ impl Blame {
 }
 
 struct CatFile {
-    _child: Child,
+    child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
@@ -87,7 +90,23 @@ impl Repo {
             ranges: HashMap::new(),
             skipped: Vec::new(),
             cat: None,
+            objects: None,
         })
+    }
+
+    /// Writes objects to `dir` from now on. Trees and the reader made for the
+    /// previous directory are dropped.
+    pub fn use_objects(&mut self, dir: PathBuf) -> Result<()> {
+        fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        // Absolute: git runs from the repo root.
+        self.objects = Some(fs::canonicalize(&dir)?);
+        self.trees.clear();
+        if let Some(mut cat) = self.cat.take() {
+            // Closing its input ends it.
+            drop(cat.stdin);
+            cat.child.wait()?;
+        }
+        Ok(())
     }
 
     /// Identifies the repo; worktrees of one repo share the same key.
@@ -194,7 +213,7 @@ impl Repo {
             let stdin = child.stdin.take().unwrap();
             let stdout = BufReader::new(child.stdout.take().unwrap());
             self.cat = Some(CatFile {
-                _child: child,
+                child,
                 stdin,
                 stdout,
             });
@@ -236,14 +255,17 @@ impl Repo {
     /// Writes a tree from a temporary copy of the index, leaving the real index untouched.
     /// With `worktree`, tracked changes and untracked files are added to the copy first.
     fn index_tree(&mut self, worktree: bool) -> Result<String> {
-        let tmp = format!("{}.mrg-{}", self.index, std::process::id());
+        let Some(objects) = &self.objects else {
+            bail!("no object directory set; the tree would be written into .git");
+        };
+        let tmp = objects.with_file_name(format!("index-{}", std::process::id()));
         fs::copy(&self.index, &tmp).context("copy git index")?;
         let tree = self.write_tree(&tmp, worktree);
         let _ = fs::remove_file(&tmp);
         tree
     }
 
-    fn write_tree(&mut self, index: &str, worktree: bool) -> Result<String> {
+    fn write_tree(&mut self, index: &Path, worktree: bool) -> Result<String> {
         let git = |args: &[&str]| {
             let mut cmd = self.git(args);
             cmd.env("GIT_INDEX_FILE", index);
@@ -466,6 +488,14 @@ impl Repo {
     fn git(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.root).args(args);
+        if let Some(dir) = &self.objects {
+            // Quoted, as the list is split on colons.
+            let repo = format!("{}/objects", self.common_dir)
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            cmd.env("GIT_OBJECT_DIRECTORY", dir)
+                .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", format!("\"{repo}\""));
+        }
         cmd
     }
 }

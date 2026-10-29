@@ -105,6 +105,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Comment { session, file }) => {
             let mut session = store.load(&session)?;
+            repo.use_objects(store.objects(&session.id))?;
             let mut text = String::new();
             if file.as_os_str() == "-" {
                 std::io::stdin()
@@ -140,6 +141,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Show { session, only }) => {
             let mut session = store.load(&session)?;
+            repo.use_objects(store.objects(&session.id))?;
             session.check_outdated(&mut repo)?;
             match only.as_deref() {
                 Some("waiting") => session.threads.retain(|t| t.waiting_on_agent()),

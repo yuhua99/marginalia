@@ -78,8 +78,20 @@ impl Store {
         Ok(out)
     }
 
+    /// Removes the session and its objects.
     pub fn delete(&self, id: &str) -> Result<()> {
-        fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))
+        fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))?;
+        match fs::remove_dir_all(self.dir.join(id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("delete objects of session {id}"))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Where the objects mrg writes for session `id` go: `<id>/objects`.
+    pub fn objects(&self, id: &str) -> PathBuf {
+        self.dir.join(id).join("objects")
     }
 
     fn path(&self, id: &str) -> PathBuf {
