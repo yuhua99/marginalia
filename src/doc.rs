@@ -265,7 +265,7 @@ impl Doc {
 
     /// Replaces the thread rows with those of `threads`, the session's after they changed.
     pub fn set_threads(&mut self, threads: &[Thread]) {
-        self.spots = threads.iter().map(|t| self.spot(&t.anchor)).collect();
+        self.spots = threads.iter().map(|t| self.spot(t)).collect();
         self.place();
     }
 
@@ -334,9 +334,9 @@ impl Doc {
         self.rows = rows;
     }
 
-    fn spot(&self, anchor: &Anchor) -> Spot {
+    fn spot(&self, t: &Thread) -> Spot {
         let find = |f: &dyn Fn(&(String, String)) -> bool| self.paths.iter().position(f);
-        match (anchor, &self.scope) {
+        match (&t.anchor, &self.scope) {
             (Anchor::Lines { owner, .. }, Scope::Run(steps)) => {
                 let Some(o) = owner else {
                     return Spot::Top;
@@ -348,8 +348,8 @@ impl Doc {
                 // Lines a later shown commit changes, or an earlier one adds, have no side.
                 let (file, line) = match carried {
                     None => (o.file.clone(), o.line),
-                    Some(files) => match carry(files, &o.file, o.line) {
-                        Some(at) => at,
+                    Some(files) => match carry(files, &o.file, o.line, o.line) {
+                        Some((file, _, line)) => (file, line),
                         None => return Spot::Whole,
                     },
                 };
@@ -359,21 +359,13 @@ impl Doc {
                     None => Spot::Whole,
                 }
             }
-            (
-                Anchor::Lines {
-                    rev: Some(rev),
-                    file,
-                    end,
-                    ..
-                },
-                _,
-            ) => {
-                let right = *rev == self.right_rev;
-                if !right && *rev != self.left_rev {
+            // Where `Session::place` carried the lines to.
+            (Anchor::Lines { .. }, Scope::Range) => {
+                let Some(p) = &t.place else {
                     return Spot::Top;
-                }
-                match find(&|p| if right { p.1 == *file } else { p.0 == *file }) {
-                    Some(i) => Spot::Line(i, right, *end),
+                };
+                match find(&|f| if p.base { f.0 == p.file } else { f.1 == p.file }) {
+                    Some(i) => Spot::Line(i, !p.base, p.end),
                     None => Spot::Top,
                 }
             }
@@ -647,9 +639,14 @@ impl Doc {
         self.statuses[file]
     }
 
-    /// The file `anchor` is on in this view.
+    /// The file a new `anchor`, of `anchor_at`, is on in this view.
     pub fn file_of(&self, anchor: &Anchor) -> Option<usize> {
-        self.spot(anchor).file()
+        match anchor {
+            Anchor::Lines { file, .. } | Anchor::File { file } => {
+                self.paths.iter().position(|p| p.0 == *file || p.1 == *file)
+            }
+            _ => None,
+        }
     }
 
     /// Thread indices in row order, those of a collapsed file at its header,
@@ -691,28 +688,30 @@ impl Spot {
     }
 }
 
-/// Line `line` of `path` on the old side of `files`, a diff without context, on their
-/// new side; None when they change or delete it.
-fn carry(files: &[FileDiff], path: &str, line: u32) -> Option<(String, u32)> {
+/// Lines `start..=end` of `path` on the old side of `files`, a diff without context, on
+/// their new side; None when they change, delete or insert any line among them.
+pub fn carry(files: &[FileDiff], path: &str, start: u32, end: u32) -> Option<(String, u32, u32)> {
     let Some(f) = files.iter().find(|f| f.old_path == path) else {
-        return Some((path.to_string(), line));
+        return Some((path.to_string(), start, end));
     };
     if f.status == 'D' {
         return None;
     }
-    // Where the last hunk before `line` ends, old and new.
+    // Where the last hunk before `start` ends, old and new.
     let (mut old_end, mut new_end) = (1, 1);
     for h in &f.hunks {
         let (old, new) = (first(h.old_start, h.old_len), first(h.new_start, h.new_len));
-        if line < old {
+        if end < old {
             break;
         }
-        if line < old + h.old_len {
+        // Overlaps them, or inserts right before one past `start`.
+        if start < old + h.old_len {
             return None;
         }
         (old_end, new_end) = (old + h.old_len, new + h.new_len);
     }
-    Some((f.new_path.clone(), line - old_end + new_end))
+    let at = |line: u32| line - old_end + new_end;
+    Some((f.new_path.clone(), at(start), at(end)))
 }
 
 /// First line of a hunk side; an empty side's start is the line before the change.
@@ -774,7 +773,7 @@ fn word_diff(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
 mod tests {
     use super::*;
     use crate::repo::{Hunk, Line};
-    use crate::session::Message;
+    use crate::session::{Message, Place};
 
     /// `a` changing line 2 of `x` to `y`, with a line of context on each side.
     fn doc() -> Doc {
@@ -814,6 +813,7 @@ mod tests {
                 body: "?".into(),
             }],
             outdated: false,
+            place: None,
         }
     }
 
@@ -857,7 +857,7 @@ mod tests {
                 },
             ],
         }];
-        let at = |path, n| carry(&files, path, n);
+        let at = |path, n| carry(&files, path, n, n).map(|(f, _, l)| (f, l));
         assert_eq!(at("a", 1), Some(("b".into(), 1)));
         assert_eq!(at("a", 2), None);
         assert_eq!(at("a", 3), Some(("b".into(), 4)));
@@ -865,19 +865,46 @@ mod tests {
         assert_eq!(at("a", 9), None);
         assert_eq!(at("a", 10), Some(("b".into(), 10)));
         assert_eq!(at("c", 7), Some(("c".into(), 7)));
+        // A run of lines moves whole, and none of it may change.
+        assert_eq!(carry(&files, "a", 3, 8), Some(("b".into(), 4, 9)));
+        assert_eq!(carry(&files, "a", 1, 3), None);
+        assert_eq!(carry(&files, "a", 8, 10), None);
+        // Lines added right before the run move it; lines added inside it change it.
+        let insert = |at| FileDiff {
+            status: 'M',
+            old_path: "a".into(),
+            new_path: "a".into(),
+            binary: false,
+            skipped: false,
+            hunks: vec![Hunk {
+                old_start: at - 1,
+                old_len: 0,
+                new_start: at,
+                new_len: 1,
+                lines: vec![line(Kind::Add, "n")],
+            }],
+        };
+        assert_eq!(carry(&[insert(3)], "a", 3, 4), Some(("a".into(), 4, 5)));
+        assert_eq!(carry(&[insert(4)], "a", 3, 4), None);
     }
 
     #[test]
     fn threads_follow_collapsing() {
         let mut doc = doc();
-        let line2 = Anchor::Lines {
+        let mut line2 = thread(Anchor::Lines {
             rev: Some("e".into()),
             file: "a".into(),
             start: 2,
             end: 2,
             owner: None,
-        };
-        doc.set_threads(&[thread(Anchor::Session), thread(line2)]);
+        });
+        line2.place = Some(Place {
+            file: "a".into(),
+            start: 2,
+            end: 2,
+            base: false,
+        });
+        doc.set_threads(&[thread(Anchor::Session), line2]);
         // Session, its thread, the file, line 1, the changed line 2, its thread, line 3.
         assert_eq!(thread_rows(&doc), [1, 5]);
         assert_eq!(doc.thread_order(), [0, 1]);

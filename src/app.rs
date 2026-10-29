@@ -93,7 +93,7 @@ impl Shown {
 impl Ctx {
     pub fn new(mut session: Session, mut repo: Repo, store: Store, look: Look) -> Result<Ctx> {
         repo.use_objects(store.objects(&session.id))?;
-        session.check_outdated(&mut repo)?;
+        session.place(&mut repo)?;
         let mut views: Vec<View> = repo
             .commits(&session.base, &session.end)?
             .into_iter()

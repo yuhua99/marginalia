@@ -118,9 +118,10 @@ fn main() -> Result<()> {
             let input: Input = serde_json::from_str(&text).context("parse comments")?;
             let touched = session.apply(input, &mut repo)?;
             store.save(&session)?;
+            session.place(&mut repo)?;
             for i in touched {
                 let t = &session.threads[i];
-                let location = session.location(&t.anchor);
+                let location = session.location(t);
                 println!(
                     "{}",
                     serde_json::json!({ "id": t.id, "location": location })
@@ -142,7 +143,7 @@ fn main() -> Result<()> {
         Some(Cmd::Show { session, only }) => {
             let mut session = store.load(&session)?;
             repo.use_objects(store.objects(&session.id))?;
-            session.check_outdated(&mut repo)?;
+            session.place(&mut repo)?;
             match only.as_deref() {
                 Some("waiting") => session.threads.retain(|t| t.waiting_on_agent()),
                 Some("outdated") => session.threads.retain(|t| t.outdated),

@@ -14,7 +14,7 @@ Run every command from the repo root; sessions belong to the repo.
 - `mrg comment --session ID FILE` (`-` for stdin) posts `{"from": "agent", "comments": [...]}`. Each comment has `body` and exactly one of `reply_to: "<thread id>"` or `anchor`:
   - `{"kind": "session"}`, `{"kind": "commit", "commit": REV}`, `{"kind": "file", "file": PATH}`
   - `{"kind": "lines", "file": PATH, "start": N, "end": M}` anchors new-side lines at the range end. Add `"rev": BASE` (`base` in `mrg show`) for deleted lines.
-- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you, `--only outdated` those whose lines changed since.
+- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you, `--only outdated` those whose lines changed since. A thread's `location` is where its lines are now; its `anchor` keeps where they were when written.
 - `mrg delete --session ID THREAD...` deletes your notes: threads the user never wrote in.
 - `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux it prints a command to relay to the human.
 

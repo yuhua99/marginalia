@@ -38,7 +38,7 @@ enum Target {
 
 impl Input {
     pub fn comment(anchor: Anchor, session: &Session) -> Input {
-        let header = format!("new  {}", session.location(&anchor));
+        let header = format!("new  {}", session.anchor_location(&anchor));
         Input::new(Target::Comment(anchor), Some(header), "")
     }
 
