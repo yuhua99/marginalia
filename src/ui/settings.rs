@@ -103,10 +103,11 @@ fn list(theme: &Theme, wrap: bool, error: Option<anyhow::Error>) -> Popup {
 }
 
 fn save(theme: &Theme, wrap: bool) -> Result<()> {
-    let mut settings = Settings::load()?;
-    settings.theme = theme.name.to_string();
-    settings.wrap = wrap;
-    settings.save()
+    Settings {
+        theme: theme.name.to_string(),
+        wrap,
+    }
+    .save()
 }
 
 impl<C: AsRef<Look> + AsMut<Look>> Component<C> for SettingsPopup {
