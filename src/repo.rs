@@ -331,9 +331,9 @@ impl Repo {
         Ok(revs)
     }
 
-    /// Up to `n` first-parent commits back from HEAD, newest first.
-    pub fn recent(&self, n: usize) -> Result<Vec<Commit>> {
-        self.log(&["-n", &n.to_string(), "HEAD"])
+    /// Up to `n` first-parent commits back from `from` (included), newest first.
+    pub fn recent(&self, from: &str, n: usize) -> Result<Vec<Commit>> {
+        self.log(&["-n", &n.to_string(), from])
     }
 
     /// First-parent `git log`.

@@ -113,6 +113,8 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
 #[derive(Default)]
 struct Picker {
     commits: Vec<Commit>,
+    /// `commits` reach the root commit.
+    exhausted: bool,
     /// The rows of the range pane above the commits: `unstaged` / `staged` when not empty.
     uncommitted: Vec<&'static str>,
     /// Focus on the range pane.
@@ -129,12 +131,26 @@ struct Picker {
 
 impl Picker {
     fn new(pick: &Pick) -> Result<Picker> {
+        let commits = pick.repo.recent("HEAD", COMMITS)?;
         Ok(Picker {
-            commits: pick.repo.recent(COMMITS)?,
+            exhausted: commits.len() < COMMITS,
+            commits,
             uncommitted: pick.repo.uncommitted()?,
             right: pick.sessions.is_empty(),
             ..Picker::default()
         })
+    }
+
+    /// Appends the next `COMMITS` commits below the last one.
+    fn more(&mut self, repo: &Repo) -> Result<()> {
+        let Some(last) = self.commits.last() else {
+            return Ok(());
+        };
+        // One more to skip `last` itself, so a root commit needs no parent lookup.
+        let page = repo.recent(&last.sha, COMMITS + 1)?;
+        self.exhausted = page.len() <= COMMITS;
+        self.commits.extend(page.into_iter().skip(1));
+        Ok(())
     }
 
     fn pane(&self) -> usize {
@@ -230,6 +246,16 @@ impl Component<Pick> for Picker {
         let Feed::Action(action) = self.keymap.feed(key) else {
             return Ok(Outcome::Consumed);
         };
+        // Down on the last row of the unfiltered range pane loads older commits.
+        if self.right
+            && action == "down"
+            && !self.exhausted
+            && self.filter[1].text.is_empty()
+            && self.cursor[1] + 1 == self.uncommitted.len() + self.commits.len()
+            && let Err(e) = self.more(&ctx.repo)
+        {
+            ctx.error = Some(format!("{e:#}"));
+        }
         let shown = self.shown(pane, &ctx.sessions);
         let at = shown.get(self.cursor[pane]).copied();
         let last = shown.len().saturating_sub(1);
@@ -310,6 +336,7 @@ impl Component<Pick> for Picker {
                 .areas(area);
         self.height = area.height.saturating_sub(2) as usize;
         let name_width = name_width(&ctx.sessions);
+        let columns = Columns::new(&self.commits);
         for (pane, area) in panes.into_iter().enumerate() {
             let focused = pane == self.pane();
             let mut title = [" Sessions ", " New review "][pane].to_string();
@@ -317,8 +344,6 @@ impl Component<Pick> for Picker {
             let height = area.height.saturating_sub(2) as usize;
             let cursor = self.cursor[pane];
             let skip = (cursor + 1).saturating_sub(height);
-            let all = self.all(pane, &ctx.sessions);
-            let columns = Columns::new(&self.commits);
             // Inside the borders.
             let inner_width = (area.width as usize).saturating_sub(2);
             // After the mark.
@@ -338,7 +363,7 @@ impl Component<Pick> for Picker {
                     let mut spans = vec![mark(checked, theme)];
                     match i.checked_sub(self.uncommitted.len()) {
                         Some(c) => spans.extend(columns.row(&self.commits[c], width, theme)),
-                        None => spans.push(Span::raw(all[i].0.clone())),
+                        None => spans.push(Span::raw(self.uncommitted[i])),
                     }
                     Line::from(spans)
                 })
