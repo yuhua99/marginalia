@@ -53,13 +53,13 @@ enum Cmd {
     },
     /// Add comments from a JSON file (`-` for stdin) to a session; prints {id, location} per comment
     Comment {
-        #[arg(long)]
+        #[arg(short, long)]
         session: String,
         file: PathBuf,
     },
     /// Open a session in the TUI
     Resume {
-        #[arg(long)]
+        #[arg(short, long)]
         session: String,
         /// Shell command run on quitting this time, with $MRG_SESSION set; not saved
         #[arg(long)]
@@ -67,14 +67,14 @@ enum Cmd {
     },
     /// Delete notes: threads only the agent wrote in
     Delete {
-        #[arg(long)]
+        #[arg(short, long)]
         session: String,
         #[arg(required = true)]
         threads: Vec<String>,
     },
     /// Print a session as JSON
     Show {
-        #[arg(long)]
+        #[arg(short, long)]
         session: String,
         /// Only threads waiting on the agent, or those whose anchored lines changed since
         #[arg(long, value_parser = ["waiting", "outdated"])]
