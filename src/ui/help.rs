@@ -12,14 +12,24 @@ pub type Entry = (&'static [&'static str], &'static str);
 
 /// The keys of `actions` in `keymap`, joined with `/`.
 fn keys(actions: &[&str], keymap: &Keymap) -> String {
-    let keys: Vec<_> = actions.iter().map(|a| keymap.keys(a)).collect();
+    let keys: Vec<_> = actions
+        .iter()
+        .map(|a| keymap.keys(a))
+        .filter(|k| !k.is_empty())
+        .collect();
     keys.join("/")
+}
+
+/// The entries with a key bound to any of their actions.
+fn bound<'a>(entries: &'a [Entry], keymap: &'a Keymap) -> impl Iterator<Item = &'a Entry> {
+    entries
+        .iter()
+        .filter(|(actions, _)| !keys(actions, keymap).is_empty())
 }
 
 /// The keys of `entries` as a popup.
 fn popup(entries: &[Entry], keymap: &Keymap) -> Popup {
-    let rows = entries
-        .iter()
+    let rows = bound(entries, keymap)
         .map(|(actions, text)| (keys(actions, keymap), text.to_string()))
         .collect();
     Popup::new("Keys", rows)
@@ -27,8 +37,7 @@ fn popup(entries: &[Entry], keymap: &Keymap) -> Popup {
 
 /// The keys of `entries` on one footer line, sequences such as `g g` written `gg`.
 pub fn hints(entries: &[Entry], keymap: &Keymap) -> String {
-    let hints: Vec<_> = entries
-        .iter()
+    let hints: Vec<_> = bound(entries, keymap)
         .map(|(actions, text)| format!("{} {text}", keys(actions, keymap).replace(' ', "")))
         .collect();
     format!(" {}", hints.join("  "))
@@ -45,7 +54,7 @@ impl Help {
     pub fn new(entries: &[Entry], keymap: &Keymap) -> Help {
         Help {
             popup: popup(entries, keymap),
-            keymap: Keymap::default(),
+            keymap: Keymap::new("popup"),
         }
     }
 }
