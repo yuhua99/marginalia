@@ -15,7 +15,7 @@ use crate::theme::Theme;
 use crate::ui::boxed;
 use crate::ui::clear;
 use crate::ui::diff_view::{draw_row, draw_rows, drawn_at};
-use crate::ui::help::{Entry, Help};
+use crate::ui::help::{self, Entry, Help};
 use crate::ui::popup::Popup;
 use crate::ui::query::Query;
 use crate::ui::scroll::Scroll;
@@ -35,7 +35,16 @@ const HELP: &[Entry] = &[
     ),
 ];
 
-const HINTS: &str = " j/k move  C-d/C-u half page  gg/G top/bottom  / search  n/N match  s settings  ? help  q/Esc back";
+const HINTS: &[Entry] = &[
+    (&["down", "up"], "move"),
+    (&["half_page_down", "half_page_up"], "half page"),
+    (&["top", "bottom"], "top/bottom"),
+    (&["filter"], "search"),
+    (&["next_thread", "prev_thread"], "match"),
+    (&["settings"], "settings"),
+    (&["help"], "help"),
+    (&["quit", "cancel"], "back"),
+];
 
 /// A whole file at the range end, opened from a link, read only and without threads;
 /// the linked lines are marked in the gutter. `q` / `Esc` go back.
@@ -49,6 +58,8 @@ pub struct FileView {
     /// The `/` search; while typing, it takes all keys.
     search: Query,
     keymap: Keymap,
+    /// The footer, from `HINTS`.
+    hints: String,
     /// The rows drawn and their screen lines, as of the last render.
     rows: Vec<(usize, Range<u16>)>,
 }
@@ -61,13 +72,15 @@ impl FileView {
         };
         let doc = Doc::file(ctx.session.end.clone(), link.path.clone(), &text);
         let (start, end) = (doc.line_row(link.start), doc.line_row(link.end));
+        let keymap = Keymap::default();
         Ok(Some(FileView {
             doc,
             label: link.label(),
             linked: start..=end,
             scroll: Scroll::centered(start),
             search: Query::default(),
-            keymap: Keymap::default(),
+            hints: help::hints(HINTS, &keymap),
+            keymap,
             rows: Vec::new(),
         }))
     }
@@ -95,7 +108,7 @@ impl Component for FileView {
             return Ok(Outcome::Consumed);
         };
         match action {
-            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP, &self.keymap)))),
             "settings" => {
                 return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look))));
             }
@@ -134,8 +147,8 @@ impl Component for FileView {
         Ok(Outcome::Consumed)
     }
 
-    fn hints(&self) -> Option<&'static str> {
-        Some(HINTS)
+    fn hints(&self) -> Option<&str> {
+        Some(&self.hints)
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {

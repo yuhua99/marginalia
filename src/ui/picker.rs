@@ -17,7 +17,7 @@ use crate::store::Store;
 use crate::theme::Theme;
 use crate::ui::commit_row::{Columns, fit, mark};
 use crate::ui::confirm::Confirm;
-use crate::ui::help::{Entry, Help};
+use crate::ui::help::{self, Entry, Help};
 use crate::ui::query::Query;
 use crate::ui::settings::SettingsPopup;
 use crate::ui::{Panes, boxed, check, clear, cursor_bar, dialog, row_at, step};
@@ -25,7 +25,19 @@ use crate::ui::{Panes, boxed, check, clear, cursor_bar, dialog, row_at, step};
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  e rename  d delete session  Esc clear  s settings  ? help  q quit";
+const HINTS: &[Entry] = &[
+    (&["down", "up"], "move"),
+    (&["focus_left", "focus_right"], "pane"),
+    (&["check"], "select"),
+    (&["open"], "open"),
+    (&["filter"], "filter"),
+    (&["edit"], "rename"),
+    (&["delete"], "delete session"),
+    (&["cancel"], "clear"),
+    (&["settings"], "settings"),
+    (&["help"], "help"),
+    (&["quit"], "quit"),
+];
 
 const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
@@ -128,6 +140,8 @@ struct Picker {
     /// Rows a pane shows, as of the last render.
     height: usize,
     keymap: Keymap,
+    /// The footer, from `HINTS`.
+    hints: String,
     /// The two panes, as of the last render.
     panes: [Rect; 2],
 }
@@ -135,11 +149,14 @@ struct Picker {
 impl Picker {
     fn new(pick: &Pick) -> Result<Picker> {
         let commits = pick.repo.recent("HEAD", COMMITS)?;
+        let keymap = Keymap::default();
         Ok(Picker {
             exhausted: commits.len() < COMMITS,
             commits,
             uncommitted: pick.repo.uncommitted()?,
             right: pick.sessions.is_empty(),
+            hints: help::hints(HINTS, &keymap),
+            keymap,
             ..Picker::default()
         })
     }
@@ -292,7 +309,7 @@ impl Panes<Pick> for Picker {
                     return Ok(Outcome::Push(Box::new(Rename::new(&ctx.sessions[i].0))));
                 }
             }
-            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP, &self.keymap)))),
             "settings" => return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look)))),
             "focus_left" => self.right = false,
             "focus_right" => self.right = true,
@@ -368,8 +385,8 @@ impl Component<Pick> for Picker {
         }
     }
 
-    fn hints(&self) -> Option<&'static str> {
-        Some(HINTS)
+    fn hints(&self) -> Option<&str> {
+        Some(&self.hints)
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {

@@ -244,7 +244,7 @@ pub trait Component<C = Ctx> {
         Ok(Outcome::Consumed)
     }
     /// Footer hints; None leaves the footer to the layers below.
-    fn hints(&self) -> Option<&'static str> {
+    fn hints(&self) -> Option<&str> {
         None
     }
 }

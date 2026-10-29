@@ -4,7 +4,8 @@ type Key = (KeyCode, KeyModifiers);
 
 /// Maps key sequences such as `g g` to action names.
 pub struct Keymap {
-    bindings: Vec<(Vec<Key>, &'static str)>,
+    /// The keys as written, as parsed, and their action.
+    bindings: Vec<(&'static str, Vec<Key>, &'static str)>,
     pending: Vec<Key>,
 }
 
@@ -23,8 +24,6 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("G", "bottom"),
     ("n", "next_thread"),
     ("N", "prev_thread"),
-    ("J", "next_file"),
-    ("K", "prev_file"),
     ("h", "focus_left"),
     ("l", "focus_right"),
     ("Enter", "open"),
@@ -44,27 +43,46 @@ const DEFAULTS: &[(&str, &str)] = &[
 
 impl Default for Keymap {
     fn default() -> Keymap {
-        let bindings = DEFAULTS
+        Keymap::with(&[])
+    }
+}
+
+impl Keymap {
+    /// The defaults with `overrides`, which replace the defaults on the same keys.
+    pub fn with(overrides: &[(&'static str, &'static str)]) -> Keymap {
+        let defaults = DEFAULTS
             .iter()
-            .map(|(keys, action)| (keys.split(' ').map(parse).collect(), *action))
+            .filter(|(keys, _)| overrides.iter().all(|(k, _)| k != keys));
+        let bindings = overrides
+            .iter()
+            .chain(defaults)
+            .map(|(keys, action)| (*keys, keys.split(' ').map(parse).collect(), *action))
             .collect();
         Keymap {
             bindings,
             pending: Vec::new(),
         }
     }
-}
 
-impl Keymap {
+    /// The keys bound to `action`, such as `g g`.
+    pub fn keys(&self, action: &str) -> String {
+        self.bindings
+            .iter()
+            .filter(|(_, _, a)| *a == action)
+            .map(|(keys, _, _)| *keys)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     pub fn feed(&mut self, key: KeyEvent) -> Feed {
         let mut modifiers = key.modifiers;
-        if matches!(key.code, KeyCode::Char(_)) {
-            // The case of the char already carries shift.
+        if matches!(key.code, KeyCode::Char(_) | KeyCode::BackTab) {
+            // The case of the char, or BackTab itself, already carries shift.
             modifiers.remove(KeyModifiers::SHIFT);
         }
         self.pending.push((key.code, modifiers));
         let mut prefix = false;
-        for (seq, action) in &self.bindings {
+        for (_, seq, action) in &self.bindings {
             if *seq == self.pending {
                 self.pending.clear();
                 return Feed::Action(action);
@@ -81,21 +99,13 @@ impl Keymap {
     }
 }
 
-/// The keys bound to `action`, such as `g g`.
-pub fn keys(action: &str) -> String {
-    DEFAULTS
-        .iter()
-        .filter(|(_, a)| *a == action)
-        .map(|(keys, _)| *keys)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// `x`, `G`, `C-x`, `Esc`, `Enter` or `Space`.
+/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab` or `S-Tab`.
 fn parse(key: &str) -> Key {
     match key {
         "Esc" => return (KeyCode::Esc, KeyModifiers::NONE),
         "Enter" => return (KeyCode::Enter, KeyModifiers::NONE),
+        "Tab" => return (KeyCode::Tab, KeyModifiers::NONE),
+        "S-Tab" => return (KeyCode::BackTab, KeyModifiers::NONE),
         "Space" => return (KeyCode::Char(' '), KeyModifiers::NONE),
         _ => {}
     }

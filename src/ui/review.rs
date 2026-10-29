@@ -23,10 +23,10 @@ const HELP: &[help::Entry] = &[
         &["next_thread", "prev_thread"],
         "next / previous thread, or search match while searching",
     ),
-    (&["next_file", "prev_file"], "next / previous file"),
+    (&["prev_file", "next_file"], "previous / next file in the diff"),
     (
-        &["focus_left", "focus_right"],
-        "focus commits <- files <- diff",
+        &["next_focus", "prev_focus"],
+        "cycle focus: commits, files, diff",
     ),
     (
         &["open"],
@@ -54,10 +54,25 @@ const HELP: &[help::Entry] = &[
     (&["quit"], "quit"),
 ];
 
-const HINTS: &str = " c comment/reply  r collapse  e/d edit/delete  n/N next thread/match  / search/filter  v select  J/K file  h/l focus  Space check  Enter open  s settings  ? help  Q picker  q quit";
+const HINTS: &[help::Entry] = &[
+    (&["comment"], "comment/reply"),
+    (&["collapse"], "collapse"),
+    (&["edit", "delete"], "edit/delete"),
+    (&["next_thread", "prev_thread"], "next thread/match"),
+    (&["filter"], "search/filter"),
+    (&["select"], "select"),
+    (&["prev_file", "next_file"], "file"),
+    (&["next_focus", "prev_focus"], "focus"),
+    (&["check"], "check"),
+    (&["open"], "open"),
+    (&["settings"], "settings"),
+    (&["help"], "help"),
+    (&["back"], "picker"),
+    (&["quit"], "quit"),
+];
 
 /// The bottom layer: commits across the top, files and the diff below.
-/// `h` / `l` move the focus along commits, files, diff.
+/// `Tab` / `S-Tab` cycle the focus along commits, files, diff; `h` / `l` move by file.
 pub struct Review {
     commits: Sidebar,
     files: Sidebar,
@@ -65,6 +80,8 @@ pub struct Review {
     /// 0 commits, 1 files, 2 diff.
     focus: usize,
     keymap: Keymap,
+    /// The footer, from `HINTS`.
+    hints: String,
     /// The commits, files and diff boxes, as of the last render.
     panes: [Rect; 3],
 }
@@ -75,12 +92,19 @@ const DIFF: usize = 2;
 
 impl Review {
     pub fn new() -> Review {
+        let keymap = Keymap::with(&[
+            ("h", "prev_file"),
+            ("l", "next_file"),
+            ("Tab", "next_focus"),
+            ("S-Tab", "prev_focus"),
+        ]);
         Review {
             commits: Sidebar::default(),
             files: Sidebar::files(),
             diff: DiffView::default(),
             focus: DIFF,
-            keymap: Keymap::default(),
+            hints: help::hints(HINTS, &keymap),
+            keymap,
             panes: [Rect::default(); 3],
         }
     }
@@ -97,9 +121,9 @@ impl Panes<Ctx> for Review {
     fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
         let focus = self.focus;
         match action {
-            "focus_left" => self.focus = self.focus.saturating_sub(1),
-            "focus_right" => self.focus = (self.focus + 1).min(DIFF),
-            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP)))),
+            "next_focus" => self.focus = (self.focus + 1) % 3,
+            "prev_focus" => self.focus = (self.focus + 2) % 3,
+            "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP, &self.keymap)))),
             "settings" => {
                 return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look))));
             }
@@ -240,8 +264,8 @@ impl Component for Review {
         self.diff.render(f, inner, ctx);
     }
 
-    fn hints(&self) -> Option<&'static str> {
-        Some(HINTS)
+    fn hints(&self) -> Option<&str> {
+        Some(&self.hints)
     }
 }
 
