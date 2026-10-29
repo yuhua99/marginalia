@@ -153,15 +153,7 @@ impl Component for FileView {
             |i| draw(i).height(),
             false,
         );
-        draw_rows(
-            f,
-            inner,
-            &self.scroll,
-            doc,
-            ctx.look.theme,
-            draw,
-            |_, _, _| 0,
-        );
+        draw_rows(f, inner, &self.scroll, doc, draw, |_, _, _| 0);
     }
 }
 

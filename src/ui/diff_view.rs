@@ -21,7 +21,7 @@ use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
 use crate::ui::query::{self, Query};
 use crate::ui::scroll::Scroll;
-use crate::ui::{cursor_bar, status_style};
+use crate::ui::status_style;
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
@@ -275,29 +275,21 @@ impl DiffView {
         self.scroll
             .place(area.height as usize, doc.len(), height, from_end);
         let draft = &mut self.draft;
-        draw_rows(
-            f,
-            area,
-            &self.scroll,
-            doc,
-            ctx.look.theme,
-            draw,
-            |f, i, rest| match draft {
-                Some((row, input)) if *row == i => {
-                    let shown = draft_height.min(rest.height as usize);
-                    input.render(
-                        f,
-                        Rect {
-                            height: shown as u16,
-                            ..rest
-                        },
-                        ctx,
-                    );
-                    shown
-                }
-                _ => 0,
-            },
-        );
+        draw_rows(f, area, &self.scroll, doc, draw, |f, i, rest| match draft {
+            Some((row, input)) if *row == i => {
+                let shown = draft_height.min(rest.height as usize);
+                input.render(
+                    f,
+                    Rect {
+                        height: shown as u16,
+                        ..rest
+                    },
+                    ctx,
+                );
+                shown
+            }
+            _ => 0,
+        });
         if let Some(picker) = &mut self.links {
             picker.render(f, area, ctx.look.theme);
         }
@@ -312,15 +304,13 @@ fn follow(link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
     })
 }
 
-/// Draws `doc`'s rows from the top of `scroll` on, each as `draw` makes it, the cursor
-/// row's first line barred unless a code row marks it in its gutter. Under row `i` goes
-/// what `under(f, i, rest)` draws in the `rest` of the area, returning its height.
+/// Draws `doc`'s rows from the top of `scroll` on, each as `draw` makes it. Under row
+/// `i` goes what `under(f, i, rest)` draws in the `rest` of the area, returning its height.
 pub fn draw_rows(
     f: &mut Frame,
     area: Rect,
     scroll: &Scroll,
     doc: &Doc,
-    theme: &Theme,
     draw: impl Fn(usize) -> Drawn,
     mut under: impl FnMut(&mut Frame, usize, Rect) -> usize,
 ) {
@@ -355,9 +345,6 @@ pub fn draw_rows(
                 f.render_widget(para(right, rs), right_rect);
             }
         }
-        if i == scroll.cursor && skip == 0 && !matches!(doc.window(i, 1)[0], Row::Code { .. }) {
-            cursor_bar(f, area, rect.y, theme);
-        }
         y += shown;
         if y < h {
             let rest = Rect {
@@ -372,7 +359,8 @@ pub fn draw_rows(
     }
 }
 
-/// `mark`: the gutter's style, for the selection or a file view's linked lines.
+/// `mark`: the gutter's style, for the selection or a file view's linked lines; threads
+/// take it across their header line, file and session rows whole.
 /// `editing`: the thread whose last message the draft replaces.
 /// `search`: the text whose matches to mark.
 pub fn draw_row(
@@ -385,7 +373,11 @@ pub fn draw_row(
     search: &str,
 ) -> Drawn {
     let theme = ctx.look.theme;
-    let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
+    let mark = mark.unwrap_or_default();
+    let header = Style::new()
+        .fg(theme.blue)
+        .add_modifier(Modifier::BOLD)
+        .patch(mark);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "# session".to_string(),
         Row::File {
@@ -409,15 +401,18 @@ pub fn draw_row(
             let path = vec![Span::raw(path.clone())];
             spans.extend(query::mark(path, search, query::hit_style(theme)));
             spans.push(Span::raw(rest));
-            let line = Line::from(spans);
-            return Drawn::Full(vec![line], header);
+            // The mark goes over the status and search colors.
+            let spans: Vec<_> = spans.into_iter().map(|s| s.patch_style(mark)).collect();
+            return Drawn::Full(vec![Line::from(spans)], header);
         }
         Row::Fold { hidden, .. } => {
             let text = match hidden {
-                Some(n) => format!("  ... {n} unchanged lines ..."),
-                None => "  ... more lines ...".to_string(),
+                Some(n) => format!("{n} unchanged lines"),
+                None => "more lines".to_string(),
             };
-            return Drawn::Full(vec![Line::raw(text)], Style::new().fg(theme.dim));
+            let gutter = format!("{:>1$} ", "...", INDENT - 1);
+            let line = Line::from(vec![Span::styled(gutter, mark), Span::raw(text)]);
+            return Drawn::Full(vec![line], Style::new().fg(theme.dim));
         }
         Row::Thread { idx } => {
             return Drawn::Full(
@@ -427,6 +422,7 @@ pub fn draw_row(
                     !doc.at_top(i),
                     editing == Some(*idx),
                     width as usize,
+                    mark,
                     search,
                 ),
                 Style::new().bg(theme.surface),
@@ -487,7 +483,7 @@ fn code_lines(
     side: Option<&Side>,
     colors: Option<&Colors>,
     width: usize,
-    mark: Option<Style>,
+    mark: Style,
     theme: &Theme,
     wrap: bool,
     search: &str,
@@ -502,10 +498,7 @@ fn code_lines(
         Kind::Del => (theme.red, theme.del_bg, theme.del_emph),
         Kind::Add => (theme.green, theme.add_bg, theme.add_emph),
     };
-    let mut gutter = Style::new().fg(color);
-    if let Some(mark) = mark {
-        gutter = gutter.patch(mark);
-    }
+    let gutter = Style::new().fg(color).patch(mark);
     let number = format!("{:>1$} ", s.lineno, INDENT - 1);
     let gutter_width = number.len();
     let text_width = width.saturating_sub(gutter_width).max(1);
@@ -570,12 +563,14 @@ fn code_lines(
 
 /// A thread as a card: header, then each message wrapped to `width`.
 /// `inline` threads sit under what they anchor to, so their header leaves out the path.
+/// `mark` bars the header.
 fn thread_lines(
     ctx: &Ctx,
     idx: usize,
     inline: bool,
     hide_last: bool,
     width: usize,
+    mark: Style,
     search: &str,
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
@@ -607,7 +602,13 @@ fn thread_lines(
             header_style.fg(theme.blue),
         ));
     }
-    let mut lines = vec![line(header)];
+    let mut first = line(header);
+    let pad = width.saturating_sub(first.width());
+    first.spans.push(Span::raw(" ".repeat(pad)));
+    for s in &mut first.spans {
+        s.style = s.style.patch(mark);
+    }
+    let mut lines = vec![first];
     if outdated && let Some(text) = &t.text {
         let dim = Style::new().fg(theme.dim);
         lines.push(line(vec![Span::styled("was:", dim)]));
