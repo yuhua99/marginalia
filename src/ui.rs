@@ -13,12 +13,14 @@ pub mod scroll;
 pub mod settings;
 pub mod sidebar;
 
+use anyhow::Result;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear};
 
+use crate::app::Outcome;
 use crate::theme::Theme;
 
 /// A bordered box; the focused one in the accent color.
@@ -104,6 +106,55 @@ pub fn step(cursor: usize, action: &str, len: usize, height: usize) -> Option<us
         _ => return None,
     };
     Some(to.min(last))
+}
+
+/// The row at screen line `y` of a list of `len` rows boxed over `area`, shown from `top`;
+/// None on the borders and below the last row.
+pub fn row_at(area: Rect, top: usize, len: usize, y: u16) -> Option<usize> {
+    let line = y.checked_sub(area.y + 1).filter(|l| l + 2 < area.height)?;
+    let row = top + line as usize;
+    (row < len).then_some(row)
+}
+
+/// A screen of boxes, one focused, that the mouse focuses and moves in: the picker's
+/// and the review's.
+pub trait Panes<C> {
+    /// The boxes, as of the last render.
+    fn panes(&self) -> &[Rect];
+    fn focus(&mut self, pane: usize, ctx: &C);
+    /// Typing, which takes all keys and leaves the mouse alone.
+    fn busy(&self) -> bool;
+    /// The key action `action` in the focused box.
+    fn act(&mut self, action: &str, ctx: &mut C) -> Result<Outcome<C>>;
+    /// A click on screen line `y` of the focused `pane`: moves its cursor to the row
+    /// there, and acts on it.
+    fn pick(&mut self, pane: usize, y: u16, ctx: &mut C) -> Result<Outcome<C>>;
+
+    /// Focuses the box under the wheel and moves its cursor by `action`.
+    fn wheel_at(&mut self, action: &str, at: Position, ctx: &mut C) -> Result<()> {
+        if let Some(pane) = self.pane_at(at) {
+            self.focus(pane, ctx);
+            self.act(action, ctx)?;
+        }
+        Ok(())
+    }
+
+    /// Focuses the box clicked and picks the row clicked.
+    fn click_at(&mut self, at: Position, ctx: &mut C) -> Result<Outcome<C>> {
+        let Some(pane) = self.pane_at(at) else {
+            return Ok(Outcome::Consumed);
+        };
+        self.focus(pane, ctx);
+        self.pick(pane, at.y, ctx)
+    }
+
+    /// The box under `at`, unless typing.
+    fn pane_at(&self, at: Position) -> Option<usize> {
+        if self.busy() {
+            return None;
+        }
+        self.panes().iter().position(|r| r.contains(at))
+    }
 }
 
 /// Space on row `i` of a contiguous check: extends it to `i`, or clears it when `i` is in it.

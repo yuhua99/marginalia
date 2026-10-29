@@ -1,4 +1,4 @@
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use anyhow::Result;
 use ratatui::Frame;
@@ -40,6 +40,8 @@ pub struct DiffView {
     links: Option<LinkPicker>,
     /// The `/` search; while typing, it takes all keys.
     search: Query,
+    /// The rows drawn and their screen lines, as of the last render.
+    rows: Vec<(usize, Range<u16>)>,
 }
 
 /// What a row draws: full width with a style, or the two halves of a code row.
@@ -130,6 +132,19 @@ impl DiffView {
             self.draft = None;
         }
         Ok(Some(Outcome::Consumed))
+    }
+
+    /// The link list, the draft or the search being typed takes all keys, and leaves the
+    /// mouse alone.
+    pub fn busy(&self) -> bool {
+        self.links.is_some() || self.draft.is_some() || self.search.typing
+    }
+
+    /// Moves the cursor to the row drawn at screen line `y`, if any.
+    pub fn click(&mut self, y: u16) {
+        if let Some(row) = drawn_at(&self.rows, y) {
+            self.scroll.cursor = row;
+        }
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -275,7 +290,7 @@ impl DiffView {
         self.scroll
             .place(area.height as usize, doc.len(), height, from_end);
         let draft = &mut self.draft;
-        draw_rows(f, area, &self.scroll, doc, draw, |f, i, rest| match draft {
+        self.rows = draw_rows(f, area, &self.scroll, doc, draw, |f, i, rest| match draft {
             Some((row, input)) if *row == i => {
                 let shown = draft_height.min(rest.height as usize);
                 input.render(
@@ -306,6 +321,7 @@ fn follow(link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
 
 /// Draws `doc`'s rows from the top of `scroll` on, each as `draw` makes it. Under row
 /// `i` goes what `under(f, i, rest)` draws in the `rest` of the area, returning its height.
+/// Returns the rows drawn and their screen lines, `under` included.
 pub fn draw_rows(
     f: &mut Frame,
     area: Rect,
@@ -313,12 +329,14 @@ pub fn draw_rows(
     doc: &Doc,
     draw: impl Fn(usize) -> Drawn,
     mut under: impl FnMut(&mut Frame, usize, Rect) -> usize,
-) {
+) -> Vec<(usize, Range<u16>)> {
     let h = area.height as usize;
     let half = area.width / 2;
     let (top, off) = scroll.top();
     let (mut y, mut i, mut skip) = (0, top, off);
+    let mut rows = Vec::new();
     while y < h && i < doc.len() {
+        let start = y;
         let drawn = draw(i);
         let shown = drawn.height().saturating_sub(skip).min(h - y);
         let rect = Rect {
@@ -354,9 +372,18 @@ pub fn draw_rows(
             };
             y += under(f, i, rest);
         }
+        rows.push((i, area.y + start as u16..area.y + y as u16));
         i += 1;
         skip = 0;
     }
+    rows
+}
+
+/// The row of `draw_rows`' `rows` at screen line `y`.
+pub fn drawn_at(rows: &[(usize, Range<u16>)], y: u16) -> Option<usize> {
+    rows.iter()
+        .find(|(_, lines)| lines.contains(&y))
+        .map(|(i, _)| *i)
 }
 
 /// `mark`: the gutter's style, for the selection or a file view's linked lines; threads

@@ -4,7 +4,7 @@ use std::ops::{Range, RangeInclusive};
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use crate::app::{Component, Ctx, Outcome};
@@ -14,7 +14,7 @@ use crate::session::Thread;
 use crate::theme::Theme;
 use crate::ui::boxed;
 use crate::ui::clear;
-use crate::ui::diff_view::{draw_row, draw_rows};
+use crate::ui::diff_view::{draw_row, draw_rows, drawn_at};
 use crate::ui::help::{Entry, Help};
 use crate::ui::popup::Popup;
 use crate::ui::query::Query;
@@ -49,6 +49,8 @@ pub struct FileView {
     /// The `/` search; while typing, it takes all keys.
     search: Query,
     keymap: Keymap,
+    /// The rows drawn and their screen lines, as of the last render.
+    rows: Vec<(usize, Range<u16>)>,
 }
 
 impl FileView {
@@ -66,6 +68,7 @@ impl FileView {
             scroll: Scroll::at(start),
             search: Query::default(),
             keymap: Keymap::default(),
+            rows: Vec::new(),
         }))
     }
 }
@@ -115,6 +118,22 @@ impl Component for FileView {
         }
     }
 
+    fn wheel(&mut self, action: &str, _at: Position, _ctx: &mut Ctx) -> Result<()> {
+        if !self.search.typing {
+            self.scroll.act(action, self.doc.len());
+        }
+        Ok(())
+    }
+
+    fn click(&mut self, at: Position, _ctx: &mut Ctx) -> Result<Outcome> {
+        if !self.search.typing
+            && let Some(row) = drawn_at(&self.rows, at.y)
+        {
+            self.scroll.cursor = row;
+        }
+        Ok(Outcome::Consumed)
+    }
+
     fn hints(&self) -> Option<&'static str> {
         Some(HINTS)
     }
@@ -153,7 +172,7 @@ impl Component for FileView {
             |i| draw(i).height(),
             false,
         );
-        draw_rows(f, inner, &self.scroll, doc, draw, |_, _, _| 0);
+        self.rows = draw_rows(f, inner, &self.scroll, doc, draw, |_, _, _| 0);
     }
 }
 

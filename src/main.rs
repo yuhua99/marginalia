@@ -18,6 +18,7 @@ use ratatui::crossterm::event::{
     PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::style::Print;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -27,6 +28,10 @@ use clap::{Parser, Subcommand};
 use repo::Repo;
 use session::{Input, Session};
 use store::Store;
+
+/// Mouse reporting of clicks and the wheel in SGR, and its end.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1000l\x1b[?1006l";
 
 #[derive(Parser)]
 #[command(
@@ -185,13 +190,22 @@ fn tui(
         theme: theme::find(&settings.theme),
         wrap: settings.wrap,
     };
+    // A panic leaves through ratatui's hook, which knows nothing of the mouse or paste.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste, Print(MOUSE_OFF));
+        hook(info);
+    }));
     loop {
         let ctx = ratatui::run(|terminal| -> Result<Option<app::Ctx>> {
             // Pasted newlines must not send; Shift-Enter must differ from Enter. The key
             // flags end with the alternate screen; bracketed paste is turned off below.
+            // The mouse reports clicks and the wheel (1000) in SGR (1006), not motion;
+            // Shift-drag still selects text in most terminals.
             execute!(
                 std::io::stdout(),
                 EnableBracketedPaste,
+                Print(MOUSE_ON),
                 PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
             )?;
             let (session, store, repo, look) = match session {
@@ -210,7 +224,7 @@ fn tui(
             app::run(terminal, &mut ctx)?;
             Ok(Some(ctx))
         });
-        execute!(std::io::stdout(), DisableBracketedPaste)?;
+        execute!(std::io::stdout(), DisableBracketedPaste, Print(MOUSE_OFF))?;
         let ctx = ctx?;
         let Some(ctx) = ctx else {
             return Ok(());

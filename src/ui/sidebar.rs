@@ -8,7 +8,7 @@ use crate::app::{Ctx, View};
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::query::Query;
-use crate::ui::{boxed, check, cursor_bar, status_style, step};
+use crate::ui::{boxed, check, cursor_bar, row_at, status_style, step};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
 /// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
@@ -90,6 +90,21 @@ impl Sidebar {
     pub fn focus(&mut self, ctx: &Ctx, focused: bool) {
         let shown = ctx.shown.bounds(ctx.views.len());
         self.checked = focused.then_some(Some(shown));
+    }
+
+    /// Typing the filter, which takes all keys and leaves the mouse alone.
+    pub fn typing(&self) -> bool {
+        self.filter.typing
+    }
+
+    /// Moves the cursor to the row at screen line `y` of the box over `area`; false when
+    /// there is none.
+    pub fn click(&mut self, area: Rect, y: u16, ctx: &Ctx) -> bool {
+        let row = row_at(area, self.top, self.items(ctx).len(), y);
+        if let Some(row) = row {
+            self.cursor = row;
+        }
+        row.is_some()
     }
 
     /// While typing the filter, takes `key`; false otherwise.
