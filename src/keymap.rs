@@ -1,11 +1,20 @@
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result, bail};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 type Key = (KeyCode, KeyModifiers);
 
+/// The keys as written, as parsed, and their action.
+type Binding = (String, Vec<Key>, &'static str);
+
+/// The `[keys.<context>]` tables of the settings: keys to an action, or `none` to unbind.
+pub type Keys = BTreeMap<String, BTreeMap<String, String>>;
+
 /// Maps key sequences such as `g g` to action names.
 pub struct Keymap {
-    /// The keys as written, as parsed, and their action.
-    bindings: Vec<(&'static str, Vec<Key>, &'static str)>,
+    bindings: Vec<Binding>,
     pending: Vec<Key>,
 }
 
@@ -41,37 +50,123 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("/", "filter"),
 ];
 
+/// Bindings over the defaults in each context; the user's `global` binds in all of them.
+const CONTEXTS: &[(&str, &[(&str, &str)])] = &[
+    ("global", &[]),
+    ("picker", &[]),
+    (
+        "review",
+        &[
+            ("h", "prev_file"),
+            ("l", "next_file"),
+            ("Tab", "next_focus"),
+            ("S-Tab", "prev_focus"),
+        ],
+    ),
+    ("file", &[]),
+    ("popup", &[]),
+];
+
+/// The built-in bindings per context, which a new settings file starts with; written
+/// under their own context, they bind as the built-ins do.
+pub fn defaults() -> impl Iterator<Item = (&'static str, &'static [(&'static str, &'static str)])> {
+    [("global", DEFAULTS)]
+        .into_iter()
+        .chain(CONTEXTS.iter().copied().filter(|(_, b)| !b.is_empty()))
+}
+
+/// The user's bindings and their context, from `init`.
+static USER: OnceLock<Vec<(&'static str, Binding)>> = OnceLock::new();
+
+/// Takes the user's bindings, which every `Keymap::new` after lays over the defaults.
+pub fn init(keys: &Keys) -> Result<()> {
+    assert!(USER.set(load(keys)?).is_ok(), "keymap::init twice");
+    Ok(())
+}
+
+/// `keys` checked against the contexts, actions and key names, and for keys that
+/// hide a longer sequence in some context.
+fn load(keys: &Keys) -> Result<Vec<(&'static str, Binding)>> {
+    let actions = DEFAULTS
+        .iter()
+        .chain(CONTEXTS.iter().flat_map(|(_, b)| b.iter()))
+        .map(|(_, a)| *a)
+        .chain(["none"]);
+    let mut out = Vec::new();
+    for (context, table) in keys {
+        let Some((name, _)) = CONTEXTS.iter().find(|(c, _)| c == context) else {
+            bail!("unknown context [keys.{context}]");
+        };
+        for (keys, action) in table {
+            let Some(action) = actions.clone().find(|a| a == action) else {
+                bail!("[keys.{context}] {keys:?}: unknown action {action:?}");
+            };
+            let seq = parse_seq(keys).with_context(|| format!("[keys.{context}] {keys:?}"))?;
+            out.push((*name, (keys.clone(), seq, action)));
+        }
+    }
+    for (context, _) in CONTEXTS {
+        let bindings = Keymap::build(context, &out).bindings;
+        for (a, seq, _) in &bindings {
+            if let Some((b, _, _)) = bindings
+                .iter()
+                .find(|(_, s, _)| s != seq && s.starts_with(seq))
+            {
+                bail!("{a:?} hides {b:?} in {context}; unbind one with \"none\"");
+            }
+        }
+    }
+    Ok(out)
+}
+
 impl Default for Keymap {
     fn default() -> Keymap {
-        Keymap::with(&[])
+        Keymap::new("global")
     }
 }
 
 impl Keymap {
-    /// The defaults with `overrides`, which replace the defaults on the same keys.
-    pub fn with(overrides: &[(&'static str, &'static str)]) -> Keymap {
-        let defaults = DEFAULTS
+    /// The defaults of `context`, then the user's `global` and `context` bindings; a
+    /// later binding replaces an earlier one on the same keys.
+    pub fn new(context: &str) -> Keymap {
+        assert!(CONTEXTS.iter().any(|(c, _)| *c == context), "{context}");
+        Keymap::build(context, USER.get().map_or(&[], Vec::as_slice))
+    }
+
+    fn build(context: &str, user: &[(&str, Binding)]) -> Keymap {
+        let builtin = CONTEXTS
             .iter()
-            .filter(|(keys, _)| overrides.iter().all(|(k, _)| k != keys));
-        let bindings = overrides
-            .iter()
-            .chain(defaults)
-            .map(|(keys, action)| (*keys, keys.split(' ').map(parse).collect(), *action))
-            .collect();
+            .filter(|(c, _)| *c == context)
+            .flat_map(|(_, b)| b.iter());
+        let builtin = DEFAULTS.iter().chain(builtin).map(|(keys, action)| {
+            let seq = parse_seq(keys).expect("built-in keys");
+            (keys.to_string(), seq, *action)
+        });
+        let user = ["global", context]
+            .into_iter()
+            .flat_map(|c| user.iter().filter(move |(u, _)| *u == c))
+            .map(|(_, b)| b.clone());
+        let mut bindings: Vec<Binding> = Vec::new();
+        for (keys, seq, action) in builtin.chain(user) {
+            bindings.retain(|(_, s, _)| *s != seq);
+            if action != "none" {
+                bindings.push((keys, seq, action));
+            }
+        }
         Keymap {
             bindings,
             pending: Vec::new(),
         }
     }
 
-    /// The keys bound to `action`, such as `g g`.
+    /// The keys bound to `action`, such as `g g`, or `j,J` for two bindings.
     pub fn keys(&self, action: &str) -> String {
         self.bindings
             .iter()
             .filter(|(_, _, a)| *a == action)
-            .map(|(keys, _, _)| *keys)
+            .map(|(keys, _, _)| keys.as_str())
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(",")
     }
 
     pub fn feed(&mut self, key: KeyEvent) -> Feed {
@@ -99,24 +194,112 @@ impl Keymap {
     }
 }
 
-/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab` or `S-Tab`.
-fn parse(key: &str) -> Key {
-    match key {
-        "Esc" => return (KeyCode::Esc, KeyModifiers::NONE),
-        "Enter" => return (KeyCode::Enter, KeyModifiers::NONE),
-        "Tab" => return (KeyCode::Tab, KeyModifiers::NONE),
-        "S-Tab" => return (KeyCode::BackTab, KeyModifiers::NONE),
-        "Space" => return (KeyCode::Char(' '), KeyModifiers::NONE),
-        _ => {}
+/// Keys separated by spaces, such as `g g`.
+fn parse_seq(keys: &str) -> Result<Vec<Key>> {
+    let seq = keys
+        .split_whitespace()
+        .map(parse)
+        .collect::<Result<Vec<_>>>()?;
+    if seq.is_empty() {
+        bail!("no keys");
     }
-    match key.strip_prefix("C-") {
-        Some(k) => (
-            KeyCode::Char(k.chars().next().unwrap()),
-            KeyModifiers::CONTROL,
-        ),
-        None => (
-            KeyCode::Char(key.chars().next().unwrap()),
-            KeyModifiers::NONE,
-        ),
+    Ok(seq)
+}
+
+/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab` or `S-Tab`.
+fn parse(key: &str) -> Result<Key> {
+    let none = KeyModifiers::NONE;
+    Ok(match key {
+        "Esc" => (KeyCode::Esc, none),
+        "Enter" => (KeyCode::Enter, none),
+        "Tab" => (KeyCode::Tab, none),
+        "S-Tab" => (KeyCode::BackTab, none),
+        "Space" => (KeyCode::Char(' '), none),
+        _ => {
+            let (k, modifiers) = match key.strip_prefix("C-") {
+                Some(k) => (k, KeyModifiers::CONTROL),
+                None => (key, none),
+            };
+            let mut chars = k.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                bail!("unknown key {key:?}");
+            };
+            (KeyCode::Char(c), modifiers)
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(rows: &[(&str, &str, &str)]) -> Keys {
+        let mut out = Keys::new();
+        for (context, keys, action) in rows {
+            out.entry(context.to_string())
+                .or_default()
+                .insert(keys.to_string(), action.to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn layers() {
+        let user = load(&keys(&[
+            ("global", "J", "down"),
+            ("global", "d", "none"),
+            ("review", "J", "next_file"),
+            ("picker", "x", "delete"),
+        ]))
+        .unwrap();
+        let review = Keymap::build("review", &user);
+        assert_eq!(review.keys("prev_file"), "h");
+        assert_eq!(review.keys("focus_left"), "");
+        assert_eq!(review.keys("down"), "j");
+        assert_eq!(review.keys("next_file"), "l,J");
+        assert_eq!(review.keys("delete"), "");
+        let picker = Keymap::build("picker", &user);
+        assert_eq!(picker.keys("down"), "j,J");
+        assert_eq!(picker.keys("delete"), "x");
+        assert_eq!(picker.keys("focus_left"), "h");
+    }
+
+    #[test]
+    fn defaults_bind_as_built_ins() {
+        let rows: Vec<_> = defaults()
+            .flat_map(|(c, b)| b.iter().map(move |(k, a)| (c, *k, *a)))
+            .collect();
+        let user = load(&keys(&rows)).unwrap();
+        for (context, _) in CONTEXTS {
+            let sorted = |keymap: Keymap| {
+                let mut b: Vec<_> = keymap
+                    .bindings
+                    .into_iter()
+                    .map(|(k, _, a)| (k, a))
+                    .collect();
+                b.sort();
+                b
+            };
+            assert_eq!(
+                sorted(Keymap::build(context, &user)),
+                sorted(Keymap::build(context, &[])),
+                "{context}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects() {
+        for row in [
+            ("nope", "j", "down"),
+            ("review", "j", "nope"),
+            ("review", "Foo", "down"),
+            ("review", "C-", "down"),
+            ("review", " ", "down"),
+            ("review", "d d", "delete"),
+            ("global", "g", "top"),
+        ] {
+            assert!(load(&keys(&[row])).is_err(), "{row:?}");
+        }
     }
 }

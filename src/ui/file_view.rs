@@ -72,7 +72,7 @@ impl FileView {
         };
         let doc = Doc::file(ctx.session.end.clone(), link.path.clone(), &text);
         let (start, end) = (doc.line_row(link.start), doc.line_row(link.end));
-        let keymap = Keymap::default();
+        let keymap = Keymap::new("file");
         Ok(Some(FileView {
             doc,
             label: link.label(),
@@ -260,7 +260,7 @@ impl LinkPicker {
         LinkPicker {
             popup: Popup::new("Links", rows),
             links,
-            keymap: Keymap::default(),
+            keymap: Keymap::new("popup"),
         }
     }
 

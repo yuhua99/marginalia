@@ -26,7 +26,7 @@ impl SettingsPopup {
         SettingsPopup {
             list: list(look.theme, look.wrap, None),
             themes: None,
-            keymap: Keymap::default(),
+            keymap: Keymap::new("popup"),
         }
     }
 
@@ -106,6 +106,7 @@ fn save(theme: &Theme, wrap: bool) -> Result<()> {
     Settings {
         theme: theme.name.to_string(),
         wrap,
+        ..Settings::default()
     }
     .save()
 }

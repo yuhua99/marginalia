@@ -95,12 +95,7 @@ const DIFF: usize = 2;
 
 impl Review {
     pub fn new() -> Review {
-        let keymap = Keymap::with(&[
-            ("h", "prev_file"),
-            ("l", "next_file"),
-            ("Tab", "next_focus"),
-            ("S-Tab", "prev_focus"),
-        ]);
+        let keymap = Keymap::new("review");
         Review {
             commits: Sidebar::default(),
             files: Sidebar::files(),

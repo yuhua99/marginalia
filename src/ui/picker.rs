@@ -149,7 +149,7 @@ struct Picker {
 impl Picker {
     fn new(pick: &Pick) -> Result<Picker> {
         let commits = pick.repo.recent("HEAD", COMMITS)?;
-        let keymap = Keymap::default();
+        let keymap = Keymap::new("picker");
         Ok(Picker {
             exhausted: commits.len() < COMMITS,
             commits,

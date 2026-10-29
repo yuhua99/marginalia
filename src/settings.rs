@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use toml_edit::{DocumentMut, Item, Value};
+use toml_edit::{DocumentMut, Item, Table, Value};
 
+use crate::keymap::{self, Keys};
 use crate::store::xdg_dir;
 
 /// What the `s` popup changes, kept in `$XDG_CONFIG_HOME/marginalia/settings.toml`.
@@ -16,6 +17,8 @@ pub struct Settings {
     pub theme: String,
     /// Wrap long code lines; off cuts them at the edge.
     pub wrap: bool,
+    /// `[keys.<context>]`, which `s` leaves as written.
+    pub keys: Keys,
 }
 
 impl Default for Settings {
@@ -23,16 +26,22 @@ impl Default for Settings {
         Settings {
             theme: String::new(),
             wrap: true,
+            keys: Keys::new(),
         }
     }
 }
 
 impl Settings {
-    /// The defaults when there is no file yet.
+    /// The defaults when there is no file yet, which writes them with the built-in keys.
     pub fn load() -> Result<Settings> {
         let path = path()?;
-        let Some(text) = read(&path)? else {
-            return Ok(Settings::default());
+        let text = match read(&path)? {
+            Some(text) => text,
+            None => {
+                let text = defaults().to_string();
+                write(&path, &text)?;
+                text
+            }
         };
         toml_edit::de::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
@@ -46,10 +55,29 @@ impl Settings {
             .with_context(|| format!("parse {}", path.display()))?;
         set(&mut doc, "theme", self.theme.as_str());
         set(&mut doc, "wrap", self.wrap);
-        let dir = path.parent().expect("settings dir");
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        fs::write(&path, doc.to_string()).with_context(|| format!("write {}", path.display()))
+        write(&path, &doc.to_string())
     }
+}
+
+/// A new file: the default settings and the built-in keys.
+fn defaults() -> DocumentMut {
+    let settings = Settings::default();
+    let mut doc = DocumentMut::new();
+    set(&mut doc, "theme", settings.theme.as_str());
+    set(&mut doc, "wrap", settings.wrap);
+    let mut keys = Table::new();
+    keys.set_implicit(true);
+    for (context, bindings) in keymap::defaults() {
+        keys[context] = Item::Table(bindings.iter().copied().collect());
+    }
+    doc["keys"] = Item::Table(keys);
+    doc
+}
+
+fn write(path: &Path, text: &str) -> Result<()> {
+    let dir = path.parent().expect("settings dir");
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }
 
 fn path() -> Result<PathBuf> {

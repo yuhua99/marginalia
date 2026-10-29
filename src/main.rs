@@ -186,6 +186,7 @@ fn tui(
     mut on_quit: Option<String>,
 ) -> Result<()> {
     let settings = settings::Settings::load()?;
+    keymap::init(&settings.keys)?;
     let mut look = app::Look {
         theme: theme::find(&settings.theme),
         wrap: settings.wrap,
