@@ -40,8 +40,6 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("?", "help"),
     ("s", "settings"),
     ("/", "filter"),
-    ("X", "delete_session"),
-    ("R", "rename_session"),
 ];
 
 impl Default for Keymap {
