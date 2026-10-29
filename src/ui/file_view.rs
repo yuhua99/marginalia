@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ops::{Range, RangeInclusive};
 
 use anyhow::Result;
@@ -207,8 +207,41 @@ impl Link {
     }
 }
 
+/// Paths of the files at the range end, which links in threads may open.
+pub struct Files {
+    /// The paths by their file name.
+    by_name: HashMap<String, Vec<String>>,
+}
+
+impl Files {
+    pub fn new(paths: impl IntoIterator<Item = String>) -> Files {
+        let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+        for path in paths {
+            let name = path.rsplit_once('/').map_or(path.as_str(), |(_, n)| n);
+            by_name.entry(name.to_string()).or_default().push(path);
+        }
+        Files { by_name }
+    }
+
+    /// The path that is `path`, or else the only one ending in `/path`.
+    pub fn find(&self, path: &str) -> Option<&str> {
+        let name = path.rsplit_once('/').map_or(path, |(_, n)| n);
+        let paths = self.by_name.get(name)?;
+        if let Some(p) = paths.iter().find(|p| *p == path) {
+            return Some(p);
+        }
+        let mut hits = paths
+            .iter()
+            .filter(|p| p.strip_suffix(path).is_some_and(|rest| rest.ends_with('/')));
+        match (hits.next(), hits.next()) {
+            (Some(p), None) => Some(p),
+            _ => None,
+        }
+    }
+}
+
 /// The links in `text` to paths in `files`, with their byte ranges in `text`.
-pub fn links(text: &str, files: &HashSet<String>) -> Vec<(Range<usize>, Link)> {
+pub fn links(text: &str, files: &Files) -> Vec<(Range<usize>, Link)> {
     text.split(|c: char| !(c.is_alphanumeric() || "_./-:".contains(c)))
         .filter_map(|token| {
             let token = token.trim_end_matches(['.', ':']);
@@ -216,9 +249,7 @@ pub fn links(text: &str, files: &HashSet<String>) -> Vec<(Range<usize>, Link)> {
             let mut parts = token.split(':');
             let path = parts.next()?.trim_start_matches("./");
             let lines = parts.next()?;
-            if !files.contains(path) {
-                return None;
-            }
+            let path = files.find(path)?;
             let (start, end) = match lines.split_once('-') {
                 Some((a, b)) => (a.parse().ok()?, b.parse().ok()?),
                 None => {
@@ -237,7 +268,7 @@ pub fn links(text: &str, files: &HashSet<String>) -> Vec<(Range<usize>, Link)> {
 }
 
 /// The links in thread `t`, each once, in order.
-pub fn thread_links(t: &Thread, files: &HashSet<String>) -> Vec<Link> {
+pub fn thread_links(t: &Thread, files: &Files) -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
     for (_, link) in t.messages.iter().flat_map(|m| links(&m.body, files)) {
         if !out.contains(&link) {
@@ -281,5 +312,42 @@ impl LinkPicker {
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.popup.render(f, area, theme);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find() {
+        let files = Files::new(
+            [
+                "src/a.rs",
+                "src/ui/a.rs",
+                "lib/a.rs",
+                "x/b.rs",
+                "b.rs",
+                "src/c.rs",
+            ]
+            .map(String::from),
+        );
+        assert_eq!(files.find("src/c.rs"), Some("src/c.rs"));
+        assert_eq!(files.find("c.rs"), Some("src/c.rs"));
+        assert_eq!(files.find("ui/a.rs"), Some("src/ui/a.rs"));
+        assert_eq!(files.find("a.rs"), None);
+        assert_eq!(files.find("b.rs"), Some("b.rs"));
+        assert_eq!(files.find("rc/c.rs"), None);
+        assert_eq!(files.find("d.rs"), None);
+    }
+
+    #[test]
+    fn links_resolve_suffixes() {
+        let files = Files::new(["src/x/controller.cpp".to_string()]);
+        let text = "see controller.cpp:294-296.";
+        let found = links(text, &files);
+        assert_eq!(found.len(), 1);
+        assert_eq!(&text[found[0].0.clone()], "controller.cpp:294-296");
+        assert_eq!(found[0].1.label(), "src/x/controller.cpp:294-296");
     }
 }

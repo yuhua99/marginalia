@@ -1,6 +1,6 @@
 mod parse;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -165,7 +165,7 @@ impl Repo {
     }
 
     /// Paths of the files at `rev`, leaving out submodules.
-    pub fn files(&mut self, rev: &str) -> Result<HashSet<String>> {
+    pub fn files(&mut self, rev: &str) -> Result<Vec<String>> {
         let object = self.object(rev)?;
         let out = run(&mut self.git(&["ls-tree", "-r", "-z", &object]))?;
         // `<mode> <type> <object>\t<path>` per entry.

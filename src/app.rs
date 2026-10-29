@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -15,6 +14,7 @@ use crate::session::{Anchor, Session};
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::ui;
+use crate::ui::file_view::Files;
 use crate::ui::review::Review;
 
 /// State the review's layers share; layers keep only their own UI state.
@@ -34,8 +34,7 @@ pub struct Ctx {
     pub shown: Shown,
     pub highlighter: Highlighter,
     pub look: Look,
-    /// Paths of the files at the range end, which links in threads may open.
-    pub files: HashSet<String>,
+    pub files: Files,
 }
 
 /// What the settings change; the picker and the review share it.
@@ -103,7 +102,7 @@ impl Ctx {
             views.push(View::Uncommitted);
         }
         let doc = load(&mut repo, &session, &views, Shown::All)?;
-        let files = repo.files(&session.end)?;
+        let files = Files::new(repo.files(&session.end)?);
         Ok(Ctx {
             session,
             repo,
