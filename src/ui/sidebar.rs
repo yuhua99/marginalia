@@ -210,6 +210,8 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
                 text,
             }
         })
+        // Newest first, as in the picker.
+        .rev()
         .collect()
 }
 
