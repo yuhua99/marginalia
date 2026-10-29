@@ -4,22 +4,34 @@ use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 
 use crate::app::{Component, Look, Outcome};
-use crate::keymap::{self, Feed, Keymap};
+use crate::keymap::{Feed, Keymap};
 use crate::ui::popup::Popup;
 
 /// Actions shown on one help row, and what they do there.
 pub type Entry = (&'static [&'static str], &'static str);
 
-/// The keys of `entries` as a popup; actions on one row join their keys with `/`.
-fn popup(entries: &[Entry]) -> Popup {
+/// The keys of `actions` in `keymap`, joined with `/`.
+fn keys(actions: &[&str], keymap: &Keymap) -> String {
+    let keys: Vec<_> = actions.iter().map(|a| keymap.keys(a)).collect();
+    keys.join("/")
+}
+
+/// The keys of `entries` as a popup.
+fn popup(entries: &[Entry], keymap: &Keymap) -> Popup {
     let rows = entries
         .iter()
-        .map(|(actions, text)| {
-            let keys: Vec<_> = actions.iter().map(|a| keymap::keys(a)).collect();
-            (keys.join("/"), text.to_string())
-        })
+        .map(|(actions, text)| (keys(actions, keymap), text.to_string()))
         .collect();
     Popup::new("Keys", rows)
+}
+
+/// The keys of `entries` on one footer line, sequences such as `g g` written `gg`.
+pub fn hints(entries: &[Entry], keymap: &Keymap) -> String {
+    let hints: Vec<_> = entries
+        .iter()
+        .map(|(actions, text)| format!("{} {text}", keys(actions, keymap).replace(' ', "")))
+        .collect();
+    format!(" {}", hints.join("  "))
 }
 
 /// `?`: the keys of the layer below; `?`, `q`, `Esc` or `h` close it.
@@ -29,9 +41,10 @@ pub struct Help {
 }
 
 impl Help {
-    pub fn new(entries: &[Entry]) -> Help {
+    /// The keys of `entries` as `keymap` binds them.
+    pub fn new(entries: &[Entry], keymap: &Keymap) -> Help {
         Help {
-            popup: popup(entries),
+            popup: popup(entries, keymap),
             keymap: Keymap::default(),
         }
     }
