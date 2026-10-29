@@ -11,6 +11,8 @@ pub struct Scroll {
     height: usize,
     /// Lines of the cursor row below the screen, as of the last `place`.
     overflow: usize,
+    /// The next `place` puts the cursor row mid-screen.
+    center: bool,
 }
 
 impl Scroll {
@@ -20,6 +22,14 @@ impl Scroll {
             cursor: row,
             top: row,
             ..Scroll::default()
+        }
+    }
+
+    /// The cursor on `row`, mid-screen once placed.
+    pub fn centered(row: usize) -> Scroll {
+        Scroll {
+            center: true,
+            ..Scroll::at(row)
         }
     }
 
@@ -63,6 +73,18 @@ impl Scroll {
         let hc = height(cursor);
         let tall = hc > h;
         let need = if tall { 1 } else { hc };
+        if self.center {
+            // Half the lines left over above the cursor row.
+            self.center = false;
+            let above = h.saturating_sub(hc) / 2;
+            let mut used = 0;
+            self.top = cursor;
+            while self.top > 0 && used < above {
+                self.top -= 1;
+                used += height(self.top);
+            }
+            self.off = used.saturating_sub(above);
+        }
         if cursor < self.top {
             // Above the screen: down to its end.
             self.top = cursor;
@@ -149,6 +171,17 @@ mod tests {
         let mut s = Scroll::at(1);
         s.place(3, 2, |i| [1, 5][i], true);
         assert_eq!(s.top(), (1, 2));
+    }
+
+    #[test]
+    fn centers_the_cursor_row() {
+        let mut s = Scroll::centered(5);
+        s.place(5, 10, |_| 1, false);
+        assert_eq!(s.top(), (3, 0));
+        // Only once.
+        s.act("down", 10);
+        s.place(5, 10, |_| 1, false);
+        assert_eq!(s.top(), (3, 0));
     }
 
     #[test]
