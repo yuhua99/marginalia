@@ -1,9 +1,12 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::repo::{self, Repo, short};
+use crate::doc::carry;
+use crate::repo::{self, FileDiff, Repo, short};
 
 /// The widest a session name may be, in columns.
 pub const NAME_MAX: usize = 32;
@@ -28,9 +31,22 @@ pub struct Thread {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub messages: Vec<Message>,
-    /// The anchored lines no longer match `text`, as of `Session::check_outdated`.
+    /// The anchored lines changed since, as of `Session::place`.
     #[serde(skip)]
     pub outdated: bool,
+    /// Where the anchored lines are in the whole range, as of `Session::place`; None
+    /// for other anchors, or lines that changed since.
+    #[serde(skip)]
+    pub place: Option<Place>,
+}
+
+/// Lines in the whole range: on the end, or on the base for deleted ones.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub file: String,
+    pub start: u32,
+    pub end: u32,
+    pub base: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -180,7 +196,8 @@ impl Session {
                 bail!("invalid line range {start}-{end}");
             }
             let rev = rev.get_or_insert_with(|| self.end.clone());
-            // Commits become shas; only the range end and the worktree states stay symbolic.
+            // Commits become shas; the range end and the worktree states stay symbolic
+            // until the owner is found.
             if *rev != self.end && !repo::worktree(rev) {
                 *rev = repo.commit(rev)?;
             }
@@ -191,6 +208,10 @@ impl Session {
             if owner.is_none() {
                 let commits = self.commits(repo)?;
                 *owner = self.owner(repo, &commits, rev, file, *end)?;
+            }
+            // Then pinned too, so the lines can be carried as the end moves.
+            if !repo::sha(rev) {
+                *rev = repo.pin(rev)?;
             }
         }
         if let Anchor::Commit { commit } = &mut anchor {
@@ -203,7 +224,7 @@ impl Session {
             .filter_map(|t| t.id[1..].parse::<usize>().ok())
             .max()
             .unwrap_or(0);
-        self.threads.push(Thread {
+        let mut thread = Thread {
             id: format!("t{}", n + 1),
             anchor,
             text,
@@ -212,7 +233,12 @@ impl Session {
                 body,
             }],
             outdated: false,
-        });
+            place: None,
+        };
+        let pinned = repo.pin(&self.end)?;
+        (thread.place, thread.outdated) =
+            self.locate(repo, &thread, &pinned, &mut HashMap::new())?;
+        self.threads.push(thread);
         Ok(())
     }
 
@@ -316,7 +342,8 @@ impl Session {
     }
 
     /// The session as JSON, with derived fields added to each thread.
-    /// `waiting_on` is `agent` or null; `outdated` is as of `check_outdated`.
+    /// `waiting_on` is `agent` or null; `outdated` and `location` (where it is now)
+    /// are as of `place`.
     pub fn view(&self) -> Result<Value> {
         let mut v = serde_json::to_value(self)?;
         for (t, tv) in self
@@ -326,29 +353,98 @@ impl Session {
         {
             tv["waiting_on"] = t.waiting_on_agent().then_some("agent").into();
             tv["outdated"] = t.outdated.into();
+            tv["location"] = self.location(t).into();
         }
         Ok(v)
     }
 
-    /// Sets each thread's `outdated`: its anchored lines no longer match the stored `text`.
-    pub fn check_outdated(&mut self, repo: &mut Repo) -> Result<()> {
-        for t in &mut self.threads {
-            t.outdated = match &t.anchor {
-                Anchor::Lines {
-                    rev: Some(rev),
-                    file,
-                    start,
-                    end,
-                    ..
-                } if t.text.is_some() => snippet(repo, rev, file, *start, *end)? != t.text,
-                _ => false,
-            };
+    /// Sets each thread's `place` and `outdated`: lines written at another rev are
+    /// carried to the range end along the diff from there, outdated when it changes
+    /// them. Symbolic revs (`HEAD`, `staged`, `unstaged`, of threads from before
+    /// revs were pinned) stand for the end as is, outdated when `text` no longer matches.
+    pub fn place(&mut self, repo: &mut Repo) -> Result<()> {
+        let pinned = repo.pin(&self.end)?;
+        let mut diffs = HashMap::new();
+        for i in 0..self.threads.len() {
+            let (place, outdated) = self.locate(repo, &self.threads[i], &pinned, &mut diffs)?;
+            let t = &mut self.threads[i];
+            (t.place, t.outdated) = (place, outdated);
         }
         Ok(())
     }
 
-    /// Where a thread is anchored, e.g. `src/a.rs:3-5`, plus `@rev` when not the range end.
-    pub fn location(&self, anchor: &Anchor) -> String {
+    /// `place` and `outdated` of thread `t`, the end pinned as `pinned`; `diffs` keeps
+    /// the diff from each rev to the end.
+    fn locate(
+        &self,
+        repo: &mut Repo,
+        t: &Thread,
+        pinned: &str,
+        diffs: &mut HashMap<String, Vec<FileDiff>>,
+    ) -> Result<(Option<Place>, bool)> {
+        let Anchor::Lines {
+            rev: Some(rev),
+            file,
+            start,
+            end,
+            owner,
+        } = &t.anchor
+        else {
+            return Ok((None, false));
+        };
+        let here = Place {
+            file: file.clone(),
+            start: *start,
+            end: *end,
+            base: false,
+        };
+        if *rev == self.base {
+            return Ok((Some(Place { base: true, ..here }), false));
+        }
+        if !repo::sha(rev) {
+            let changed = t.text.is_some() && snippet(repo, rev, file, *start, *end)? != t.text;
+            return Ok(((*rev == self.end).then_some(here), changed));
+        }
+        if rev == pinned {
+            return Ok((Some(here), false));
+        }
+        // Lines a commit of the range deletes are on no side of the whole range, as written.
+        if owner.as_ref().is_some_and(|o| o.deleted) {
+            return Ok((None, false));
+        }
+        if repo.read(rev, file)?.is_none() {
+            // Gone with rewritten history: nothing to carry from.
+            return Ok((None, true));
+        }
+        if !diffs.contains_key(rev) {
+            let diff = repo.diff(rev, &self.end, 0)?;
+            diffs.insert(rev.clone(), diff);
+        }
+        Ok(match carry(&diffs[rev], file, *start, *end) {
+            Some((file, start, end)) => (
+                Some(Place {
+                    file,
+                    start,
+                    end,
+                    ..here
+                }),
+                false,
+            ),
+            None => (None, true),
+        })
+    }
+
+    /// Where thread `t` is, e.g. `src/a.rs:3-5`: where its lines are now, plus `@base`
+    /// on the base; else where it was written, as `anchor_location`.
+    pub fn location(&self, t: &Thread) -> String {
+        match &t.place {
+            Some(p) => format!("{}:{}", p.file, self.place_lines(p)),
+            None => self.anchor_location(&t.anchor),
+        }
+    }
+
+    /// Where `anchor` points, e.g. `src/a.rs:3-5`, plus `@rev` when not the range end.
+    pub fn anchor_location(&self, anchor: &Anchor) -> String {
         match anchor {
             Anchor::Lines {
                 file,
@@ -364,14 +460,25 @@ impl Session {
     }
 
     /// `location` for a thread shown under what it anchors to: lines as `L3-5`, a file as `file`.
-    pub fn inline_location(&self, anchor: &Anchor) -> String {
-        match anchor {
-            Anchor::Lines {
-                rev, start, end, ..
-            } => format!("L{}", self.lines(rev, *start, *end)),
-            Anchor::File { .. } => "file".into(),
-            _ => self.location(anchor),
+    pub fn inline_location(&self, t: &Thread) -> String {
+        match (&t.place, &t.anchor) {
+            (Some(p), _) => format!("L{}", self.place_lines(p)),
+            (
+                None,
+                Anchor::Lines {
+                    rev, start, end, ..
+                },
+            ) => {
+                format!("L{}", self.lines(rev, *start, *end))
+            }
+            (None, Anchor::File { .. }) => "file".into(),
+            _ => self.location(t),
         }
+    }
+
+    fn place_lines(&self, p: &Place) -> String {
+        let rev = p.base.then(|| self.base.clone());
+        self.lines(&rev, p.start, p.end)
     }
 
     /// Lines `3` or `3-5`, plus `@rev` when not the range end.
@@ -398,7 +505,7 @@ impl Session {
                 continue;
             }
             any = true;
-            out.push_str(&format!("\n## {} / {}\n", t.id, self.location(&t.anchor)));
+            out.push_str(&format!("\n## {} / {}\n", t.id, self.location(t)));
             for m in &t.messages {
                 out.push_str(&format!(
                     "- **{}**: {}\n",
@@ -431,10 +538,31 @@ fn snippet(repo: &mut Repo, rev: &str, file: &str, start: u32, end: u32) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Commits `content` as file `f`; its sha.
+    fn commit(dir: &Path, content: &str) -> String {
+        std::fs::write(dir.join("f"), content).unwrap();
+        git(dir, &["add", "f"]);
+        git(dir, &["commit", "-qm", "c"]);
+        git(dir, &["rev-parse", "HEAD"])
+    }
 
     /// A temporary repo committing each of `versions` of file `f` in turn; with its
     /// directory and the shas, oldest first.
@@ -442,26 +570,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mrg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let git = |args: &[&str]| {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-                .args(["-c", "commit.gpgsign=false"])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}");
-            String::from_utf8(out.stdout).unwrap().trim().to_string()
-        };
-        git(&["init", "-q"]);
-        let mut shas = Vec::new();
-        for v in versions {
-            std::fs::write(dir.join("f"), v).unwrap();
-            git(&["add", "f"]);
-            git(&["commit", "-qm", "c"]);
-            shas.push(git(&["rev-parse", "HEAD"]));
-        }
+        git(&dir, &["init", "-q"]);
+        let shas = versions.iter().map(|v| commit(&dir, v)).collect();
         let mut repo = Repo::at(&dir).unwrap();
         let objects = dir.with_extension("mrg").join("objects");
         let _ = std::fs::remove_dir_all(dir.with_extension("mrg"));
@@ -560,6 +670,108 @@ mod tests {
             &s.threads.last().unwrap().anchor,
             Anchor::Lines { owner: Some(o), .. } if o.commit == "unstaged"
         ));
+    }
+
+    fn lines(rev: Option<&str>, line: u32) -> Anchor {
+        Anchor::Lines {
+            rev: rev.map(Into::into),
+            file: "f".into(),
+            start: line,
+            end: line,
+            owner: None,
+        }
+    }
+
+    /// Where thread `t` is placed, as (start, base), and whether it is outdated.
+    fn at(t: &Thread) -> (Option<(u32, bool)>, bool) {
+        (t.place.as_ref().map(|p| (p.start, p.base)), t.outdated)
+    }
+
+    #[test]
+    fn threads_follow_the_end() {
+        let (mut repo, dir, c) = repo("follow", &VERSIONS[..2]);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "HEAD".into());
+        // b and c of a X b c d.
+        s.comment(lines(None, 3), "agent", "x".into(), &mut repo)
+            .unwrap();
+        s.comment(lines(None, 4), "agent", "x".into(), &mut repo)
+            .unwrap();
+        // Written at the commit HEAD was, not at HEAD.
+        assert!(matches!(&s.threads[0].anchor, Anchor::Lines { rev: Some(r), .. } if *r == c[1]));
+        // a of the base.
+        s.comment(lines(Some(&c[0]), 1), "agent", "x".into(), &mut repo)
+            .unwrap();
+        // From before revs were pinned: b, as HEAD.
+        s.comment(lines(None, 3), "agent", "x".into(), &mut repo)
+            .unwrap();
+        if let Anchor::Lines { rev, .. } = &mut s.threads[3].anchor {
+            *rev = Some("HEAD".into());
+        }
+        // Later commits delete c, then add a line above; read by another run, as the
+        // range is listed once per run.
+        commit(&dir, VERSIONS[2]);
+        commit(&dir, VERSIONS[3]);
+        let mut repo = Repo::at(&dir).unwrap();
+        repo.use_objects(dir.with_extension("mrg").join("objects"))
+            .unwrap();
+        // c, deleted, as its deleter's view writes it: at its parent.
+        s.comment(lines(Some(&c[1]), 4), "agent", "x".into(), &mut repo)
+            .unwrap();
+        s.place(&mut repo).unwrap();
+        let got: Vec<_> = s.threads.iter().map(at).collect();
+        assert_eq!(
+            got,
+            [
+                (Some((4, false)), false),
+                (None, true),
+                (Some((1, true)), false),
+                // Read at HEAD as is: X now, not b.
+                (Some((3, false)), true),
+                (None, false),
+            ]
+        );
+        assert_eq!(s.location(&s.threads[0]), "f:4");
+        assert_eq!(s.location(&s.threads[1]), format!("f:4 @{}", short(&c[1])));
+        assert_eq!(s.location(&s.threads[2]), format!("f:1 @{}", short(&c[0])));
+    }
+
+    #[test]
+    fn worktree_threads_follow_edits() {
+        let (mut repo, dir, c) = repo("worktree", &VERSIONS[..1]);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "unstaged".into());
+        std::fs::write(
+            dir.join("f"),
+            "a
+b
+c
+Z
+d
+",
+        )
+        .unwrap();
+        s.comment(lines(None, 3), "agent", "x".into(), &mut repo)
+            .unwrap();
+        s.comment(lines(None, 4), "agent", "x".into(), &mut repo)
+            .unwrap();
+        // Pinned to the tree written for the worktree.
+        assert!(matches!(&s.threads[0].anchor, Anchor::Lines { rev: Some(r), .. } if repo::sha(r)));
+        // Another run: a line above, Z changed.
+        std::fs::write(
+            dir.join("f"),
+            "Y
+a
+b
+c
+W
+d
+",
+        )
+        .unwrap();
+        repo.use_objects(dir.with_extension("mrg").join("objects"))
+            .unwrap();
+        s.place(&mut repo).unwrap();
+        assert_eq!(at(&s.threads[0]), (Some((4, false)), false));
+        assert_eq!(at(&s.threads[1]), (None, true));
     }
 
     #[test]

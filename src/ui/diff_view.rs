@@ -608,9 +608,9 @@ fn thread_lines(
     };
     let inner = width.saturating_sub(INDENT);
     let place = if inline {
-        ctx.session.inline_location(&t.anchor)
+        ctx.session.inline_location(t)
     } else {
-        ctx.session.location(&t.anchor)
+        ctx.session.location(t)
     };
     let mut header = format!("{}  {place}", t.id);
     if t.waiting_on_agent() {

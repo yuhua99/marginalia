@@ -239,6 +239,16 @@ impl Repo {
         Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
     }
 
+    /// An id for `rev` that does not move: the commit sha, or the tree of `staged` /
+    /// `unstaged` as of now.
+    pub fn pin(&mut self, rev: &str) -> Result<String> {
+        if worktree(rev) {
+            self.object(rev)
+        } else {
+            self.commit(rev)
+        }
+    }
+
     /// A tree-ish for `rev`: commits as is, `staged` / `unstaged` as a written tree.
     fn object(&mut self, rev: &str) -> Result<String> {
         if !worktree(rev) {
@@ -510,13 +520,14 @@ fn tip(end: &str) -> &str {
     if worktree(end) { "HEAD" } else { end }
 }
 
+/// `rev` is a full object id, not a name like `HEAD` or `unstaged`.
+pub fn sha(rev: &str) -> bool {
+    rev.len() >= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// A commit sha shortened for display; other revs as is.
 pub fn short(rev: &str) -> &str {
-    if rev.len() >= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
-        &rev[..7]
-    } else {
-        rev
-    }
+    if sha(rev) { &rev[..7] } else { rev }
 }
 
 /// The first line of `git blame --porcelain`: "<sha> <line there> <line here> <count>",
