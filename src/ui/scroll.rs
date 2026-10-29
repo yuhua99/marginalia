@@ -1,7 +1,7 @@
 use crate::ui::step;
 
 /// A cursor over rows of any height, and where the screen is in them: it starts `off`
-/// lines into row `top`, which only happens for a cursor row taller than the screen.
+/// lines into row `top`.
 #[derive(Default)]
 pub struct Scroll {
     pub cursor: usize,
@@ -9,8 +9,8 @@ pub struct Scroll {
     off: usize,
     /// Screen lines, as of the last `place`.
     height: usize,
-    /// The cursor row goes on below the screen, as of the last `place`.
-    overflow: bool,
+    /// Lines of the cursor row below the screen, as of the last `place`.
+    overflow: usize,
 }
 
 impl Scroll {
@@ -42,8 +42,8 @@ impl Scroll {
         let half = (self.height / 2).max(1);
         let scrolled = self.top == self.cursor && self.off > 0;
         match action {
-            "down" if self.overflow => self.off += 1,
-            "half_page_down" if self.overflow => self.off += half,
+            "down" if self.overflow > 0 => self.off += 1,
+            "half_page_down" if self.overflow > 0 => self.off += half.min(self.overflow),
             "up" if scrolled => self.off -= 1,
             "half_page_up" if scrolled => self.off = self.off.saturating_sub(half),
             _ => match step(self.cursor, action, len, self.height) {
@@ -54,42 +54,52 @@ impl Scroll {
         true
     }
 
-    /// Places a screen of `h` lines over `len` rows of `height(i)` lines so the cursor row
-    /// shows: whole if it fits, else from its start, or from its end with `from_end`.
+    /// Places a screen of `h` lines over `len` rows of `height(i)` lines, scrolling as little
+    /// as shows the cursor row: whole if it fits, else a line of it, or its end with `from_end`.
     pub fn place(&mut self, h: usize, len: usize, height: impl Fn(usize) -> usize, from_end: bool) {
         self.height = h;
         self.cursor = self.cursor.min(len.saturating_sub(1));
         let cursor = self.cursor;
+        let hc = height(cursor);
+        let tall = hc > h;
+        let need = if tall { 1 } else { hc };
         if cursor < self.top {
+            // Above the screen: down to its end.
             self.top = cursor;
+            self.off = hc - need;
+        }
+        // Scrolled on into the rows under the top one.
+        while self.top < cursor && self.off >= height(self.top) {
+            self.off -= height(self.top);
+            self.top += 1;
+        }
+        if self.top == cursor && !tall {
             self.off = 0;
         }
-        let mut bottom = 0;
-        for i in self.top..=cursor {
+        self.off = self.off.min(height(self.top) - 1);
+        let mut bottom = need;
+        for i in self.top..cursor {
             bottom += height(i);
             if bottom > h + self.off {
                 break;
             }
         }
-        if bottom > h + self.off && self.top != cursor {
+        if bottom > h + self.off {
+            // Below the screen: up to the bottom, under what fits of the rows above it.
             self.top = cursor;
-            self.off = 0;
-            let mut used = height(cursor);
-            while self.top > 0 && used + height(self.top - 1) <= h {
+            let mut used = need;
+            while self.top > 0 && used < h {
                 self.top -= 1;
                 used += height(self.top);
             }
+            self.off = used.saturating_sub(h);
         }
-        let top_height = height(self.top);
-        self.off = if self.top == cursor {
-            self.off.min(top_height.saturating_sub(h))
-        } else {
-            self.off.min(top_height - 1)
-        };
-        if from_end && self.top == cursor {
-            self.off = top_height.saturating_sub(h);
+        if from_end && tall {
+            self.top = cursor;
+            self.off = hc - h;
         }
-        self.overflow = self.top == cursor && top_height - self.off > h;
+        let end = (self.top..cursor).map(&height).sum::<usize>() + hc;
+        self.overflow = (end - self.off).saturating_sub(h);
     }
 }
 
@@ -119,19 +129,19 @@ mod tests {
     }
 
     #[test]
-    fn scrolls_a_tall_row_first() {
+    fn scrolls_a_tall_row_by_lines() {
         let rows = [1, 1, 5, 1];
         let mut s = Scroll::default();
         run(&mut s, &rows, &["down", "down"]);
-        assert_eq!((s.cursor, s.top()), (2, (2, 0)));
-        run(&mut s, &rows, &["down", "down"]);
+        assert_eq!((s.cursor, s.top()), (2, (0, 0)));
+        run(&mut s, &rows, &["down", "down", "down", "down"]);
         assert_eq!((s.cursor, s.top()), (2, (2, 2)));
-        // Its end is on screen: down moves on.
+        // Its end is on screen: down moves on a line.
         run(&mut s, &rows, &["down"]);
-        assert_eq!(s.cursor, 3);
-        // Back on it, from its start.
-        run(&mut s, &rows, &["up"]);
-        assert_eq!((s.cursor, s.top()), (2, (2, 0)));
+        assert_eq!((s.cursor, s.top()), (3, (2, 3)));
+        // Up the same way back.
+        run(&mut s, &rows, &["up", "up"]);
+        assert_eq!((s.cursor, s.top()), (2, (2, 2)));
     }
 
     #[test]

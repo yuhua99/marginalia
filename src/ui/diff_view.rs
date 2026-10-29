@@ -96,7 +96,7 @@ impl DiffView {
             .search
             .find(&mut ctx.doc, cursor, forward, &ctx.session.threads)
         {
-            self.scroll.cursor = row;
+            self.scroll.jump(row);
             // Expanding a file shifts the rows under it.
             if ctx.doc.len() != len {
                 self.mark = None;
@@ -158,7 +158,7 @@ impl DiffView {
             }
             "next_thread" | "prev_thread" => {
                 if let Some(i) = ctx.doc.next_thread(cursor, action == "next_thread") {
-                    self.scroll.cursor = i;
+                    self.scroll.jump(i);
                 }
             }
             "next_file" | "prev_file" => {
