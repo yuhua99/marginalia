@@ -462,7 +462,11 @@ mod tests {
             git(&["commit", "-qm", "c"]);
             shas.push(git(&["rev-parse", "HEAD"]));
         }
-        (Repo::at(&dir).unwrap(), dir, shas)
+        let mut repo = Repo::at(&dir).unwrap();
+        let objects = dir.with_extension("mrg").join("objects");
+        let _ = std::fs::remove_dir_all(dir.with_extension("mrg"));
+        repo.use_objects(objects).unwrap();
+        (repo, dir, shas)
     }
 
     /// The owner given to a comment on line `line` of `f` at `rev`, as (commit, deleted, line).
