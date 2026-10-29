@@ -65,7 +65,7 @@ impl FileView {
             doc,
             label: link.label(),
             linked: start..=end,
-            scroll: Scroll::at(start),
+            scroll: Scroll::centered(start),
             search: Query::default(),
             keymap: Keymap::default(),
             rows: Vec::new(),
