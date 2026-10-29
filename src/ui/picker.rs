@@ -25,7 +25,7 @@ use crate::ui::{boxed, check, clear, cursor_bar, dialog, step};
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
 
-const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  R rename  X delete session  Esc clear  s settings  ? help  q quit";
+const HINTS: &str = " j/k move  h/l pane  Space select  Enter open  / filter  e rename  d delete session  Esc clear  s settings  ? help  q quit";
 
 const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
@@ -35,8 +35,8 @@ const HELP: &[Entry] = &[
     (&["check"], "check rows of a new range"),
     (&["open"], "resume the session, or review the checked rows"),
     (&["filter"], "filter; Enter ends typing, Esc clears"),
-    (&["rename_session"], "rename the session; blank clears"),
-    (&["delete_session"], "delete the session"),
+    (&["edit"], "rename the session; blank clears"),
+    (&["delete"], "delete the session"),
     (&["cancel"], "clear the checks, then the filter"),
     (&["settings"], "settings: theme, wrap"),
     (&["help"], "this help"),
@@ -273,7 +273,7 @@ impl Component<Pick> for Picker {
                 }
             }
             "filter" => self.filter[pane].typing = true,
-            "delete_session" if !self.right => {
+            "delete" if !self.right => {
                 if let Some(i) = at {
                     let id = ctx.sessions[i].0.id.clone();
                     return Ok(Outcome::Push(Box::new(
@@ -287,7 +287,7 @@ impl Component<Pick> for Picker {
                     )));
                 }
             }
-            "rename_session" if !self.right => {
+            "edit" if !self.right => {
                 if let Some(i) = at {
                     return Ok(Outcome::Push(Box::new(Rename::new(&ctx.sessions[i].0))));
                 }
@@ -420,7 +420,7 @@ fn session_row<'a>(
     ]
 }
 
-/// `R`: the name being typed for session `id`; Enter saves it, Esc cancels.
+/// `e`: the name being typed for session `id`; Enter saves it, Esc cancels.
 struct Rename {
     id: String,
     text: TextArea<'static>,
