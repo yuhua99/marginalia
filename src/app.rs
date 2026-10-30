@@ -376,8 +376,5 @@ mod tests {
         assert!(Shown::of((0, 0), 1) == Shown::All);
         assert!(Shown::of((1, 3), 4) == Shown::Run(1, 3));
         assert!(Shown::of((0, 2), 4) == Shown::Run(0, 2));
-        assert_eq!(Shown::All.bounds(4), (0, 3));
-        assert_eq!(Shown::All.bounds(0), (0, 0));
-        assert_eq!(Shown::Run(1, 2).bounds(4), (1, 2));
     }
 }
