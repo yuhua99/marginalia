@@ -90,6 +90,7 @@ impl FileView {
     /// Moves to the next (or previous) search match.
     fn find(&mut self, forward: bool) {
         let cursor = self.scroll.cursor;
+        // `Doc::file` has no thread rows.
         if let Some(row) = self.search.find(&mut self.doc, cursor, forward, &[]) {
             self.scroll.cursor = row;
         }

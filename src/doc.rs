@@ -593,7 +593,7 @@ impl Doc {
         self.rows
             .iter()
             .position(|r| matches!(r, Row::File { file: f, .. } if *f == file))
-            .unwrap_or(0)
+            .expect("a file's header row")
     }
 
     /// Revs of the left and right side.
