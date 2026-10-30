@@ -2,7 +2,22 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::repo::{FileDiff, Repo, short};
+use crate::repo::{Commit, FileDiff, short};
+
+/// What a session needs of the code it reviews: a git repo, or a snapshot of one.
+pub trait Source {
+    /// Content of `path` at `rev`; None if absent.
+    fn read(&mut self, rev: &str, path: &str) -> Result<Option<String>>;
+    /// An id for `rev` that does not move.
+    fn pin(&mut self, rev: &str) -> Result<String>;
+    /// Full sha of commit `rev`.
+    fn commit(&self, rev: &str) -> Result<String>;
+    /// Commits in `base..end`, oldest first.
+    fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>>;
+    /// The diff without context of pinned revs `from` to `to`; None when what it
+    /// needs is gone.
+    fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>>;
+}
 
 /// Who the human in the TUI is; agents are anyone else.
 const USER: &str = "user";
@@ -122,7 +137,11 @@ impl Session {
     }
 
     /// Adds the agent's comments; returns the index of the thread each one went to.
-    pub fn apply(&mut self, comments: Vec<NewComment>, repo: &mut Repo) -> Result<Vec<usize>> {
+    pub fn apply(
+        &mut self,
+        comments: Vec<NewComment>,
+        repo: &mut dyn Source,
+    ) -> Result<Vec<usize>> {
         let mut touched = Vec::new();
         for c in comments {
             let NewComment {
@@ -198,7 +217,7 @@ impl Session {
         mut anchor: Anchor,
         from: &str,
         body: String,
-        repo: &mut Repo,
+        repo: &mut dyn Source,
     ) -> Result<()> {
         match &mut anchor {
             Anchor::Lines {
@@ -249,7 +268,7 @@ impl Session {
     }
 
     /// Shas of the range commits, oldest first.
-    fn commits(&self, repo: &mut Repo) -> Result<Vec<String>> {
+    fn commits(&self, repo: &mut dyn Source) -> Result<Vec<String>> {
         Ok(repo
             .commits(&self.base, &self.end)?
             .into_iter()
@@ -309,7 +328,7 @@ impl Session {
     }
 
     /// Sets each thread's `place` in the whole range, and `was` of lines that changed.
-    pub fn place(&mut self, repo: &mut Repo) -> Result<()> {
+    pub fn place(&mut self, repo: &mut dyn Source) -> Result<()> {
         let commits = self.commits(repo)?;
         let places = self.locate(repo, &self.base, &self.end, &commits)?;
         for (t, place) in self.threads.iter_mut().zip(places) {
@@ -335,7 +354,7 @@ impl Session {
     /// those commits above the files. None for the rest.
     pub fn locate(
         &self,
-        repo: &mut Repo,
+        repo: &mut dyn Source,
         left: &str,
         right: &str,
         commits: &[String],
@@ -426,7 +445,7 @@ impl Place {
 
 /// Where `anchor` is on `sides`, (pinned rev, old) tried in turn; see `Session::locate`.
 fn locate(
-    repo: &mut Repo,
+    repo: &mut dyn Source,
     anchor: &Anchor,
     sides: &[(String, bool)],
     commits: &[String],
@@ -530,7 +549,13 @@ fn side(old: bool) -> &'static str {
 }
 
 /// Lines `start..=end` of `file` at `rev`; None if the file or lines are absent.
-fn snippet(repo: &mut Repo, rev: &str, file: &str, start: u32, end: u32) -> Result<Option<String>> {
+fn snippet(
+    repo: &mut dyn Source,
+    rev: &str,
+    file: &str,
+    start: u32,
+    end: u32,
+) -> Result<Option<String>> {
     let Some(content) = repo.read(rev, file)? else {
         return Ok(None);
     };

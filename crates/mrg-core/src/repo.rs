@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 
 pub use parse::{FileDiff, Hunk, Kind, Line};
 
+use crate::session::Source;
+
 pub struct Repo {
     root: String,
     common_dir: String,
@@ -440,6 +442,28 @@ impl Repo {
                 .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", format!("\"{repo}\""));
         }
         cmd
+    }
+}
+
+impl Source for Repo {
+    fn read(&mut self, rev: &str, path: &str) -> Result<Option<String>> {
+        Repo::read(self, rev, path)
+    }
+
+    fn pin(&mut self, rev: &str) -> Result<String> {
+        Repo::pin(self, rev)
+    }
+
+    fn commit(&self, rev: &str) -> Result<String> {
+        Repo::commit(self, rev)
+    }
+
+    fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
+        Repo::commits(self, base, end)
+    }
+
+    fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>> {
+        Repo::changes(self, from, to)
     }
 }
 
