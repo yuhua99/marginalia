@@ -248,7 +248,7 @@ impl Component for Review {
         self.files.render(f, left, ctx, self.focus == FILES);
         let block = boxed(
             Span::styled(
-                header(ctx, self.diff.current_file(ctx)) + &self.diff.search_title(),
+                header(ctx, self.diff.current_file(ctx)) + &self.diff.search_title(ctx),
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             self.focus == DIFF,

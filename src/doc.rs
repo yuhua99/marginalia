@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::{Range, RangeInclusive};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use similar::{ChangeTag, TextDiff};
@@ -25,6 +26,14 @@ pub struct Doc {
     /// Where each of the session threads is here, and so goes, as of `set_threads`.
     places: Vec<Option<Place>>,
     spots: Vec<Spot>,
+    /// Changes with the rows, and is no other doc's.
+    version: u64,
+}
+
+/// The next `Doc::version`.
+fn next_version() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// What the diff shows.
@@ -209,6 +218,7 @@ impl Doc {
             collapsed: HashMap::new(),
             places: Vec::new(),
             spots: Vec::new(),
+            version: next_version(),
         }
     }
 
@@ -241,6 +251,7 @@ impl Doc {
             collapsed: HashMap::new(),
             places: Vec::new(),
             spots: Vec::new(),
+            version: next_version(),
         }
     }
 
@@ -341,6 +352,12 @@ impl Doc {
         rest.sort();
         rows.splice(1..1, rest.into_iter().map(thread_row));
         self.rows = rows;
+        self.version = next_version();
+    }
+
+    /// Changes with the rows, and is no other doc's.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     fn spot(&self, anchor: &Anchor, place: Option<&Place>) -> Spot {
@@ -530,12 +547,49 @@ impl Doc {
 
     /// Whether `hit` is true of a row collapsed `file` hides, its threads included.
     fn hides(&self, file: usize, hit: impl Fn(&Row) -> bool) -> bool {
+        self.hidden(file, |r| usize::from(hit(r))) > 0
+    }
+
+    /// The sum of `count` over the rows collapsed `file` hides, its threads included.
+    fn hidden(&self, file: usize, count: impl Fn(&Row) -> usize) -> usize {
         let Some(rows) = self.collapsed.get(&file) else {
-            return false;
+            return 0;
         };
-        rows.iter().any(&hit)
-            || (0..self.spots.len())
-                .any(|idx| self.spots[idx].file() == Some(file) && hit(&Row::Thread { idx }))
+        // As `place` puts them once expanded: a run shows only threads on its code rows.
+        let on_row = |right: bool, line: u32| {
+            rows.iter().any(|row| match row {
+                Row::Code {
+                    left, right: new, ..
+                } => (if right { new } else { left })
+                    .as_ref()
+                    .is_some_and(|s| s.lineno == line),
+                _ => false,
+            })
+        };
+        let shows = |spot: Spot| match spot {
+            Spot::Line(_, right, line) if self.scope == Scope::Run => on_row(right, line),
+            _ => true,
+        };
+        rows.iter().map(&count).sum::<usize>()
+            + (0..self.spots.len())
+                .filter(|&idx| self.spots[idx].file() == Some(file) && shows(self.spots[idx]))
+                .map(|idx| count(&Row::Thread { idx }))
+                .sum::<usize>()
+    }
+
+    /// Per row, the matches `count` finds before it, and how many there are in all; those
+    /// of a collapsed file come right under its header.
+    pub fn tally(&self, count: impl Fn(&Row) -> usize) -> (Vec<usize>, usize) {
+        let mut before = Vec::with_capacity(self.rows.len());
+        let mut total = 0;
+        for r in &self.rows {
+            before.push(total);
+            total += count(r);
+            if let Row::File { file, .. } = r {
+                total += self.hidden(*file, &count);
+            }
+        }
+        (before, total)
     }
 
     pub fn collapsed(&self, file: usize) -> bool {
@@ -845,5 +899,46 @@ mod tests {
         doc.collapse_file(0);
         assert_eq!(doc.search(0, false, y), Some(3));
         assert!(!doc.collapsed(0));
+    }
+
+    #[test]
+    fn collapsed_runs_hide_only_threads_they_show() {
+        let mut doc = doc_of(Scope::Run);
+        let past_rows = Some(Place::Lines {
+            file: "a".into(),
+            start: 9,
+            end: 9,
+            old: false,
+        });
+        let line9 = thread(Anchor::Lines {
+            rev: "e".into(),
+            file: "a".into(),
+            start: 9,
+            end: 9,
+        });
+        doc.set_threads(&[line9], vec![past_rows]);
+        let is_thread = |r: &Row| matches!(r, Row::Thread { .. });
+        assert_eq!(doc.tally(|r| usize::from(is_thread(r))).1, 0);
+        doc.collapse_file(0);
+        assert_eq!(doc.tally(|r| usize::from(is_thread(r))).1, 0);
+        assert_eq!(doc.search(0, true, is_thread), None);
+        assert!(doc.collapsed(0));
+    }
+
+    #[test]
+    fn tally_counts_into_collapsed_files() {
+        let mut doc = doc();
+        // Session, the file, line 1, the changed line 2, line 3: "1" and "3" on both sides.
+        let count = |r: &Row| match r {
+            Row::Code { left, right, .. } => [left, right]
+                .into_iter()
+                .flatten()
+                .filter(|s| matches!(s.text.as_str(), "1" | "3"))
+                .count(),
+            _ => 0,
+        };
+        assert_eq!(doc.tally(count), (vec![0, 0, 0, 2, 2], 4));
+        doc.collapse_file(0);
+        assert_eq!(doc.tally(count), (vec![0, 0], 4));
     }
 }

@@ -86,9 +86,10 @@ impl DiffView {
         self.draft = Some((row, input));
     }
 
-    /// `/text ` for the title while searching.
-    pub fn search_title(&self) -> String {
-        self.search.title()
+    /// `/text [3/8] ` for the title while searching.
+    pub fn search_title(&mut self, ctx: &Ctx) -> String {
+        self.search
+            .search_title(&ctx.doc, self.scroll.cursor, &ctx.session.threads)
     }
 
     /// Moves to the next (or previous) search match.
@@ -98,7 +99,7 @@ impl DiffView {
             .search
             .find(&mut ctx.doc, cursor, forward, &ctx.session.threads)
         {
-            self.scroll.jump(row);
+            self.scroll.center(row);
             // Expanding a file shifts the rows under it.
             if ctx.doc.len() != len {
                 self.mark = None;
@@ -173,7 +174,7 @@ impl DiffView {
             }
             "next_thread" | "prev_thread" => {
                 if let Some(i) = ctx.doc.next_thread(cursor, action == "next_thread") {
-                    self.scroll.jump(i);
+                    self.scroll.center(i);
                 }
             }
             "next_file" | "prev_file" => {
