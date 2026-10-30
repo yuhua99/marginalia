@@ -21,6 +21,18 @@ pub struct Hunk {
     pub lines: Vec<Line>,
 }
 
+impl Hunk {
+    /// The first line of the old and the new side; an empty side's start is the line
+    /// before the change.
+    pub fn firsts(&self) -> (u32, u32) {
+        let first = |start, len| if len == 0 { start + 1 } else { start };
+        (
+            first(self.old_start, self.old_len),
+            first(self.new_start, self.new_len),
+        )
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Line {
     pub kind: Kind,

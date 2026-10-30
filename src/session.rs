@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::doc::{carry, carry_file};
-use crate::repo::{Repo, short};
+use crate::repo::{FileDiff, Repo, short};
 
 /// The widest a session name may be, in columns.
 pub const NAME_MAX: usize = 32;
@@ -476,6 +475,42 @@ fn locate(
     Ok(None)
 }
 
+/// Lines `start..=end` of `path` on the old side of `files`, a diff without context, on
+/// their new side; None when they change, delete or insert any line among them.
+fn carry(files: &[FileDiff], path: &str, start: u32, end: u32) -> Option<(String, u32, u32)> {
+    let Some(f) = files.iter().find(|f| f.old_path == path) else {
+        return Some((path.to_string(), start, end));
+    };
+    // A binary change has no hunks to tell what it kept.
+    if f.status == 'D' || f.binary {
+        return None;
+    }
+    // Where the last hunk before `start` ends, old and new.
+    let (mut old_end, mut new_end) = (1, 1);
+    for h in &f.hunks {
+        let (old, new) = h.firsts();
+        if end < old {
+            break;
+        }
+        // Overlaps them, or inserts right before one past `start`.
+        if start < old + h.old_len {
+            return None;
+        }
+        (old_end, new_end) = (old + h.old_len, new + h.new_len);
+    }
+    let at = |line: u32| line - old_end + new_end;
+    Some((f.new_path.clone(), at(start), at(end)))
+}
+
+/// `path` on the old side of `files`, a diff, on their new side; None when deleted.
+fn carry_file(files: &[FileDiff], path: &str) -> Option<String> {
+    match files.iter().find(|f| f.old_path == path) {
+        Some(f) if f.status == 'D' => None,
+        Some(f) => Some(f.new_path.clone()),
+        None => Some(path.to_string()),
+    }
+}
+
 /// `3` or `3-5` as (start, end).
 fn parse_lines(lines: &str) -> Result<(u32, u32)> {
     let (start, end) = lines.split_once('-').unwrap_or((lines, lines));
@@ -518,6 +553,7 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+    use crate::repo::{Hunk, Kind, Line};
 
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
@@ -589,6 +625,71 @@ mod tests {
     /// Comments `json`, an `mrg comment` input.
     fn apply(s: &mut Session, repo: &mut Repo, json: &str) -> Result<Vec<usize>> {
         s.apply(serde_json::from_str(json)?, repo)
+    }
+
+    #[test]
+    fn carry_shifts_kept_lines() {
+        let line = |kind, text: &str| Line {
+            kind,
+            text: text.into(),
+        };
+        // Renamed `a` -> `b`, line 2 changed to two lines, then line 9 deleted.
+        let files = [FileDiff {
+            status: 'R',
+            old_path: "a".into(),
+            new_path: "b".into(),
+            binary: false,
+            skipped: false,
+            hunks: vec![
+                Hunk {
+                    old_start: 2,
+                    old_len: 1,
+                    new_start: 2,
+                    new_len: 2,
+                    lines: vec![
+                        line(Kind::Del, "x"),
+                        line(Kind::Add, "y"),
+                        line(Kind::Add, "z"),
+                    ],
+                },
+                Hunk {
+                    old_start: 9,
+                    old_len: 1,
+                    new_start: 9,
+                    new_len: 0,
+                    lines: vec![line(Kind::Del, "9")],
+                },
+            ],
+        }];
+        let at = |path, n| carry(&files, path, n, n).map(|(f, _, l)| (f, l));
+        assert_eq!(at("a", 1), Some(("b".into(), 1)));
+        assert_eq!(at("a", 2), None);
+        assert_eq!(at("a", 3), Some(("b".into(), 4)));
+        assert_eq!(at("a", 5), Some(("b".into(), 6)));
+        assert_eq!(at("a", 9), None);
+        assert_eq!(at("a", 10), Some(("b".into(), 10)));
+        assert_eq!(at("c", 7), Some(("c".into(), 7)));
+        // A run of lines moves whole, and none of it may change.
+        assert_eq!(carry(&files, "a", 3, 8), Some(("b".into(), 4, 9)));
+        assert_eq!(carry(&files, "a", 1, 3), None);
+        assert_eq!(carry(&files, "a", 8, 10), None);
+        // Lines added right before the run move it; lines added inside it change it.
+        let insert = |at| FileDiff {
+            status: 'M',
+            old_path: "a".into(),
+            new_path: "a".into(),
+            binary: false,
+            skipped: false,
+            hunks: vec![Hunk {
+                old_start: at - 1,
+                old_len: 0,
+                new_start: at,
+                new_len: 1,
+                lines: vec![line(Kind::Add, "n")],
+            }],
+        };
+        assert_eq!(carry(&[insert(3)], "a", 3, 4), Some(("a".into(), 4, 5)));
+        assert_eq!(carry(&[insert(4)], "a", 3, 4), None);
     }
 
     #[test]
