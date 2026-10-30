@@ -19,7 +19,7 @@ Run every command from the repo root; sessions belong to the repo.
   - None of them: the session.
 - `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you, `--only outdated` those whose lines changed since. A thread's `location` is where its lines are now; its `anchor` keeps where they were when written.
 - `mrg delete --session ID THREAD...` deletes your notes: threads the user never wrote in.
-- `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux it prints a command to relay to the human.
+- `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux/rex it prints a command to relay to the human.
 
 Ask once if the scope is missing.
 A range over 5 commits: split it along feature boundaries into consecutive sub-ranges of at most 5 commits, one session each, and run the workflow per session, one at a time.
