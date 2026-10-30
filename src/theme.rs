@@ -2,7 +2,15 @@ use std::sync::OnceLock;
 
 use ratatui::style::Color;
 
+mod contrast;
 mod system;
+
+use contrast::{COLOR, DIM, TEXT, luminance, readable};
+
+/// Percent of red / green over the background of a changed line, and of the changed
+/// words in it.
+const LINE: u16 = 15;
+const WORDS: u16 = 30;
 
 /// A palette color by role. Syntax tokens are stored as slots, so switching
 /// themes needs no re-coloring.
@@ -81,33 +89,33 @@ impl Theme {
     }
 }
 
-/// Built-in themes; the first is the default. Palettes as in herdr.
-/// system, then the dark themes, then the light ones.
-static THEMES: &[Theme] = &[
-    // The terminal draws its ANSI colors; `themes()` replaces it when the terminal
-    // reports its colors.
-    Theme {
-        name: "system",
-        bg: Color::Reset,
-        text: Color::Reset,
-        dim: Color::DarkGray,
-        comment: Color::DarkGray,
-        accent: Color::Yellow,
-        on_accent: Color::Black,
-        red: Color::Red,
-        green: Color::Green,
-        yellow: Color::Yellow,
-        blue: Color::Blue,
-        mauve: Color::Magenta,
-        teal: Color::Cyan,
-        peach: Color::Yellow,
-        surface: Color::Reset,
-        del_bg: Color::Red,
-        add_bg: Color::Green,
-        del_emph: Color::LightRed,
-        add_emph: Color::LightGreen,
-    },
-    palette(
+/// The `system` theme when the terminal does not report its colors: its ANSI colors,
+/// drawn as it draws them.
+const SYSTEM_ANSI: Theme = Theme {
+    name: "system",
+    bg: Color::Reset,
+    text: Color::Reset,
+    dim: Color::DarkGray,
+    comment: Color::DarkGray,
+    accent: Color::Yellow,
+    on_accent: Color::Black,
+    red: Color::Red,
+    green: Color::Green,
+    yellow: Color::Yellow,
+    blue: Color::Blue,
+    mauve: Color::Magenta,
+    teal: Color::Cyan,
+    peach: Color::Yellow,
+    surface: Color::Reset,
+    del_bg: Color::Red,
+    add_bg: Color::Green,
+    del_emph: Color::LightRed,
+    add_emph: Color::LightGreen,
+};
+
+/// The RGB themes, after `system`: the dark ones, then the light ones. Palettes as in herdr.
+const PALETTES: &[(&str, Palette)] = &[
+    (
         "catppuccin",
         Palette {
             bg: (24, 24, 37),
@@ -124,7 +132,7 @@ static THEMES: &[Theme] = &[
             peach: (250, 179, 135),
         },
     ),
-    palette(
+    (
         "tokyo-night",
         Palette {
             bg: (26, 27, 38),
@@ -141,7 +149,7 @@ static THEMES: &[Theme] = &[
             peach: (255, 158, 100),
         },
     ),
-    palette(
+    (
         "dracula",
         Palette {
             bg: (40, 42, 54),
@@ -158,7 +166,7 @@ static THEMES: &[Theme] = &[
             peach: (255, 184, 108),
         },
     ),
-    palette(
+    (
         "nord",
         Palette {
             bg: (46, 52, 64),
@@ -175,7 +183,7 @@ static THEMES: &[Theme] = &[
             peach: (208, 135, 112),
         },
     ),
-    palette(
+    (
         "gruvbox",
         Palette {
             bg: (40, 40, 40),
@@ -192,7 +200,7 @@ static THEMES: &[Theme] = &[
             peach: (254, 128, 25),
         },
     ),
-    palette(
+    (
         "one-dark",
         Palette {
             bg: (40, 44, 52),
@@ -209,7 +217,7 @@ static THEMES: &[Theme] = &[
             peach: (209, 154, 102),
         },
     ),
-    palette(
+    (
         "solarized",
         Palette {
             bg: (0, 43, 54),
@@ -226,7 +234,7 @@ static THEMES: &[Theme] = &[
             peach: (203, 75, 22),
         },
     ),
-    palette(
+    (
         "kanagawa",
         Palette {
             bg: (31, 31, 40),
@@ -243,7 +251,7 @@ static THEMES: &[Theme] = &[
             peach: (255, 160, 102),
         },
     ),
-    palette(
+    (
         "rose-pine",
         Palette {
             bg: (25, 23, 36),
@@ -260,7 +268,7 @@ static THEMES: &[Theme] = &[
             peach: (234, 154, 151),
         },
     ),
-    palette(
+    (
         "vesper",
         Palette {
             bg: (26, 26, 26),
@@ -277,7 +285,7 @@ static THEMES: &[Theme] = &[
             peach: (255, 199, 153),
         },
     ),
-    palette(
+    (
         "catppuccin-latte",
         Palette {
             bg: (239, 241, 245),
@@ -294,7 +302,7 @@ static THEMES: &[Theme] = &[
             peach: (254, 100, 11),
         },
     ),
-    palette(
+    (
         "tokyo-night-day",
         Palette {
             bg: (225, 226, 231),
@@ -311,7 +319,7 @@ static THEMES: &[Theme] = &[
             peach: (177, 92, 0),
         },
     ),
-    palette(
+    (
         "gruvbox-light",
         Palette {
             bg: (251, 241, 199),
@@ -328,7 +336,7 @@ static THEMES: &[Theme] = &[
             peach: (175, 58, 3),
         },
     ),
-    palette(
+    (
         "one-light",
         Palette {
             bg: (250, 250, 250),
@@ -345,7 +353,7 @@ static THEMES: &[Theme] = &[
             peach: (152, 104, 1),
         },
     ),
-    palette(
+    (
         "solarized-light",
         Palette {
             bg: (253, 246, 227),
@@ -362,7 +370,7 @@ static THEMES: &[Theme] = &[
             peach: (203, 75, 22),
         },
     ),
-    palette(
+    (
         "kanagawa-lotus",
         Palette {
             bg: (242, 236, 188),
@@ -379,7 +387,7 @@ static THEMES: &[Theme] = &[
             peach: (204, 109, 0),
         },
     ),
-    palette(
+    (
         "rose-pine-dawn",
         Palette {
             bg: (250, 244, 237),
@@ -398,16 +406,15 @@ static THEMES: &[Theme] = &[
     ),
 ];
 
-/// The built-in themes, `system` from the terminal's colors when it reports them.
-/// The first call asks the terminal, so it comes before the TUI starts.
+/// The built-in themes, the first the default: `system`, from the terminal's colors
+/// when it reports them, then the RGB ones. The first call asks the terminal, so it
+/// comes before the TUI starts.
 pub fn themes() -> &'static [Theme] {
     static ALL: OnceLock<Vec<Theme>> = OnceLock::new();
     ALL.get_or_init(|| {
-        let mut all = THEMES.to_vec();
-        if let Some(system) = system::query() {
-            all[0] = system;
-        }
-        all
+        let system = system::query().unwrap_or(SYSTEM_ANSI);
+        let rgb = PALETTES.iter().map(|&(name, p)| palette(name, p));
+        std::iter::once(system).chain(rgb).collect()
     })
 }
 
@@ -420,6 +427,7 @@ pub fn find(name: &str) -> &'static Theme {
 type Rgb = (u8, u8, u8);
 
 /// The colors an RGB theme is made of.
+#[derive(Clone, Copy)]
 struct Palette {
     bg: Rgb,
     text: Rgb,
@@ -436,27 +444,38 @@ struct Palette {
 }
 
 /// Changed lines tint the background with red / green; changed words tint it more.
-const fn palette(name: &'static str, p: Palette) -> Theme {
+/// Each color is moved in lightness until it reads on the backgrounds it is drawn on.
+fn palette(name: &'static str, p: Palette) -> Theme {
+    let dark = luminance(p.bg) < luminance(p.text);
+    let tint = |c, pct| mix(readable(c, &[p.bg], COLOR, dark), p.bg, pct);
+    let (del_bg, add_bg) = (tint(p.red, LINE), tint(p.green, LINE));
+    let (del_emph, add_emph) = (tint(p.red, WORDS), tint(p.green, WORDS));
+    let surface = mix(p.text, p.bg, 15);
+    // Code is drawn on the background and on the tints of changed lines and words.
+    let code_on = [p.bg, del_bg, add_bg, del_emph, add_emph];
+    let code = |c, min| rgb(readable(c, &code_on, min, dark));
+    // Hints, marks and the cursor bar are drawn on threads and checked rows too.
+    let ui = |c, min| rgb(readable(c, &[p.bg, surface], min, dark));
     Theme {
         name,
         bg: rgb(p.bg),
-        text: rgb(p.text),
-        dim: rgb(p.dim),
-        comment: rgb(p.comment),
-        accent: rgb(p.accent),
+        text: code(p.text, TEXT),
+        dim: ui(p.dim, DIM),
+        comment: code(p.comment, DIM),
+        accent: ui(p.accent, COLOR),
         on_accent: rgb(p.bg),
-        red: rgb(p.red),
-        green: rgb(p.green),
-        yellow: rgb(p.yellow),
-        blue: rgb(p.blue),
-        mauve: rgb(p.mauve),
-        teal: rgb(p.teal),
-        peach: rgb(p.peach),
-        surface: rgb(mix(p.text, p.bg, 15)),
-        del_bg: rgb(mix(p.red, p.bg, 15)),
-        add_bg: rgb(mix(p.green, p.bg, 15)),
-        del_emph: rgb(mix(p.red, p.bg, 45)),
-        add_emph: rgb(mix(p.green, p.bg, 45)),
+        red: code(p.red, COLOR),
+        green: code(p.green, COLOR),
+        yellow: code(p.yellow, COLOR),
+        blue: code(p.blue, COLOR),
+        mauve: code(p.mauve, COLOR),
+        teal: code(p.teal, COLOR),
+        peach: code(p.peach, COLOR),
+        surface: rgb(surface),
+        del_bg: rgb(del_bg),
+        add_bg: rgb(add_bg),
+        del_emph: rgb(del_emph),
+        add_emph: rgb(add_emph),
     }
 }
 
