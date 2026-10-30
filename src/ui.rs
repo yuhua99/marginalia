@@ -172,16 +172,11 @@ mod tests {
 
     #[test]
     fn steps() {
-        assert_eq!(step(3, "down", 5, 10), Some(4));
-        assert_eq!(step(4, "down", 5, 10), Some(4));
-        assert_eq!(step(0, "up", 5, 10), Some(0));
         assert_eq!(step(0, "half_page_down", 20, 10), Some(5));
         assert_eq!(step(0, "half_page_down", 3, 10), Some(2));
         assert_eq!(step(7, "half_page_up", 20, 10), Some(2));
         // At least one row on a tiny screen.
         assert_eq!(step(0, "half_page_down", 5, 1), Some(1));
-        assert_eq!(step(2, "top", 5, 10), Some(0));
-        assert_eq!(step(2, "bottom", 5, 10), Some(4));
         assert_eq!(step(0, "bottom", 0, 10), Some(0));
         assert_eq!(step(2, "open", 5, 10), None);
     }

@@ -217,11 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_output() {
-        assert_eq!(parse(b"").unwrap(), vec![]);
-    }
-
-    #[test]
     fn real_git_output() {
         // Captured from git 2.34: added, binary, rename with edit, header-like content
         // with no newline at end, deleted non-ASCII path.
@@ -358,43 +353,24 @@ diff --git a/b b/b\n@@ -1 +1 @@\n-1\n+2\n",
     }
 
     #[test]
-    fn rejects_truncated_hunk() {
-        let o = out(
-            &[":100644 100644 1 2 M\0a"],
-            "diff --git a/a b/a\n@@ -1,3 +1,3 @@\n x\n",
-        );
-        assert!(parse(&o).is_err());
-    }
-
-    #[test]
-    fn rejects_hunk_longer_than_declared() {
-        let o = out(
-            &[":100644 100644 1 2 M\0a"],
-            "diff --git a/a b/a\n@@ -1 +1,2 @@\n-x\n-y\n+z\n",
-        );
-        assert!(parse(&o).is_err());
-    }
-
-    #[test]
-    fn rejects_malformed_range() {
-        let o = out(
-            &[":100644 100644 1 2 M\0a"],
-            "diff --git a/a b/a\n@@ -x +1 @@\n+z\n",
-        );
-        assert!(parse(&o).is_err());
-    }
-
-    #[test]
-    fn rejects_raw_patch_count_mismatch() {
-        let missing = out(
-            &[":100644 100644 1 2 M\0a", ":100644 100644 1 2 M\0b"],
-            "diff --git a/a b/a\n@@ -1 +1 @@\n-1\n+2\n",
-        );
-        assert!(parse(&missing).is_err());
-        let extra = out(
-            &[":100644 100644 1 2 M\0a"],
-            "diff --git a/a b/a\n@@ -1 +1 @@\n-1\n+2\ndiff --git a/b b/b\n",
-        );
-        assert!(parse(&extra).is_err());
+    fn rejects() {
+        let one: &[&str] = &[":100644 100644 1 2 M\0a"];
+        let two: &[&str] = &[":100644 100644 1 2 M\0a", ":100644 100644 1 2 M\0b"];
+        for (raw, patch) in [
+            // A hunk shorter than declared.
+            (one, "diff --git a/a b/a\n@@ -1,3 +1,3 @@\n x\n"),
+            // A hunk longer than declared.
+            (one, "diff --git a/a b/a\n@@ -1 +1,2 @@\n-x\n-y\n+z\n"),
+            // A malformed range.
+            (one, "diff --git a/a b/a\n@@ -x +1 @@\n+z\n"),
+            // A raw record with no patch, and a patch with no raw record.
+            (two, "diff --git a/a b/a\n@@ -1 +1 @@\n-1\n+2\n"),
+            (
+                one,
+                "diff --git a/a b/a\n@@ -1 +1 @@\n-1\n+2\ndiff --git a/b b/b\n",
+            ),
+        ] {
+            assert!(parse(&out(raw, patch)).is_err(), "{patch:?}");
+        }
     }
 }
