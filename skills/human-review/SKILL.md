@@ -10,7 +10,7 @@ Run every command from the repo root; sessions belong to the repo.
 
 ## Tool
 `mrg` (`mrg <cmd> --help` for flags):
-- `mrg new RANGE [--name NAME]` prints a session id. NAME: the change's purpose, at most 80 columns. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, `unstaged` (working tree, tracked files only), or a full ref `refs/...`. Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session; a full ref follows it the same way. A pull / merge request N: `git fetch origin +refs/pull/N/head:refs/pull/N/head` (GitLab: `refs/merge-requests/N/head`), then `mrg new $(git merge-base origin/TARGET refs/pull/N/head)..refs/pull/N/head`; `mrg resume` fetches its new commits.
+- `mrg new RANGE [--name NAME]` prints a session id. NAME: the change's purpose, at most 80 columns. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, `unstaged` (working tree, tracked files only), or a full ref `refs/...`. Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session. A pull / merge request N: fetch `+refs/pull/N/head:refs/pull/N/head` (GitLab: `refs/merge-requests/N/head`) and end the range at that ref, from its merge base with the target.
 - `mrg diff RANGE [PATH...]` prints the diff with each line's old and new number, as `comment` takes them; read it in place of `git diff`.
 - `mrg comment --session ID FILE` (`-` for stdin) posts a JSON array of comments. Each has `body` and, for what it is on:
   - `"reply_to": "<thread id>"` answers in that thread.
