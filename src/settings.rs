@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,8 @@ pub struct Settings {
     pub wrap: bool,
     /// `[keys.<context>]`, which `s` leaves as written.
     pub keys: Keys,
+    /// `[forges]`: a host's forge, `github` or `gitlab`, past github.com and gitlab.com.
+    pub forges: BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -27,6 +30,7 @@ impl Default for Settings {
             theme: String::new(),
             wrap: true,
             keys: Keys::new(),
+            forges: BTreeMap::new(),
         }
     }
 }
@@ -80,7 +84,7 @@ fn write(path: &Path, text: &str) -> Result<()> {
     fs::write(path, text).with_context(|| format!("write {}", path.display()))
 }
 
-fn path() -> Result<PathBuf> {
+pub fn path() -> Result<PathBuf> {
     Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("settings.toml"))
 }
 

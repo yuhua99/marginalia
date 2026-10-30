@@ -1,5 +1,6 @@
 mod app;
 mod doc;
+mod forge;
 mod highlight;
 mod keymap;
 mod repo;
@@ -46,7 +47,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged; no A starts before the root) and print its id
+    /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged|refs/...; no A starts before the root; HEAD and refs/... follow the ref) and print its id
     New {
         range: String,
         #[arg(long)]
@@ -146,7 +147,7 @@ fn main() -> Result<()> {
         Some(Cmd::Resume { session, on_quit }) => {
             need_terminal()?;
             let session = store.load(&session)?;
-            repo.verify(&session.base, &session.end)?;
+            forge::refresh(&repo, &session.base, &session.end, true)?;
             tui(store, repo, Some(session), on_quit)
         }
         Some(Cmd::Delete { session, threads }) => {
@@ -263,7 +264,8 @@ fn tui(
             let (session, store, repo, look) = match session {
                 Some(session) => (session, store, repo, look),
                 None => {
-                    let mut pick = ui::picker::Pick::new(store, repo, look)?;
+                    let forges = settings.forges.clone();
+                    let mut pick = ui::picker::Pick::new(store, repo, look, forges)?;
                     ui::picker::run(terminal, &mut pick)?;
                     let Some(session) = pick.open else {
                         return Ok(None);

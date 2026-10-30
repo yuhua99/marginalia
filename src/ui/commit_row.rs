@@ -6,7 +6,7 @@ use crate::repo::Commit;
 use crate::theme::Theme;
 
 /// Columns kept for a subject before the author and date are left out.
-const MIN_SUBJECT: usize = 20;
+pub const MIN_SUBJECT: usize = 20;
 
 /// The widest author column.
 const MAX_AUTHOR: usize = 16;

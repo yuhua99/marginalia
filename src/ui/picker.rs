@@ -1,21 +1,24 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_textarea::TextArea;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{Component, Layers, Look, Outcome};
+use crate::forge::{self, Forge, Request};
 use crate::keymap::{Feed, Keymap};
 use crate::repo::{self, Commit, Repo, short};
 use crate::session::{NAME_MAX, Session};
 use crate::store::Store;
 use crate::theme::Theme;
-use crate::ui::commit_row::{Columns, fit, mark};
+use crate::ui::commit_row::{Columns, MIN_SUBJECT, fit, mark};
 use crate::ui::confirm::Confirm;
 use crate::ui::help::{self, Entry, Help};
 use crate::ui::query::Query;
@@ -26,7 +29,7 @@ use crate::ui::{Panes, boxed, check, clear, cursor_bar, dialog, row_at, step};
 const COMMITS: usize = 500;
 
 const HINTS: &[Entry] = &[
-    (&["focus_left", "focus_right"], "pane"),
+    (&["focus_left", "focus_right"], "block"),
     (&["check"], "select"),
     (&["open"], "open"),
     (&["filter"], "filter"),
@@ -40,9 +43,12 @@ const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
     (&["top", "bottom"], "top / bottom"),
-    (&["focus_left", "focus_right"], "sessions / new review"),
-    (&["check"], "check rows of a new range"),
-    (&["open"], "resume the session, or review the checked rows"),
+    (&["focus_left", "focus_right"], "previous / next block"),
+    (&["check"], "check commits of a new range"),
+    (
+        &["open"],
+        "resume the session, review the checked commits or the request",
+    ),
     (&["filter"], "filter; Enter ends typing, Esc clears"),
     (&["edit"], "rename the session; blank clears"),
     (&["delete"], "delete the session"),
@@ -51,6 +57,12 @@ const HELP: &[Entry] = &[
     (&["help"], "this help"),
     (&["quit"], "quit"),
 ];
+
+/// The blocks, top to bottom.
+const SESSIONS: usize = 0;
+const RANGE: usize = 1;
+const REVIEWS: usize = 2;
+const TITLES: [&str; 3] = ["Sessions", "Commits", "Reviews"];
 
 /// State the picker's layers share.
 pub struct Pick {
@@ -62,10 +74,28 @@ pub struct Pick {
     error: Option<String>,
     /// The session to open after the picker quits; None quits mrg.
     pub open: Option<Session>,
+    /// `[forges]` of the settings.
+    forges: BTreeMap<String, String>,
+    /// Open requests of origin's forge, listed the first time their block is focused.
+    reviews: Reviews,
+}
+
+enum Reviews {
+    Unlisted,
+    /// To list after the next draw, which shows it: listing waits on gh / glab.
+    Listing,
+    Listed(Forge, Vec<Request>),
+    /// Why there is no list, for the user to act on.
+    Failed(String),
 }
 
 impl Pick {
-    pub fn new(store: Store, repo: Repo, look: Look) -> Result<Pick> {
+    pub fn new(
+        store: Store,
+        repo: Repo,
+        look: Look,
+        forges: BTreeMap<String, String>,
+    ) -> Result<Pick> {
         Ok(Pick {
             sessions: store.list()?,
             store,
@@ -73,6 +103,8 @@ impl Pick {
             look,
             error: None,
             open: None,
+            forges,
+            reviews: Reviews::Unlisted,
         })
     }
 }
@@ -89,9 +121,9 @@ impl AsMut<Look> for Pick {
     }
 }
 
-/// What `mrg` shows first: sessions to resume on the left, a new range on the right
-/// (rows checked with Space, or the cursor row). Ends with the session to open in
-/// `pick.open`, or None to quit.
+/// What `mrg` shows first: blocks of sessions to resume, commits for a new range (rows
+/// checked with Space, or the cursor row) and the forge's open requests. Ends with the
+/// session to open in `pick.open`, or None to quit.
 pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
     let mut layers = Layers::new(Picker::new(pick)?);
     loop {
@@ -106,6 +138,14 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
                 );
             }
         })?;
+        if matches!(pick.reviews, Reviews::Listing) {
+            let listed = Forge::of(&pick.repo, &pick.forges).and_then(|f| Ok((f.requests()?, f)));
+            pick.reviews = match listed {
+                Ok((requests, forge)) => Reviews::Listed(forge, requests),
+                Err(e) => Reviews::Failed(format!("{e:#}")),
+            };
+            continue;
+        }
         let event = event::read()?;
         // Not on a button's release, which follows the click that made the error.
         if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press)
@@ -119,28 +159,28 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
     }
 }
 
-/// The bottom layer: the two panes.
+/// The bottom layer: the blocks, the focused one open, the others a title line.
 #[derive(Default)]
 struct Picker {
     commits: Vec<Commit>,
     /// `commits` reach the root commit.
     exhausted: bool,
-    /// The rows of the range pane above the commits: `unstaged` / `staged` when not empty.
+    /// The rows of the range block above the commits: `unstaged` / `staged` when not empty.
     uncommitted: Vec<&'static str>,
-    /// Focus on the range pane.
-    right: bool,
-    /// Per pane, into its shown rows.
-    cursor: [usize; 2],
-    filter: [Query; 2],
-    /// Checked rows of the range pane, top..=bottom into all its rows.
+    /// `SESSIONS`, `RANGE` or `REVIEWS`.
+    focused: usize,
+    /// Per block, into its shown rows.
+    cursor: [usize; 3],
+    filter: [Query; 3],
+    /// Checked rows of the range block, top..=bottom into all its rows.
     checked: Option<(usize, usize)>,
-    /// Rows a pane shows, as of the last render.
+    /// Rows the focused block shows, as of the last render.
     height: usize,
     keymap: Keymap,
     /// The footer, from `HINTS`.
     hints: String,
-    /// The two panes, as of the last render.
-    panes: [Rect; 2],
+    /// The blocks, as of the last render.
+    panes: [Rect; 3],
 }
 
 impl Picker {
@@ -151,7 +191,11 @@ impl Picker {
             exhausted: commits.len() < COMMITS,
             commits,
             uncommitted: pick.repo.uncommitted()?,
-            right: pick.sessions.is_empty(),
+            focused: if pick.sessions.is_empty() {
+                RANGE
+            } else {
+                SESSIONS
+            },
             hints: help::hints(HINTS, &keymap),
             keymap,
             ..Picker::default()
@@ -171,7 +215,7 @@ impl Picker {
     }
 
     fn pane(&self) -> usize {
-        self.right as usize
+        self.focused
     }
 
     /// The first row `pane` shows: enough down for its cursor.
@@ -179,35 +223,50 @@ impl Picker {
         (self.cursor[pane] + 1).saturating_sub(self.height)
     }
 
-    /// (text, value) of every row of a pane: session ids, or unstaged, staged and commit shas.
-    fn all(&self, pane: usize, sessions: &[(Session, u64)]) -> Vec<(String, String)> {
-        if pane == 1 {
-            let commits = self
-                .commits
-                .iter()
-                .map(|c| (format!("{} {}", &c.sha[..7], c.subject), c.sha.clone()));
-            return self
-                .uncommitted
-                .iter()
-                .map(|s| (s.to_string(), s.to_string()))
-                .chain(commits)
-                .collect();
+    /// (text, value) of every row of a block: session ids; unstaged, staged and commit
+    /// shas; or request numbers.
+    fn all(&self, pane: usize, ctx: &Pick) -> Vec<(String, String)> {
+        match pane {
+            RANGE => {
+                let commits = self
+                    .commits
+                    .iter()
+                    .map(|c| (format!("{} {}", &c.sha[..7], c.subject), c.sha.clone()));
+                self.uncommitted
+                    .iter()
+                    .map(|s| (s.to_string(), s.to_string()))
+                    .chain(commits)
+                    .collect()
+            }
+            REVIEWS => match &ctx.reviews {
+                Reviews::Listed(forge, requests) => requests
+                    .iter()
+                    .map(|r| {
+                        let text =
+                            format!("{} {}  {}  {}", forge.word(), r.number, r.title, r.author);
+                        (text, r.number.to_string())
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            _ => {
+                let name_width = name_width(&ctx.sessions);
+                ctx.sessions
+                    .iter()
+                    .map(|(s, _)| {
+                        let name = name_column(s, name_width);
+                        let text = format!("{}{name}  {}", s.id, s.range);
+                        (text, s.id.clone())
+                    })
+                    .collect()
+            }
         }
-        let name_width = name_width(sessions);
-        sessions
-            .iter()
-            .map(|(s, _)| {
-                let name = name_column(s, name_width);
-                let text = format!("{}{name}  {}", s.id, s.range);
-                (text, s.id.clone())
-            })
-            .collect()
     }
 
     /// Indices into `all(pane)` that pass the filter.
-    fn shown(&self, pane: usize, sessions: &[(Session, u64)]) -> Vec<usize> {
+    fn shown(&self, pane: usize, ctx: &Pick) -> Vec<usize> {
         let filter = self.filter[pane].text.to_lowercase();
-        self.all(pane, sessions)
+        self.all(pane, ctx)
             .iter()
             .enumerate()
             .filter(|(_, (text, _))| text.to_lowercase().contains(&filter))
@@ -215,20 +274,20 @@ impl Picker {
             .collect()
     }
 
-    /// Enter on row `i`: resumes that session, or makes a session of the checked rows
-    /// (or row `i` alone): from the parent of the bottom commit (or before the root) to the top row.
+    /// Enter on row `i`: resumes that session, reviews request `i`, or makes a session of
+    /// the checked rows (or row `i` alone): from the parent of the bottom commit (or
+    /// before the root) to the top row.
     fn open(&self, i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
-        if !self.right {
-            let session = ctx.store.load(&ctx.sessions[i].0.id)?;
-            if let Err(e) = ctx.repo.verify(&session.base, &session.end) {
-                ctx.error = Some(format!("{e:#}"));
-                return Ok(Outcome::Consumed);
+        match self.focused {
+            SESSIONS => {
+                let id = ctx.sessions[i].0.id.clone();
+                return resume(&id, ctx);
             }
-            ctx.open = Some(session);
-            return Ok(Outcome::Quit);
+            REVIEWS => return review(i, ctx),
+            _ => {}
         }
         let (top, bottom) = self.checked.unwrap_or((i, i));
-        let all = self.all(1, &ctx.sessions);
+        let all = self.all(RANGE, ctx);
         let (end, bottom) = (&all[top].1, &all[bottom].1);
         let base = if repo::worktree(bottom) {
             "HEAD".to_string()
@@ -257,33 +316,82 @@ impl Picker {
     }
 }
 
+/// Opens session `id`, its request fetched again first.
+fn resume(id: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+    let session = ctx.store.load(id)?;
+    if let Err(e) = forge::refresh(&ctx.repo, &session.base, &session.end, false) {
+        ctx.error = Some(format!("{e:#}"));
+        return Ok(Outcome::Consumed);
+    }
+    ctx.open = Some(session);
+    Ok(Outcome::Quit)
+}
+
+/// Enter on request `i`: resumes its newest session, or fetches it and starts one from
+/// where it left its target.
+fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+    let Reviews::Listed(forge, requests) = &ctx.reviews else {
+        return Ok(Outcome::Consumed);
+    };
+    let (forge, r) = (forge.clone(), requests[i].clone());
+    let head = forge.head(r.number);
+    if let Some((s, _)) = ctx.sessions.iter().find(|(s, _)| s.end == head) {
+        let id = s.id.clone();
+        return resume(&id, ctx);
+    }
+    let started = forge.fetch(&ctx.repo, &r).and_then(|base| {
+        let (base, end) = ctx.repo.resolve(&format!("{base}..{head}"))?;
+        let range = format!("{}..{end}", short(&base));
+        let mut session = Session::new(ctx.store.new_id(), range, base, end);
+        // A name is one line.
+        let title = r.title.replace(char::is_control, " ");
+        let mut name = format!("{} {title}", forge.sign(r.number));
+        if name.width() > NAME_MAX {
+            name = format!("{}…", fit(&name, NAME_MAX - 1));
+        }
+        session.set_name(&name)?;
+        Ok(session)
+    });
+    match started {
+        Ok(session) => {
+            ctx.store.save(&session)?;
+            ctx.open = Some(session);
+            Ok(Outcome::Quit)
+        }
+        Err(e) => {
+            ctx.error = Some(format!("{e:#}"));
+            Ok(Outcome::Consumed)
+        }
+    }
+}
+
 impl Panes<Pick> for Picker {
     fn act(&mut self, action: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let pane = self.pane();
-        // Down on the last row of the unfiltered range pane loads older commits.
-        if self.right
+        // Down on the last row of the unfiltered range block loads older commits.
+        if pane == RANGE
             && action == "down"
             && !self.exhausted
-            && self.filter[1].text.is_empty()
-            && self.cursor[1] + 1 == self.uncommitted.len() + self.commits.len()
+            && self.filter[RANGE].text.is_empty()
+            && self.cursor[RANGE] + 1 == self.uncommitted.len() + self.commits.len()
             && let Err(e) = self.more(&ctx.repo)
         {
             ctx.error = Some(format!("{e:#}"));
         }
-        let shown = self.shown(pane, &ctx.sessions);
+        let shown = self.shown(pane, ctx);
         let at = shown.get(self.cursor[pane]).copied();
         let cursor = self.cursor[pane];
         if let Some(to) = step(cursor, action, shown.len(), self.height) {
             self.cursor[pane] = to;
         }
         match action {
-            "check" if self.right => {
+            "check" if pane == RANGE => {
                 if let Some(i) = at {
                     self.checked = check(self.checked, i);
                 }
             }
             "filter" => self.filter[pane].typing = true,
-            "delete" if !self.right => {
+            "delete" if pane == SESSIONS => {
                 if let Some(i) = at {
                     let id = ctx.sessions[i].0.id.clone();
                     return Ok(Outcome::Push(Box::new(
@@ -297,18 +405,18 @@ impl Panes<Pick> for Picker {
                     )));
                 }
             }
-            "edit" if !self.right => {
+            "edit" if pane == SESSIONS => {
                 if let Some(i) = at {
                     return Ok(Outcome::Push(Box::new(Rename::new(&ctx.sessions[i].0))));
                 }
             }
             "help" => return Ok(Outcome::Push(Box::new(Help::new(HELP, &self.keymap)))),
             "settings" => return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look)))),
-            "focus_left" => self.right = false,
-            "focus_right" => self.right = true,
+            "focus_left" => self.focus((pane + TITLES.len() - 1) % TITLES.len(), ctx),
+            "focus_right" => self.focus((pane + 1) % TITLES.len(), ctx),
             "quit" => return Ok(Outcome::Quit),
             "cancel" => {
-                if self.right && self.checked.is_some() {
+                if pane == RANGE && self.checked.is_some() {
                     self.checked = None;
                 } else {
                     self.filter[pane] = Query::default();
@@ -329,22 +437,29 @@ impl Panes<Pick> for Picker {
         &self.panes
     }
 
-    fn focus(&mut self, pane: usize, _ctx: &Pick) {
-        self.right = pane == 1;
+    /// Focusing the requests lists them the first time, and again after a failure.
+    fn focus(&mut self, pane: usize, ctx: &mut Pick) {
+        // A wheel turn or click focuses too: only entering lists again.
+        let entering = self.focused != pane;
+        self.focused = pane;
+        let failed = matches!(ctx.reviews, Reviews::Failed(_));
+        if pane == REVIEWS && (matches!(ctx.reviews, Reviews::Unlisted) || entering && failed) {
+            ctx.reviews = Reviews::Listing;
+        }
     }
 
     fn busy(&self) -> bool {
         self.filter[self.pane()].typing
     }
 
-    /// A session opens as Enter does, a range row checks as Space does.
+    /// A session or a request opens as Enter does, a range row checks as Space does.
     fn pick(&mut self, pane: usize, y: u16, ctx: &mut Pick) -> Result<Outcome<Pick>> {
-        let len = self.shown(pane, &ctx.sessions).len();
+        let len = self.shown(pane, ctx).len();
         let Some(row) = row_at(self.panes[pane], self.skip(pane), len, y) else {
             return Ok(Outcome::Consumed);
         };
         self.cursor[pane] = row;
-        self.act(["open", "check"][pane], ctx)
+        self.act(["open", "check", "open"][pane], ctx)
     }
 }
 
@@ -385,53 +500,130 @@ impl Component<Pick> for Picker {
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {
         let theme = ctx.look.theme;
         // Sessions change under the layers above: deleted, or renamed out of the filter.
-        self.cursor[0] = self.cursor[0].min(self.shown(0, &ctx.sessions).len().saturating_sub(1));
-        let panes: [_; 2] =
-            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .areas(area);
+        self.cursor[SESSIONS] =
+            self.cursor[SESSIONS].min(self.shown(SESSIONS, ctx).len().saturating_sub(1));
+        // The focused block takes the height the others leave, a title line each.
+        let heights = (0..TITLES.len()).map(|pane| {
+            if pane == self.focused {
+                Constraint::Fill(1)
+            } else {
+                Constraint::Length(1)
+            }
+        });
+        self.panes = Layout::vertical(heights).areas(area);
+        let pane = self.pane();
+        let area = self.panes[pane];
         self.height = area.height.saturating_sub(2) as usize;
-        self.panes = panes;
-        let name_width = name_width(&ctx.sessions);
-        let columns = Columns::new(&self.commits);
-        for (pane, area) in panes.into_iter().enumerate() {
-            let focused = pane == self.pane();
-            let mut title = [" Sessions ", " New review "][pane].to_string();
-            title.push_str(&self.filter[pane].title());
-            let height = area.height.saturating_sub(2) as usize;
-            let cursor = self.cursor[pane];
-            let skip = self.skip(pane);
-            // Inside the borders.
-            let inner_width = (area.width as usize).saturating_sub(2);
-            // After the mark.
-            let width = inner_width.saturating_sub(2);
-            let shown = self.shown(pane, &ctx.sessions);
-            let rows = shown.len();
-            let lines: Vec<Line> = shown
-                .into_iter()
-                .skip(skip)
-                .take(height)
-                .map(|i| {
-                    if pane == 0 {
-                        let s = &ctx.sessions[i].0;
-                        return Line::from(session_row(s, name_width, inner_width, theme));
-                    }
-                    let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
-                    let mut spans = vec![mark(checked, theme)];
-                    match i.checked_sub(self.uncommitted.len()) {
-                        Some(c) => spans.extend(columns.row(&self.commits[c], width, theme)),
-                        None => spans.push(Span::raw(self.uncommitted[i])),
-                    }
-                    Line::from(spans)
-                })
-                .collect();
-            let block = boxed(title, focused, theme);
-            let inner = block.inner(area);
-            f.render_widget(Paragraph::new(lines).block(block), area);
-            if focused && cursor < rows && height > 0 {
-                cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
+        for (p, &rect) in self.panes.iter().enumerate() {
+            let count = match (p, &ctx.reviews) {
+                (SESSIONS, _) => format!(" ({})", ctx.sessions.len()),
+                (REVIEWS, Reviews::Listed(_, requests)) => format!(" ({})", requests.len()),
+                _ => String::new(),
+            };
+            let title = format!(" {}{count} {}", TITLES[p], self.filter[p].title());
+            if p == pane {
+                let block = boxed(title, true, theme);
+                let inner = block.inner(rect);
+                f.render_widget(block, rect);
+                self.render_rows(f, inner, ctx);
+            } else {
+                let line = Block::new()
+                    .borders(Borders::TOP)
+                    .border_style(Style::new().fg(theme.dim))
+                    .title(title);
+                f.render_widget(line, rect);
             }
         }
     }
+}
+
+impl Picker {
+    /// The rows of the focused block in `inner`, the cursor's marked.
+    fn render_rows(&self, f: &mut Frame, inner: Rect, ctx: &Pick) {
+        let theme = ctx.look.theme;
+        let pane = self.pane();
+        let (height, width) = (inner.height as usize, inner.width as usize);
+        let cursor = self.cursor[pane];
+        let skip = self.skip(pane);
+        let shown = self.shown(pane, ctx);
+        let rows = shown.len();
+        let shown = shown.into_iter().skip(skip).take(height);
+        let lines: Vec<Line> = match pane {
+            SESSIONS => {
+                let name_width = name_width(&ctx.sessions);
+                shown
+                    .map(|i| Line::from(session_row(&ctx.sessions[i].0, name_width, width, theme)))
+                    .collect()
+            }
+            RANGE => {
+                let columns = Columns::new(&self.commits);
+                shown
+                    .map(|i| {
+                        let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
+                        let mut spans = vec![mark(checked, theme)];
+                        // After the mark.
+                        let width = width.saturating_sub(2);
+                        match i.checked_sub(self.uncommitted.len()) {
+                            Some(c) => spans.extend(columns.row(&self.commits[c], width, theme)),
+                            None => spans.push(Span::raw(self.uncommitted[i])),
+                        }
+                        Line::from(spans)
+                    })
+                    .collect()
+            }
+            _ => match &ctx.reviews {
+                Reviews::Listed(forge, requests) if !requests.is_empty() => {
+                    let number_width = requests.iter().map(|r| r.number.to_string().len());
+                    let number_width = number_width.max().unwrap_or(0);
+                    shown
+                        .map(|i| {
+                            let r = &requests[i];
+                            let head = forge.head(r.number);
+                            let reviewed = ctx.sessions.iter().any(|(s, _)| s.end == head);
+                            let row = (forge.word(), r, reviewed, number_width);
+                            Line::from(review_row(row, width, theme))
+                        })
+                        .collect()
+                }
+                Reviews::Listed(..) => vec![Line::styled("no open requests", theme.dim)],
+                Reviews::Failed(e) => e.lines().map(|l| Line::styled(l, theme.red)).collect(),
+                Reviews::Unlisted | Reviews::Listing => {
+                    vec![Line::styled("listing…", theme.dim)]
+                }
+            },
+        };
+        f.render_widget(Paragraph::new(lines), inner);
+        if cursor < rows && height > 0 {
+            cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
+        }
+    }
+}
+
+/// `● pull 12  title  author → target` in `width` columns, the author and target
+/// right-aligned and left out first when narrow; ● when a session reviews it.
+fn review_row<'a>(
+    (word, r, reviewed, number_width): (&str, &'a Request, bool, usize),
+    width: usize,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    let mark = if reviewed { "● " } else { "  " };
+    let id = format!("{word} {:<number_width$}  ", r.number);
+    let mut meta = format!("{} → {}", r.author, r.target);
+    // After the mark and the id, the spaces before the meta.
+    let width = width.saturating_sub(2 + id.width() + 2);
+    if width < meta.width() + MIN_SUBJECT {
+        meta.clear();
+    }
+    let room = width - meta.width();
+    let title = fit(&r.title, room);
+    let pad = " ".repeat(room - title.width() + 2);
+    vec![
+        Span::styled(mark, Style::new().fg(theme.accent)),
+        Span::styled(id, Style::new().fg(theme.dim)),
+        Span::raw(title),
+        Span::raw(pad),
+        Span::styled(meta, Style::new().fg(theme.dim)),
+    ]
 }
 
 /// The widest session name; None when no session has a name.
