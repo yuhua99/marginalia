@@ -10,7 +10,7 @@ Run every command from the repo root; sessions belong to the repo.
 
 ## Tool
 `mrg` (`mrg <cmd> --help` for flags):
-- `mrg new RANGE [--name NAME]` prints a session id. NAME: the change's purpose, at most 32 columns. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, or `unstaged` (working tree). Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session.
+- `mrg new RANGE [--name NAME]` prints a session id. NAME: the change's purpose, at most 32 columns. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, or `unstaged` (working tree, tracked files only). Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session.
 - `mrg comment --session ID FILE` (`-` for stdin) posts a JSON array of comments. Each has `body` and, for what it is on:
   - `"reply_to": "<thread id>"` answers in that thread.
   - `"commit": REV`, a commit of the range.

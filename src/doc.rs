@@ -123,13 +123,7 @@ impl Doc {
             } else {
                 format!("{} -> {}", f.old_path, f.new_path)
             };
-            let note = if f.skipped {
-                Some("too large, skipped")
-            } else if f.binary {
-                Some("binary")
-            } else {
-                None
-            };
+            let note = f.binary.then_some("binary");
             rows.push(Row::File {
                 file,
                 status: f.status,
@@ -810,7 +804,6 @@ mod tests {
             old_path: "a".into(),
             new_path: "a".into(),
             binary: false,
-            skipped: false,
             hunks: vec![Hunk {
                 old_start: 1,
                 old_len: 3,
