@@ -11,6 +11,7 @@ Run every command from the repo root; sessions belong to the repo.
 ## Tool
 `mrg` (`mrg <cmd> --help` for flags):
 - `mrg new RANGE [--name NAME]` prints a session id. NAME: the change's purpose, at most 32 columns. RANGE is `A..END`; END is a commit, `HEAD`, `staged`, or `unstaged` (working tree, tracked files only). Working changes: `HEAD..unstaged`. Write `HEAD` rather than its sha so fix commits join the same session.
+- `mrg diff RANGE [PATH...]` prints the diff with each line's old and new number, as `comment` takes them; read it in place of `git diff`.
 - `mrg comment --session ID FILE` (`-` for stdin) posts a JSON array of comments. Each has `body` and, for what it is on:
   - `"reply_to": "<thread id>"` answers in that thread.
   - `"commit": REV`, a commit of the range.
@@ -24,7 +25,7 @@ Ask once if the scope is missing.
 A range over 5 commits: split it along feature boundaries into consecutive sub-ranges of at most 5 commits, one session each, and run the workflow per session, one at a time.
 
 ## Workflow
-1. Read the scoped `git show/diff` and surrounding code.
+1. Read the scope with `mrg diff RANGE`, its commit messages with `git log`, and surrounding code.
    Act as the change's author walking a human through the implementation, rather than conducting a separate defect review.
    Done when you can explain the old and new behavior of each meaningful changed block.
 
@@ -45,8 +46,12 @@ A range over 5 commits: split it along feature boundaries into consecutive sub-r
    - Lines anchors: the block-level explanations and brief summaries from step 2.
    - File anchors: only context not already covered by the session or lines comments.
 
-4. Follow-up:
-   - The human is back (a `waiting on agent` notice, pasted threads, or done) → `mrg show --only waiting`; nothing waiting ends the review. Otherwise, for each thread, answer or fix, then reply in it with `reply_to`. After fixing, `delete` your notes (threads with no `user` message) in `mrg show --only outdated` that the fix made wrong. Post replies and comments on any new delta, then `review-tab` the same ID.
+4. Follow-up, once the human is back (a `waiting on agent` notice, pasted threads, or done):
+   - `mrg show --only waiting`; nothing waiting ends the review.
+   - For each thread, answer or fix, then reply in it with `reply_to`.
+   - After fixing, `delete` your notes (threads with no `user` message) in `mrg show --only outdated` that the fix made wrong.
+   - Read the new delta with `mrg diff BASE..END`. BASE is the `base` sha of `mrg show`; a relative base like `HEAD~2` moves with fix commits.
+   - Post replies and comments on the delta, then `review-tab` the same ID.
 
 ## Gotchas
 - History rewritten below the base → `mrg resume` fails in the review tab and nothing arrives; `mrg new` a new session.

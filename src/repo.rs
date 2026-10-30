@@ -102,8 +102,10 @@ impl Repo {
         let Some((base, end)) = range.split_once("..") else {
             bail!("range must look like A..END or ..END, got {range:?}");
         };
-        let base = if base.is_empty() {
-            self.empty_tree()?
+        let empty = self.empty_tree()?;
+        // The empty tree as well: the base `mrg show` prints for a range from before the root.
+        let base = if base.is_empty() || base == empty {
+            empty
         } else {
             self.commit(base)?
         };
@@ -135,6 +137,21 @@ impl Repo {
     /// Files changed from `base` to `end`, with `context` lines around each change.
     pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
         let to = self.object(end)?;
+        self.diff_of(&[base, &to], context, &[])
+    }
+
+    /// `diff` from `base` to `end` as it is now, in `paths` if any: `staged` and
+    /// `unstaged` are read in place, writing no tree.
+    pub fn diff_now(&self, base: &str, end: &str, paths: &[String]) -> Result<Vec<FileDiff>> {
+        let revs = match end {
+            "unstaged" => vec![base],
+            "staged" => vec!["--cached", base],
+            _ => vec![base, end],
+        };
+        self.diff_of(&revs, 3, paths)
+    }
+
+    fn diff_of(&self, revs: &[&str], context: u32, paths: &[String]) -> Result<Vec<FileDiff>> {
         let context = format!("-U{context}");
         let mut cmd = self.git(&[
             "diff",
@@ -152,9 +169,8 @@ impl Repo {
             "--raw",
             "-z",
             "--patch",
-            base,
-            &to,
         ]);
+        cmd.args(revs).arg("--").args(paths);
         // Errors in English, for `changes` to tell objects missing.
         let out = run(cmd.env("LC_ALL", "C"))?;
         parse::parse(&out)
