@@ -9,6 +9,7 @@ mod store;
 mod theme;
 mod ui;
 
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
@@ -25,7 +26,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 
-use repo::Repo;
+use repo::{FileDiff, Kind, Repo};
 use session::{NewComment, Session};
 use store::Store;
 
@@ -50,6 +51,12 @@ enum Cmd {
         range: String,
         #[arg(long)]
         name: Option<String>,
+    },
+    /// Print the diff of RANGE, as `new` takes it, each line with its old and new number for `comment`
+    Diff {
+        range: String,
+        /// Only these paths, from the repo root
+        paths: Vec<String>,
     },
     /// Add comments from a JSON file (`-` for stdin) to a session; prints {id, location} per comment
     Comment {
@@ -101,6 +108,11 @@ fn main() -> Result<()> {
             }
             store.save(&session)?;
             println!("{}", session.id);
+            Ok(())
+        }
+        Some(Cmd::Diff { range, paths }) => {
+            let (base, end) = repo.resolve(&range)?;
+            print!("{}", numbered(&repo.diff_now(&base, &end, &paths)?));
             Ok(())
         }
         Some(Cmd::Comment { session, file }) => {
@@ -172,6 +184,40 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `files` with each line's old and new number, as `comment` takes them: a header per
+/// file, then its hunks, `...` between them.
+fn numbered(files: &[FileDiff]) -> String {
+    let num = |n: Option<u32>| n.map_or(String::new(), |n| n.to_string());
+    let mut out = String::new();
+    for f in files {
+        if f.old_path == f.new_path {
+            writeln!(out, "{} {}", f.status, f.new_path).unwrap();
+        } else {
+            writeln!(out, "{} {} -> {}", f.status, f.old_path, f.new_path).unwrap();
+        }
+        if f.binary {
+            out.push_str("  (binary)\n");
+        }
+        for (i, h) in f.hunks.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ...\n");
+            }
+            let (mut old, mut new) = h.firsts();
+            for l in &h.lines {
+                let (o, n, sign) = match l.kind {
+                    Kind::Ctx => (Some(old), Some(new), ' '),
+                    Kind::Del => (Some(old), None, '-'),
+                    Kind::Add => (None, Some(new), '+'),
+                };
+                old += o.is_some() as u32;
+                new += n.is_some() as u32;
+                writeln!(out, "{:>5} {:>5} {sign} {}", num(o), num(n), l.text).unwrap();
+            }
+        }
+    }
+    out
 }
 
 fn need_terminal() -> Result<()> {
@@ -259,5 +305,57 @@ fn tui(
             return Ok(());
         }
         (store, repo, session, look) = (ctx.store, ctx.repo, None, ctx.look);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use repo::{Hunk, Line};
+
+    #[test]
+    fn numbered_lines() {
+        let line = |kind, text: &str| Line {
+            kind,
+            text: text.into(),
+        };
+        let hunk = |old_start, old_len, new_start, new_len, lines| Hunk {
+            old_start,
+            old_len,
+            new_start,
+            new_len,
+            lines,
+        };
+        let files = [FileDiff {
+            status: 'R',
+            old_path: "a".into(),
+            new_path: "b".into(),
+            binary: false,
+            hunks: vec![
+                hunk(
+                    1,
+                    2,
+                    1,
+                    2,
+                    vec![
+                        line(Kind::Ctx, "1"),
+                        line(Kind::Del, "x"),
+                        line(Kind::Add, "y"),
+                    ],
+                ),
+                // An addition only: the old side starts at the line before.
+                hunk(8, 0, 9, 1, vec![line(Kind::Add, "z")]),
+            ],
+        }];
+        assert_eq!(
+            numbered(&files),
+            "R a -> b
+    1     1   1
+    2       - x
+          2 + y
+  ...
+          9 + z
+"
+        );
     }
 }
