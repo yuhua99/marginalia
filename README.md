@@ -7,7 +7,7 @@
 ```sh
 git clone https://github.com/yuhua99/marginalia.git
 cd marginalia
-cargo install --path .
+cargo install --path crates/mrg
 ```
 
 Install the skill:

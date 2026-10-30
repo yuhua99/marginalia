@@ -68,7 +68,7 @@ impl DiffView {
     }
 
     fn thread_at_cursor(&self, ctx: &Ctx) -> Option<usize> {
-        match ctx.doc.window(self.scroll.cursor, 1).first() {
+        match ctx.review.doc.window(self.scroll.cursor, 1).first() {
             Some(Row::Thread { idx }) => Some(*idx),
             _ => None,
         }
@@ -76,7 +76,7 @@ impl DiffView {
 
     /// The file the cursor is in.
     pub fn current_file(&self, ctx: &Ctx) -> Option<usize> {
-        ctx.doc.file_at(self.scroll.cursor)
+        ctx.review.doc.file_at(self.scroll.cursor)
     }
 
     /// Starts writing `input` under `row`.
@@ -88,20 +88,25 @@ impl DiffView {
 
     /// `/text [3/8] ` for the title while searching.
     pub fn search_title(&mut self, ctx: &Ctx) -> String {
-        self.search
-            .search_title(&ctx.doc, self.scroll.cursor, &ctx.session.threads)
+        self.search.search_title(
+            &ctx.review.doc,
+            self.scroll.cursor,
+            &ctx.review.session.threads,
+        )
     }
 
     /// Moves to the next (or previous) search match.
     fn find(&mut self, ctx: &mut Ctx, forward: bool) {
-        let (cursor, len) = (self.scroll.cursor, ctx.doc.len());
-        if let Some(row) = self
-            .search
-            .find(&mut ctx.doc, cursor, forward, &ctx.session.threads)
-        {
+        let (cursor, len) = (self.scroll.cursor, ctx.review.doc.len());
+        if let Some(row) = self.search.find(
+            &mut ctx.review.doc,
+            cursor,
+            forward,
+            &ctx.review.session.threads,
+        ) {
             self.scroll.center(row);
             // Expanding a file shifts the rows under it.
-            if ctx.doc.len() != len {
+            if ctx.review.doc.len() != len {
                 self.mark = None;
             }
         }
@@ -163,7 +168,7 @@ impl DiffView {
     }
 
     pub fn act(&mut self, action: &str, ctx: &mut Ctx) -> Result<Outcome> {
-        if self.scroll.act(action, ctx.doc.len()) {
+        if self.scroll.act(action, ctx.review.doc.len()) {
             return Ok(Outcome::Consumed);
         }
         let cursor = self.scroll.cursor;
@@ -173,19 +178,20 @@ impl DiffView {
                 self.find(ctx, action == "next_thread")
             }
             "next_thread" | "prev_thread" => {
-                if let Some(i) = ctx.doc.next_thread(cursor, action == "next_thread") {
+                if let Some(i) = ctx.review.doc.next_thread(cursor, action == "next_thread") {
                     self.scroll.center(i);
                 }
             }
             "next_file" | "prev_file" => {
-                if let Some(i) = ctx.doc.next_file(cursor, action == "next_file") {
+                if let Some(i) = ctx.review.doc.next_file(cursor, action == "next_file") {
                     self.jump(i);
                 }
             }
             "open" => {
                 // On a thread: follow its link to a file view, or list its links.
                 if let Some(idx) = self.thread_at_cursor(ctx) {
-                    let mut links = file_view::thread_links(&ctx.session.threads[idx], &ctx.files);
+                    let mut links =
+                        file_view::thread_links(&ctx.review.session.threads[idx], &ctx.files);
                     if links.len() > 1 {
                         self.links = Some(LinkPicker::new(links));
                     } else if let Some(link) = links.pop() {
@@ -194,9 +200,10 @@ impl DiffView {
                     return Ok(Outcome::Consumed);
                 }
                 let row = ctx
+                    .review
                     .doc
-                    .expand(cursor, |rev, path| ctx.repo.read(rev, path))?;
-                self.scroll.cursor = row.min(ctx.doc.len() - 1);
+                    .expand(cursor, |rev, path| ctx.review.repo.read(rev, path))?;
+                self.scroll.cursor = row.min(ctx.review.doc.len() - 1);
                 self.mark = None;
             }
             "select" => {
@@ -213,27 +220,27 @@ impl DiffView {
                     self.start(cursor, Input::reply(idx));
                 } else {
                     let selection = self.selection();
-                    let anchor = ctx.doc.anchor_at(selection.clone());
+                    let anchor = ctx.review.doc.anchor_at(selection.clone());
                     let mut row = *selection.end();
                     // A comment on a collapsed file would be hidden with it. Here, that is
                     // one on its header, whose rows the expanding shifts.
-                    if let Some(file) = ctx.doc.file_of(&anchor)
-                        && ctx.doc.collapsed(file)
+                    if let Some(file) = ctx.review.doc.file_of(&anchor)
+                        && ctx.review.doc.collapsed(file)
                     {
-                        row = ctx.doc.expand_file(file);
+                        row = ctx.review.doc.expand_file(file);
                     }
-                    self.start(row, Input::comment(anchor, &ctx.session));
+                    self.start(row, Input::comment(anchor, &ctx.review.session));
                 }
             }
             // Only the user's last message, before the agent answers it.
             "edit" | "delete" => {
                 if let Some(idx) = self.thread_at_cursor(ctx)
-                    && ctx.session.threads[idx].waiting_on_agent()
+                    && ctx.review.session.threads[idx].waiting_on_agent()
                 {
                     if action == "edit" {
-                        self.start(cursor, Input::edit(idx, &ctx.session));
+                        self.start(cursor, Input::edit(idx, &ctx.review.session));
                     } else {
-                        let t = &ctx.session.threads[idx];
+                        let t = &ctx.review.session.threads[idx];
                         let question = if t.messages.len() == 1 {
                             format!("delete thread {}?", t.id)
                         } else {
@@ -242,7 +249,7 @@ impl DiffView {
                         return Ok(Outcome::Push(Box::new(
                             Confirm::new("Delete", question, "y delete  n/Esc cancel")
                                 .on('y', move |ctx: &mut Ctx| {
-                                    ctx.delete(idx)?;
+                                    ctx.review.delete(idx)?;
                                     Ok(Outcome::Close)
                                 })
                                 .on('n', |_| Ok(Outcome::Close)),
@@ -252,10 +259,10 @@ impl DiffView {
             }
             "collapse" => {
                 if let Some(file) = self.current_file(ctx) {
-                    self.scroll.cursor = if ctx.doc.collapsed(file) {
-                        ctx.doc.expand_file(file)
+                    self.scroll.cursor = if ctx.review.doc.collapsed(file) {
+                        ctx.review.doc.expand_file(file)
                     } else {
-                        ctx.doc.collapse_file(file)
+                        ctx.review.doc.collapse_file(file)
                     };
                     self.mark = None;
                 }
@@ -266,7 +273,7 @@ impl DiffView {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
-        let doc = &ctx.doc;
+        let doc = &ctx.review.doc;
         self.scroll.cursor = self.scroll.cursor.min(doc.len() - 1);
         let selection = self.selection();
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
@@ -618,15 +625,15 @@ fn thread_lines(
     search: (&str, Style),
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
-    let t: &Thread = &ctx.session.threads[idx];
+    let t: &Thread = &ctx.review.session.threads[idx];
     let outdated = t.outdated();
     let line = |spans: Vec<Span<'static>>| {
         Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
     let inner = width.saturating_sub(INDENT);
-    let place = match ctx.doc.place_of(idx) {
+    let place = match ctx.review.doc.place_of(idx) {
         Some(p) if inline => p.inline(),
-        _ => ctx.session.location(t),
+        _ => ctx.review.session.location(t),
     };
     let mut header = format!("{}  {place}", t.id);
     if t.waiting_on_agent() {

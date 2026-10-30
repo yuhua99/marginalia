@@ -717,6 +717,10 @@ impl Doc {
         self.rows.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
     /// Up to `n` rows starting at `start`.
     pub fn window(&self, start: usize, n: usize) -> &[Row] {
         let start = start.min(self.rows.len());

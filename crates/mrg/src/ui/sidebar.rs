@@ -4,7 +4,8 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{Ctx, View};
+use crate::app::Ctx;
+use crate::review::View;
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::query::Query;
@@ -37,13 +38,13 @@ impl Entry {
     /// The anchor for a `c` here: commit, file, or the session for the other views.
     pub fn anchor(self, ctx: &Ctx) -> Option<Anchor> {
         match self {
-            Entry::View(v) => Some(match &ctx.views[v] {
+            Entry::View(v) => Some(match &ctx.review.views[v] {
                 View::Commit(c) => Anchor::Commit {
                     commit: c.sha.clone(),
                 },
                 View::Uncommitted => Anchor::Session,
             }),
-            Entry::File(file) => Some(ctx.doc.file_anchor(file)),
+            Entry::File(file) => Some(ctx.review.doc.file_anchor(file)),
             Entry::Other => None,
         }
     }
@@ -86,7 +87,7 @@ impl Sidebar {
 
     /// Entering the commits box checks the views shown; leaving it drops the checks.
     pub fn focus(&mut self, ctx: &Ctx, focused: bool) {
-        let shown = ctx.shown.bounds(ctx.views.len());
+        let shown = ctx.review.shown.bounds(ctx.review.views.len());
         self.checked = focused.then_some(Some(shown));
     }
 
@@ -154,7 +155,7 @@ impl Sidebar {
         if self.cursor >= self.top + self.height {
             self.top = self.cursor + 1 - self.height;
         }
-        let columns = Columns::new(ctx.views.iter().filter_map(|v| match v {
+        let columns = Columns::new(ctx.review.views.iter().filter_map(|v| match v {
             View::Commit(c) => Some(c),
             _ => None,
         }));
@@ -173,14 +174,14 @@ impl Sidebar {
                 let mut spans = vec![Span::raw(" ".repeat(item.indent))];
                 spans.extend(item.checked.map(|on| mark(on, ctx.look.theme)));
                 if let Entry::File(file) = item.entry {
-                    let s = ctx.doc.status(file);
+                    let s = ctx.review.doc.status(file);
                     spans.push(Span::styled(
                         format!("{s} "),
                         status_style(s, ctx.look.theme),
                     ));
                 }
                 if let Entry::View(v) = item.entry
-                    && let View::Commit(c) = &ctx.views[v]
+                    && let View::Commit(c) = &ctx.review.views[v]
                 {
                     spans.extend(columns.row(c, width, ctx.look.theme));
                     return Line::from(spans);
@@ -206,8 +207,9 @@ impl Sidebar {
 
 fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
     let within = |range: (usize, usize), v| (range.0..=range.1).contains(&v);
-    let shown = ctx.shown.bounds(ctx.views.len());
-    ctx.views
+    let shown = ctx.review.shown.bounds(ctx.review.views.len());
+    ctx.review
+        .views
         .iter()
         .enumerate()
         .map(|(v, view)| {
@@ -219,7 +221,7 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
             let text = match view {
                 // Drawn by `Columns::row`.
                 View::Commit(_) => String::new(),
-                View::Uncommitted => ctx.session.end.clone(),
+                View::Uncommitted => ctx.review.session.end.clone(),
             };
             Item {
                 entry: Entry::View(v),
@@ -239,7 +241,7 @@ fn files(ctx: &Ctx, filter: &str) -> Vec<Item> {
     let filter = filter.to_lowercase();
     // Files come in path order, so a directory's files are contiguous.
     let mut prev: Vec<&str> = Vec::new();
-    for (file, (_, path)) in ctx.doc.paths().iter().enumerate() {
+    for (file, (_, path)) in ctx.review.doc.paths().iter().enumerate() {
         if !path.to_lowercase().contains(&filter) {
             continue;
         }
@@ -256,7 +258,7 @@ fn files(ctx: &Ctx, filter: &str) -> Vec<Item> {
         }
         items.push(Item {
             entry: Entry::File(file),
-            checked: Some(ctx.doc.collapsed(file)),
+            checked: Some(ctx.review.doc.collapsed(file)),
             indent: 2 * dirs.len(),
             text: name.to_string(),
         });

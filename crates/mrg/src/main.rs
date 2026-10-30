@@ -1,14 +1,11 @@
 mod app;
-mod doc;
 mod forge;
-mod highlight;
 mod keymap;
-mod repo;
-mod session;
 mod settings;
-mod store;
 mod theme;
 mod ui;
+
+use mrg_core::{doc, highlight, repo, review, session, store};
 
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
@@ -283,9 +280,9 @@ fn tui(
         let Some(ctx) = ctx else {
             return Ok(());
         };
-        let s = &ctx.session;
+        let s = &ctx.review.session;
         if ctx.copy
-            && let Some(md) = s.markdown(&ctx.doc.thread_order())
+            && let Some(md) = s.markdown(&ctx.review.doc.thread_order())
         {
             // OSC 52: the terminal sets its clipboard, which outlives this process.
             print!("\x1b]52;c;{}\x07", STANDARD.encode(md));
@@ -306,7 +303,7 @@ fn tui(
         if !ctx.back {
             return Ok(());
         }
-        (store, repo, session, look) = (ctx.store, ctx.repo, None, ctx.look);
+        (store, repo, session, look) = (ctx.review.store, ctx.review.repo, None, ctx.look);
     }
 }
 
