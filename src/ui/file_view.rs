@@ -88,7 +88,7 @@ impl FileView {
         let cursor = self.scroll.cursor;
         // `Doc::file` has no thread rows.
         if let Some(row) = self.search.find(&mut self.doc, cursor, forward, &[]) {
-            self.scroll.cursor = row;
+            self.scroll.center(row);
         }
     }
 }
@@ -150,7 +150,8 @@ impl Component for FileView {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         clear(f, area, ctx.look.theme);
-        let title = format!(" {} {}", self.label, self.search.title());
+        let found = self.search.search_title(&self.doc, self.scroll.cursor, &[]);
+        let title = format!(" {} {}", self.label, found);
         let block = boxed(title, true, ctx.look.theme);
         let inner = block.inner(area);
         f.render_widget(block, area);

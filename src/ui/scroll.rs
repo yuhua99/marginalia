@@ -41,6 +41,14 @@ impl Scroll {
         };
     }
 
+    /// Moves the cursor to `row`, mid-screen.
+    pub fn center(&mut self, row: usize) {
+        *self = Scroll {
+            height: self.height,
+            ..Scroll::centered(row)
+        };
+    }
+
     /// The first row on screen and the lines of it scrolled past.
     pub fn top(&self) -> (usize, usize) {
         (self.top, self.off)

@@ -14,8 +14,8 @@ pub struct Query {
     pub text: String,
     /// Keys go to the text.
     pub typing: bool,
-    /// The last search found nothing.
-    missed: bool,
+    /// `Doc::tally` of the text, for the doc version it is of.
+    counted: Option<(u64, (Vec<usize>, usize))>,
 }
 
 impl Query {
@@ -29,7 +29,7 @@ impl Query {
 
     /// Takes `key` while typing; true when Enter ends a non-blank line. Esc clears it.
     pub fn key(&mut self, key: KeyEvent) -> bool {
-        self.missed = false;
+        self.counted = None;
         match key.code {
             KeyCode::Char(c) => self.text.push(c),
             KeyCode::Backspace => {
@@ -47,7 +47,7 @@ impl Query {
 
     /// Adds the first line of pasted `text`.
     pub fn paste(&mut self, text: &str) {
-        self.missed = false;
+        self.counted = None;
         self.text.push_str(text.lines().next().unwrap_or(""));
     }
 
@@ -56,30 +56,53 @@ impl Query {
         if self.text.is_empty() && !self.typing {
             return String::new();
         }
-        let missed = if self.missed { "(no match) " } else { "" };
-        format!("/{} {missed}", self.text)
+        format!("/{} ", self.text)
+    }
+
+    /// `title` with, once typed, which match row `at` of `doc` is on, of all:
+    /// `/text [3/8] `, or `[-/8]` off them. Counts again only when `doc` changes.
+    pub fn search_title(&mut self, doc: &Doc, at: usize, threads: &[Thread]) -> String {
+        if self.typing || self.text.is_empty() {
+            return self.title();
+        }
+        let version = doc.version();
+        if self.counted.as_ref().is_none_or(|c| c.0 != version) {
+            self.counted = Some((version, doc.tally(|row| self.count(row, threads))));
+        }
+        let (_, (before, total)) = self.counted.as_ref().expect("counted above");
+        let on = match doc.window(at, 1) {
+            [row] if self.count(row, threads) > 0 => (before[at] + 1).to_string(),
+            _ => "-".to_string(),
+        };
+        format!("/{} [{on}/{total}] ", self.text)
+    }
+
+    /// The matches of the text, any case, in `row`: in a file path, a code line, or the
+    /// messages of `threads`.
+    fn count(&self, row: &Row, threads: &[Thread]) -> usize {
+        let n = |s: &str| hits(s, &self.text).len();
+        match row {
+            Row::File { path, .. } => n(path),
+            Row::Code { left, right, .. } => [left, right]
+                .into_iter()
+                .flatten()
+                .map(|s| n(&s.text))
+                .sum(),
+            Row::Thread { idx } => threads[*idx].messages.iter().map(|m| n(&m.body)).sum(),
+            Row::Session | Row::Fold { .. } => 0,
+        }
     }
 
     /// The next (or previous) row of `doc` from `from` with the text in it, any case:
     /// a file path, a code line, or a message of `threads`. Expands a collapsed file it is in.
     pub fn find(
-        &mut self,
+        &self,
         doc: &mut Doc,
         from: usize,
         forward: bool,
         threads: &[Thread],
     ) -> Option<usize> {
-        let has = |s: &str| !hits(s, &self.text).is_empty();
-        let found = doc.search(from, forward, |row| match row {
-            Row::File { path, .. } => has(path),
-            Row::Code { left, right, .. } => {
-                [left, right].into_iter().flatten().any(|s| has(&s.text))
-            }
-            Row::Thread { idx } => threads[*idx].messages.iter().any(|m| has(&m.body)),
-            Row::Session | Row::Fold { .. } => false,
-        });
-        self.missed = found.is_none();
-        found
+        doc.search(from, forward, |row| self.count(row, threads) > 0)
     }
 }
 
@@ -147,6 +170,18 @@ pub fn mark(spans: Vec<Span<'static>>, query: &str, style: Style) -> Vec<Span<'s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titles_which_match_of_all() {
+        // The path, then "foo", "foo foo" and "bar".
+        let doc = Doc::file("r".into(), "a".into(), "foo\nfoo foo\nbar");
+        let mut q = Query::start();
+        q.paste("foo");
+        assert_eq!(q.search_title(&doc, 2, &[]), "/foo ");
+        q.typing = false;
+        assert_eq!(q.search_title(&doc, 2, &[]), "/foo [2/3] ");
+        assert_eq!(q.search_title(&doc, 3, &[]), "/foo [-/3] ");
+    }
 
     #[test]
     fn hits_any_case() {
