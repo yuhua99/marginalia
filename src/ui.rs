@@ -68,13 +68,27 @@ pub fn modal(
 
 /// Marks row `y` of `area` as the cursor: an accent bar across it, over any colors.
 pub fn cursor_bar(f: &mut Frame, area: Rect, y: u16, theme: &Theme) {
+    bar(
+        f,
+        area,
+        y,
+        Style::new().bg(theme.accent).fg(theme.on_accent),
+    );
+}
+
+/// The surface background on row `y` of `area`, under a checked row.
+pub fn checked_bar(f: &mut Frame, area: Rect, y: u16, theme: &Theme) {
+    bar(f, area, y, Style::new().bg(theme.surface));
+}
+
+/// `style` across row `y` of `area`.
+fn bar(f: &mut Frame, area: Rect, y: u16, style: Style) {
     let rect = Rect {
         y,
         height: 1,
         ..area
     };
-    f.buffer_mut()
-        .set_style(rect, Style::new().bg(theme.accent).fg(theme.on_accent));
+    f.buffer_mut().set_style(rect, style);
 }
 
 /// A file's status letter: added green, deleted red, modified yellow, renamed blue,

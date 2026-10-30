@@ -452,7 +452,7 @@ const fn palette(name: &'static str, p: Palette) -> Theme {
         mauve: rgb(p.mauve),
         teal: rgb(p.teal),
         peach: rgb(p.peach),
-        surface: rgb(mix(p.text, p.bg, 8)),
+        surface: rgb(mix(p.text, p.bg, 15)),
         del_bg: rgb(mix(p.red, p.bg, 15)),
         add_bg: rgb(mix(p.green, p.bg, 15)),
         del_emph: rgb(mix(p.red, p.bg, 45)),

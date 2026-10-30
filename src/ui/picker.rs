@@ -23,7 +23,7 @@ use crate::ui::confirm::Confirm;
 use crate::ui::help::{self, Entry, Help};
 use crate::ui::query::Query;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{Panes, boxed, check, clear, cursor_bar, dialog, row_at, step};
+use crate::ui::{Panes, boxed, check, checked_bar, clear, cursor_bar, dialog, row_at, step};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -544,6 +544,7 @@ impl Picker {
         let shown = self.shown(pane, ctx);
         let rows = shown.len();
         let shown = shown.into_iter().skip(skip).take(height);
+        let mut checked_rows = Vec::new();
         let lines: Vec<Line> = match pane {
             SESSIONS => {
                 let name_width = name_width(&ctx.sessions);
@@ -554,8 +555,12 @@ impl Picker {
             RANGE => {
                 let columns = Columns::new(&self.commits);
                 shown
-                    .map(|i| {
+                    .enumerate()
+                    .map(|(row, i)| {
                         let checked = self.checked.is_some_and(|(t, b)| (t..=b).contains(&i));
+                        if checked {
+                            checked_rows.push(row);
+                        }
                         let mut spans = vec![mark(checked, theme)];
                         // After the mark.
                         let width = width.saturating_sub(2);
@@ -589,6 +594,9 @@ impl Picker {
             },
         };
         f.render_widget(Paragraph::new(lines), inner);
+        for row in checked_rows {
+            checked_bar(f, inner, inner.y + row as u16, theme);
+        }
         if cursor < rows && height > 0 {
             cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
         }
