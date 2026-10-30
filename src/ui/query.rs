@@ -59,38 +59,36 @@ impl Query {
         format!("/{} ", self.text)
     }
 
-    /// `title` with, once typed, which match row `at` of `doc` is on, of all:
-    /// `/text [3/8] `, or `[-/8]` off them. Counts again only when `doc` changes.
+    /// `title` with, once typed, which of the rows with the text row `at` of `doc` is, of
+    /// all: `/text [3/8] `, or `[-/8]` off them. Counts again only when `doc` changes.
     pub fn search_title(&mut self, doc: &Doc, at: usize, threads: &[Thread]) -> String {
         if self.typing || self.text.is_empty() {
             return self.title();
         }
         let version = doc.version();
         if self.counted.as_ref().is_none_or(|c| c.0 != version) {
-            self.counted = Some((version, doc.tally(|row| self.count(row, threads))));
+            self.counted = Some((version, doc.tally(|row| self.hit(row, threads))));
         }
         let (_, (before, total)) = self.counted.as_ref().expect("counted above");
         let on = match doc.window(at, 1) {
-            [row] if self.count(row, threads) > 0 => (before[at] + 1).to_string(),
+            [row] if self.hit(row, threads) => (before[at] + 1).to_string(),
             _ => "-".to_string(),
         };
         format!("/{} [{on}/{total}] ", self.text)
     }
 
-    /// The matches of the text, any case, in `row`: in a file path, a code line, or the
+    /// Whether the text, any case, is in `row`: in a file path, a code line, or the
     /// messages of `threads`.
-    fn count(&self, row: &Row, threads: &[Thread]) -> usize {
-        let n = |s: &str| hits(s, &self.text).len();
+    fn hit(&self, row: &Row, threads: &[Thread]) -> bool {
+        let has = |s: &str| !hits(s, &self.text).is_empty();
         match row {
-            Row::File { path, .. } => n(path),
-            Row::Code { left, right, .. } => [left, right]
-                .into_iter()
-                .flatten()
-                .map(|s| n(&s.text))
-                .sum(),
-            Row::Thread { idx } => threads[*idx].messages.iter().map(|m| n(&m.body)).sum(),
-            Row::Commit { message, .. } => n(message),
-            Row::Session | Row::Fold { .. } => 0,
+            Row::File { path, .. } => has(path),
+            Row::Code { left, right, .. } => {
+                [left, right].into_iter().flatten().any(|s| has(&s.text))
+            }
+            Row::Thread { idx } => threads[*idx].messages.iter().any(|m| has(&m.body)),
+            Row::Commit { message, .. } => has(message),
+            Row::Session | Row::Fold { .. } => false,
         }
     }
 
@@ -103,7 +101,7 @@ impl Query {
         forward: bool,
         threads: &[Thread],
     ) -> Option<usize> {
-        doc.search(from, forward, |row| self.count(row, threads) > 0)
+        doc.search(from, forward, |row| self.hit(row, threads))
     }
 }
 
@@ -175,14 +173,14 @@ mod tests {
 
     #[test]
     fn titles_which_match_of_all() {
-        // The path, then "foo", "foo foo" and "bar".
+        // The path, then "foo", "foo foo" and "bar": two rows with "foo".
         let doc = Doc::file("r".into(), "a".into(), "foo\nfoo foo\nbar");
         let mut q = Query::start();
         q.paste("foo");
         assert_eq!(q.search_title(&doc, 2, &[]), "/foo ");
         q.typing = false;
-        assert_eq!(q.search_title(&doc, 2, &[]), "/foo [2/3] ");
-        assert_eq!(q.search_title(&doc, 3, &[]), "/foo [-/3] ");
+        assert_eq!(q.search_title(&doc, 2, &[]), "/foo [2/2] ");
+        assert_eq!(q.search_title(&doc, 3, &[]), "/foo [-/2] ");
     }
 
     #[test]
