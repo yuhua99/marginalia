@@ -12,7 +12,7 @@ die() { echo "error: $*" >&2; exit 1; }
 #   M_open CMD NAME PANE     runs CMD in a new focused tab NAME in $PWD; when CMD exits, focuses
 #                            PANE's tab and closes the new one
 #   M_send PANE TEXT         submits TEXT to PANE
-MUXES=(herdr tmux)
+MUXES=(herdr tmux rex)
 
 herdr_active() { [ "${HERDR_ENV:-}" = 1 ]; }
 herdr_pane() { echo "${HERDR_PANE_ID:?HERDR_PANE_ID unset}"; }
@@ -30,6 +30,11 @@ tmux_active() { [ -n "${TMUX:-}" ]; }
 tmux_pane() { echo "${TMUX_PANE:?TMUX_PANE unset}"; }
 tmux_open() { tmux new-window -a -n "$2" -c "$PWD" "$1; tmux select-window -t $3"; }
 tmux_send() { tmux send-keys -t "$1" -l "$2"; tmux send-keys -t "$1" Enter; }
+
+rex_active() { [ -n "${REX_SESSION:-}" ]; }
+rex_pane() { echo "${REX_BLOCK:?REX_BLOCK unset}"; }
+rex_open() { rex window new -s "$REX_SESSION" "$2" -c "$PWD" -- bash -c "$1; rex block focus -s $REX_SESSION $3" >/dev/null; }
+rex_send() { rex send -s "$REX_SESSION" -b "$1" "$2"; rex send-key -s "$REX_SESSION" -b "$1" enter; }
 
 mux=
 for m in "${MUXES[@]}"; do
