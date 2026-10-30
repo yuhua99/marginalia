@@ -8,7 +8,7 @@ use crate::app::{Ctx, View};
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::query::Query;
-use crate::ui::{boxed, check, cursor_bar, row_at, status_style, step};
+use crate::ui::{boxed, check, checked_bar, cursor_bar, row_at, status_style, step};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
 /// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
@@ -160,11 +160,16 @@ impl Sidebar {
         }));
         // Inside the borders, after the mark.
         let width = (area.width as usize).saturating_sub(2 + 2);
+        let mut checked_rows = Vec::new();
         let lines: Vec<Line> = items
             .iter()
             .skip(self.top)
             .take(self.height)
-            .map(|item| {
+            .enumerate()
+            .map(|(row, item)| {
+                if !self.files && item.checked == Some(true) {
+                    checked_rows.push(row);
+                }
                 let mut spans = vec![Span::raw(" ".repeat(item.indent))];
                 spans.extend(item.checked.map(|on| mark(on, ctx.look.theme)));
                 if let Entry::File(file) = item.entry {
@@ -189,6 +194,9 @@ impl Sidebar {
         let block = boxed(title, focused, ctx.look.theme);
         let inner = block.inner(area);
         f.render_widget(Paragraph::new(lines).block(block), area);
+        for row in checked_rows {
+            checked_bar(f, inner, inner.y + row as u16, ctx.look.theme);
+        }
         if focused && self.cursor < items.len() && self.height > 0 {
             let y = inner.y + (self.cursor - self.top) as u16;
             cursor_bar(f, inner, y, ctx.look.theme);
