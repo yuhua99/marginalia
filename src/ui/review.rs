@@ -188,7 +188,7 @@ impl Panes<Ctx> for Review {
         &self.panes
     }
 
-    fn focus(&mut self, pane: usize, ctx: &Ctx) {
+    fn focus(&mut self, pane: usize, ctx: &mut Ctx) {
         let focus = self.focus;
         self.focus = pane;
         self.refocus(focus, ctx);

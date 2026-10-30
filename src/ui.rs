@@ -121,7 +121,7 @@ pub fn row_at(area: Rect, top: usize, len: usize, y: u16) -> Option<usize> {
 pub trait Panes<C> {
     /// The boxes, as of the last render.
     fn panes(&self) -> &[Rect];
-    fn focus(&mut self, pane: usize, ctx: &C);
+    fn focus(&mut self, pane: usize, ctx: &mut C);
     /// Typing, which takes all keys and leaves the mouse alone.
     fn busy(&self) -> bool;
     /// The key action `action` in the focused box.

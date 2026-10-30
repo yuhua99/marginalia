@@ -18,7 +18,7 @@ pub struct Repo {
     index: String,
     /// `staged` / `unstaged` -> tree id, computed once per object directory.
     trees: HashMap<String, String>,
-    /// `base..end` -> its commits, listed once per process.
+    /// `base..tip` -> its commits, the tip pinned so a moved end lists again.
     ranges: HashMap<String, Vec<Commit>>,
     /// (from, to) -> `changes` between them.
     changes: HashMap<(String, String), Option<Vec<FileDiff>>>,
@@ -97,7 +97,7 @@ impl Repo {
 
     /// Splits `A..end` into the base commit sha (the empty tree when A is left out,
     /// to start before the root commit) and the end (a commit sha, or `HEAD` /
-    /// `staged` / `unstaged` kept symbolic).
+    /// `staged` / `unstaged` / a full ref `refs/...` kept symbolic, to follow it).
     pub fn resolve(&self, range: &str) -> Result<(String, String)> {
         let Some((base, end)) = range.split_once("..") else {
             bail!("range must look like A..END or ..END, got {range:?}");
@@ -110,6 +110,10 @@ impl Repo {
             self.commit(base)?
         };
         let end = if end == "HEAD" || worktree(end) {
+            end.to_string()
+        } else if end.starts_with("refs/") {
+            // Checked now, not on the first load.
+            self.commit(end)?;
             end.to_string()
         } else {
             self.commit(end)?
@@ -300,7 +304,7 @@ impl Repo {
     /// Commits in `base..end`, oldest first.
     pub fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
         // A tree as base (before the root) is ignored by git log, listing all history.
-        let range = format!("{base}..{}", tip(end));
+        let range = format!("{base}..{}", self.commit(tip(end))?);
         if !self.ranges.contains_key(&range) {
             let commits = self.log(&["--reverse", &range])?;
             self.ranges.insert(range.clone(), commits);
@@ -367,6 +371,44 @@ impl Repo {
     /// The full message of `commit`.
     pub fn message(&self, commit: &str) -> Result<String> {
         text(run(&mut self.git(&["log", "-1", "--format=%B", commit]))?)
+    }
+
+    /// The URL of origin.
+    pub fn origin(&self) -> Result<String> {
+        text(run(&mut self.git(&["remote", "get-url", "origin"]))?)
+    }
+
+    /// Fetches `refspecs` from origin; with `prompt`, git and ssh may ask for a
+    /// password, else the terminal is the TUI's and they fail. Not through `git`: the
+    /// objects go to `.git` with the refs, not to a session's directory.
+    pub fn fetch(&self, refspecs: &[String], prompt: bool) -> Result<()> {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(&self.root)
+            .args(["fetch", "--quiet", "--no-tags", "origin"])
+            .args(refspecs);
+        if !prompt {
+            cmd.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null());
+            // ssh asks on /dev/tty, past stdin; unless the user set how ssh runs.
+            let set = ["GIT_SSH_COMMAND", "GIT_SSH"]
+                .iter()
+                .any(|v| std::env::var_os(v).is_some())
+                || self
+                    .git(&["config", "core.sshCommand"])
+                    .output()?
+                    .status
+                    .success();
+            if !set {
+                cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+            }
+        }
+        run(&mut cmd)?;
+        Ok(())
+    }
+
+    /// The best common ancestor of commits `a` and `b`.
+    pub fn merge_base(&self, a: &str, b: &str) -> Result<String> {
+        text(run(&mut self.git(&["merge-base", a, b]))?)
     }
 
     /// The empty tree, to diff a root commit against.
