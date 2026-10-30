@@ -138,9 +138,6 @@ impl Sidebar {
                 && let Some(checked) = &mut self.checked
             {
                 *checked = check(*checked, v);
-                if checked.is_some() {
-                    self.cursor = (self.cursor + 1).min(len.saturating_sub(1));
-                }
             }
             return;
         }

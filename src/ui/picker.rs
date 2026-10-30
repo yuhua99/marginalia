@@ -272,7 +272,6 @@ impl Panes<Pick> for Picker {
         }
         let shown = self.shown(pane, &ctx.sessions);
         let at = shown.get(self.cursor[pane]).copied();
-        let last = shown.len().saturating_sub(1);
         let cursor = self.cursor[pane];
         if let Some(to) = step(cursor, action, shown.len(), self.height) {
             self.cursor[pane] = to;
@@ -281,9 +280,6 @@ impl Panes<Pick> for Picker {
             "check" if self.right => {
                 if let Some(i) = at {
                     self.checked = check(self.checked, i);
-                    if self.checked.is_some() {
-                        self.cursor[1] = (cursor + 1).min(last);
-                    }
                 }
             }
             "filter" => self.filter[pane].typing = true,
