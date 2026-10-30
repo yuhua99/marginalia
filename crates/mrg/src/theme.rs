@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use ratatui::style::Color;
 
+use crate::highlight::Slot;
+
 mod contrast;
 mod system;
 
@@ -11,35 +13,6 @@ use contrast::{COLOR, DIM, TEXT, luminance, readable};
 /// words in it.
 const LINE: u16 = 15;
 const WORDS: u16 = 30;
-
-/// A palette color by role. Syntax tokens are stored as slots, so switching
-/// themes needs no re-coloring.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Slot {
-    Text,
-    Comment,
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Mauve,
-    Teal,
-    Peach,
-}
-
-impl Slot {
-    pub const ALL: [Slot; 9] = [
-        Slot::Text,
-        Slot::Comment,
-        Slot::Red,
-        Slot::Green,
-        Slot::Yellow,
-        Slot::Blue,
-        Slot::Mauve,
-        Slot::Teal,
-        Slot::Peach,
-    ];
-}
 
 /// Colors of the UI and of syntax tokens.
 #[derive(Clone)]

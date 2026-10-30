@@ -5,8 +5,9 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::{Component, Ctx, Outcome, Shown};
+use crate::app::{Component, Ctx, Outcome};
 use crate::keymap::{Feed, Keymap};
+use crate::review::Shown;
 use crate::session::Anchor;
 use crate::ui::confirm::Confirm;
 use crate::ui::diff_view::DiffView;
@@ -126,8 +127,8 @@ impl Panes<Ctx> for Review {
             // Leaving for the picker ends the session like quitting does.
             "quit" | "back" => {
                 ctx.back = action == "back";
-                let order = ctx.doc.thread_order();
-                if ctx.on_quit.is_none() && ctx.session.markdown(&order).is_some() {
+                let order = ctx.review.doc.thread_order();
+                if ctx.on_quit.is_none() && ctx.review.session.markdown(&order).is_some() {
                     return Ok(Outcome::Push(Box::new(
                         Confirm::new(
                             "Quit",
@@ -152,12 +153,12 @@ impl Panes<Ctx> for Review {
                 match (action, list.entry(ctx)) {
                     ("open", Entry::View(view)) => {
                         let run = self.commits.checked().unwrap_or((view, view));
-                        ctx.show(Shown::of(run, ctx.views.len()))?;
+                        ctx.review.show(Shown::of(run, ctx.review.views.len()))?;
                         self.diff = DiffView::default();
                         self.focus = DIFF;
                     }
                     ("open", Entry::File(file)) => {
-                        self.diff.jump(ctx.doc.file_row(file));
+                        self.diff.jump(ctx.review.doc.file_row(file));
                         self.focus = DIFF;
                     }
                     ("comment", entry) => {
@@ -165,13 +166,14 @@ impl Panes<Ctx> for Review {
                             // Under the file's header, the commit's when shown alone,
                             // else the session's.
                             let row = match (entry, &anchor) {
-                                (Entry::File(file), _) => ctx.doc.expand_file(file),
+                                (Entry::File(file), _) => ctx.review.doc.expand_file(file),
                                 (_, Anchor::Commit { commit }) => {
-                                    ctx.doc.commit_row(commit).unwrap_or(0)
+                                    ctx.review.doc.commit_row(commit).unwrap_or(0)
                                 }
                                 _ => 0,
                             };
-                            self.diff.start(row, Input::comment(anchor, &ctx.session));
+                            self.diff
+                                .start(row, Input::comment(anchor, &ctx.review.session));
                             self.focus = DIFF;
                         }
                     }
@@ -243,7 +245,7 @@ impl Component for Review {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
         // Commits as tall as their rows, up to 4.
-        let rows = ctx.views.len().min(4) as u16;
+        let rows = ctx.review.views.len().min(4) as u16;
         let [top, bottom] =
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
         let [left, right] =
@@ -272,8 +274,8 @@ impl Component for Review {
 /// The path of `file`, else the session name, if any.
 fn header(ctx: &Ctx, file: Option<usize>) -> String {
     let name = match file {
-        Some(file) => Some(&ctx.doc.paths()[file].1),
-        None => ctx.session.name.as_ref(),
+        Some(file) => Some(&ctx.review.doc.paths()[file].1),
+        None => ctx.review.session.name.as_ref(),
     };
     name.map_or(String::new(), |n| format!(" {n} "))
 }

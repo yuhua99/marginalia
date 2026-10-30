@@ -104,9 +104,9 @@ impl Component for Input {
                     return Ok(Outcome::Consumed);
                 }
                 let sent = match &self.target {
-                    Target::Comment(anchor) => ctx.comment(anchor.clone(), body)?,
-                    Target::Reply(idx) => ctx.reply(*idx, body)?,
-                    Target::Edit(idx) => ctx.edit(*idx, body).map(Ok)?,
+                    Target::Comment(anchor) => ctx.review.comment(anchor.clone(), body)?,
+                    Target::Reply(idx) => ctx.review.reply(*idx, body)?,
+                    Target::Edit(idx) => ctx.review.edit(*idx, body).map(Ok)?,
                 };
                 if let Err(e) = sent {
                     self.error = Some(format!("{e:#}"));

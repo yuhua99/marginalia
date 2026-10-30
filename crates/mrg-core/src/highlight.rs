@@ -11,12 +11,40 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
 use crate::repo::Repo;
-use crate::theme::Slot;
 
 /// Larger files are not colored.
 const MAX_BYTES: usize = 1 << 20;
 /// Coloring stops at the first longer line.
 const MAX_LINE: usize = 2000;
+
+/// A palette color by role. Syntax tokens are stored as slots, so switching
+/// themes needs no re-coloring.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Slot {
+    Text,
+    Comment,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Mauve,
+    Teal,
+    Peach,
+}
+
+impl Slot {
+    pub const ALL: [Slot; 9] = [
+        Slot::Text,
+        Slot::Comment,
+        Slot::Red,
+        Slot::Green,
+        Slot::Yellow,
+        Slot::Blue,
+        Slot::Mauve,
+        Slot::Teal,
+        Slot::Peach,
+    ];
+}
 
 /// Per line, runs of (palette slot, byte length).
 pub type Colors = Vec<Vec<(Slot, usize)>>;
@@ -30,6 +58,12 @@ pub struct Highlighter {
     /// Asked for while rendering; read and sent by `flush`.
     wanted: RefCell<HashSet<Key>>,
     sent: HashSet<Key>,
+}
+
+impl Default for Highlighter {
+    fn default() -> Highlighter {
+        Highlighter::new()
+    }
 }
 
 impl Highlighter {

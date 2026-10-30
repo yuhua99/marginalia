@@ -8,9 +8,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
-pub use parse::{FileDiff, Kind};
-#[cfg(test)]
-pub use parse::{Hunk, Line};
+pub use parse::{FileDiff, Hunk, Kind, Line};
 
 pub struct Repo {
     root: String,

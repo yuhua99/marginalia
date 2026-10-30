@@ -919,12 +919,11 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "libc",
+ "mrg-core",
  "ratatui",
  "ratatui-textarea",
  "serde",
  "serde_json",
- "similar",
- "syntect",
  "textwrap",
  "toml_edit",
  "unicode-segmentation",
@@ -978,6 +977,17 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "mrg-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "similar",
+ "syntect",
 ]
 
 [[package]]
