@@ -21,6 +21,7 @@ Run every command from the repo root; sessions belong to the repo.
 - `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux it prints a command to relay to the human.
 
 Ask once if the scope is missing.
+A range over 5 commits: split it along feature boundaries into consecutive sub-ranges of at most 5 commits, one session each, and run the workflow per session, one at a time.
 
 ## Workflow
 1. Read the scoped `git show/diff` and surrounding code.
@@ -29,7 +30,7 @@ Ask once if the scope is missing.
 
 2. Group hunks by concern and draft all comments into a temp comments file.
    Split each hunk into logical blocks of one or a few adjacent lines.
-   Keep each comment to one point a reader takes in at a glance, at most three short lines; split rather than lengthen. The session sketch is exempt.
+   Keep each comment to one point a reader takes in at a glance, at most three short lines; split rather than lengthen.
    Explain each block's old behavior -> change -> new behavior, and why; explain intent and effects rather than paraphrasing syntax.
    Give distinct changes within a function separate comments, anchored to the relevant lines.
    Summarize tests, codegen, and pure moves in one line per logical group; still name any behavior or test-expectation changes. For copied blocks, link the source in one line; explain any differences from the source and their behavioral effects separately.
@@ -39,7 +40,8 @@ Ask once if the scope is missing.
    Done when every changed hunk is covered by block-level explanations or explicitly included in a brief-summary exception above.
 
 3. Order the file, `mrg new RANGE --name NAME`, `mrg comment` it, then `review-tab ID`:
-   - Session anchor first: the change's purpose, which concern to read first, and why. Add one ASCII sketch of the change's shape: a call tree, file tree, or pseudocode with `+`/`-` lines, holding only the nodes this change touches.
+   - Session anchor first: the change's purpose, which concern to read first, and why.
+   - Commit anchors: one per commit in the range, a line on what the commit does.
    - Lines anchors: the block-level explanations and brief summaries from step 2.
    - File anchors: only context not already covered by the session or lines comments.
 
