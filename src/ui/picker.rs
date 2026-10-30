@@ -9,13 +9,13 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use ratatui_textarea::TextArea;
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Component, Layers, Look, Outcome};
 use crate::forge::{self, Forge, Request};
 use crate::keymap::{Feed, Keymap};
 use crate::repo::{self, Commit, Repo, short};
-use crate::session::{NAME_MAX, Session};
+use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::ui::commit_row::{Columns, MIN_SUBJECT, fit, mark};
@@ -345,11 +345,7 @@ fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let mut session = Session::new(ctx.store.new_id(), range, base, end);
         // A name is one line.
         let title = r.title.replace(char::is_control, " ");
-        let mut name = format!("{} {title}", forge.sign(r.number));
-        if name.width() > NAME_MAX {
-            name = format!("{}…", fit(&name, NAME_MAX - 1));
-        }
-        session.set_name(&name)?;
+        session.set_name(&format!("{} {title}", forge.sign(r.number)))?;
         Ok(session)
     });
     match started {
@@ -668,6 +664,9 @@ fn session_row<'a>(
     ]
 }
 
+/// Columns the rename box shows; a longer name scrolls in it.
+const RENAME_WIDTH: u16 = 80;
+
 /// `e`: the name being typed for session `id`; Enter saves it, Esc cancels.
 struct Rename {
     id: String,
@@ -705,13 +704,10 @@ impl Component<Pick> for Rename {
                 return Ok(Outcome::Close);
             }
             KeyCode::Esc => return Ok(Outcome::Close),
-            // Kept to one line; no wider past NAME_MAX, so a stored longer name can shrink.
+            // Kept to one line.
             _ => {
                 let before = text.clone();
-                let width = text.lines()[0].width();
-                if text.input(key)
-                    && (text.lines().len() > 1 || text.lines()[0].width() > NAME_MAX.max(width))
-                {
+                if text.input(key) && text.lines().len() > 1 {
                     *text = before;
                 }
             }
@@ -720,22 +716,15 @@ impl Component<Pick> for Rename {
     }
 
     fn paste(&mut self, text: &str) {
-        // As much as fits in NAME_MAX columns.
-        let mut room = NAME_MAX.saturating_sub(self.text.lines()[0].width());
-        let fits: String = text
+        // Its first line.
+        let line: String = text
             .lines()
             .next()
             .unwrap_or("")
             .chars()
             .filter(|c| !c.is_control())
-            .take_while(|c| {
-                let w = c.width().unwrap_or(0);
-                let fits = w <= room;
-                room = room.saturating_sub(w);
-                fits
-            })
             .collect();
-        self.text.insert_str(fits);
+        self.text.insert_str(line);
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {
@@ -744,7 +733,8 @@ impl Component<Pick> for Rename {
             area,
             "Rename session",
             &self.text,
-            NAME_MAX as u16 + 1,
+            // And the cursor after the name.
+            RENAME_WIDTH + 1,
             "Enter save  Esc cancel  blank clears",
             ctx.look.theme,
         );

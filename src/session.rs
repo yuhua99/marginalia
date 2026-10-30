@@ -1,12 +1,8 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use unicode_width::UnicodeWidthStr;
 
 use crate::repo::{FileDiff, Repo, short};
-
-/// The widest a session name may be, in columns.
-pub const NAME_MAX: usize = 32;
 
 /// Who the human in the TUI is; agents are anyone else.
 const USER: &str = "user";
@@ -120,9 +116,6 @@ impl Session {
         let name = name.trim();
         if name.chars().any(char::is_control) {
             bail!("a session name is one line");
-        }
-        if name.width() > NAME_MAX {
-            bail!("a session name is at most {NAME_MAX} columns wide");
         }
         self.name = (!name.is_empty()).then(|| name.to_string());
         Ok(())
@@ -623,7 +616,5 @@ mod tests {
         s.set_name("   ").unwrap();
         assert_eq!(s.name, None);
         assert!(s.set_name("a\nb").is_err());
-        s.set_name(&"中".repeat(16)).unwrap();
-        assert!(s.set_name(&"中".repeat(17)).is_err());
     }
 }
