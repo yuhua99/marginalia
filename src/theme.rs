@@ -89,30 +89,6 @@ impl Theme {
     }
 }
 
-/// The `system` theme when the terminal does not report its colors: its ANSI colors,
-/// drawn as it draws them.
-const SYSTEM_ANSI: Theme = Theme {
-    name: "system",
-    bg: Color::Reset,
-    text: Color::Reset,
-    dim: Color::DarkGray,
-    comment: Color::DarkGray,
-    accent: Color::Yellow,
-    on_accent: Color::Black,
-    red: Color::Red,
-    green: Color::Green,
-    yellow: Color::Yellow,
-    blue: Color::Blue,
-    mauve: Color::Magenta,
-    teal: Color::Cyan,
-    peach: Color::Yellow,
-    surface: Color::Reset,
-    del_bg: Color::Red,
-    add_bg: Color::Green,
-    del_emph: Color::LightRed,
-    add_emph: Color::LightGreen,
-};
-
 /// The RGB themes, after `system`: the dark ones, then the light ones. Palettes as in herdr.
 const PALETTES: &[(&str, Palette)] = &[
     (
@@ -407,12 +383,15 @@ const PALETTES: &[(&str, Palette)] = &[
 ];
 
 /// The built-in themes, the first the default: `system`, from the terminal's colors
-/// when it reports them, then the RGB ones. The first call asks the terminal, so it
-/// comes before the TUI starts.
+/// when it reports them, else tokyo-night's, then the RGB ones. The first call asks
+/// the terminal, so it comes before the TUI starts.
 pub fn themes() -> &'static [Theme] {
     static ALL: OnceLock<Vec<Theme>> = OnceLock::new();
     ALL.get_or_init(|| {
-        let system = system::query().unwrap_or(SYSTEM_ANSI);
+        let system = system::query().unwrap_or_else(|| {
+            let (_, p) = PALETTES.iter().find(|(n, _)| *n == "tokyo-night").unwrap();
+            palette("system", *p)
+        });
         let rgb = PALETTES.iter().map(|&(name, p)| palette(name, p));
         std::iter::once(system).chain(rgb).collect()
     })
