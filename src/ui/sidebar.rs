@@ -43,9 +43,7 @@ impl Entry {
                 },
                 View::Uncommitted => Anchor::Session,
             }),
-            Entry::File(file) => Some(Anchor::File {
-                file: ctx.doc.paths()[file].1.clone(),
-            }),
+            Entry::File(file) => Some(ctx.doc.file_anchor(file)),
             Entry::Other => None,
         }
     }

@@ -1,18 +1,27 @@
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::doc::carry;
-use crate::repo::{self, FileDiff, Repo, short};
+use crate::doc::{carry, carry_file};
+use crate::repo::{Repo, short};
 
 /// The widest a session name may be, in columns.
 pub const NAME_MAX: usize = 32;
 
+/// Who the human in the TUI is; agents are anyone else.
+const USER: &str = "user";
+
+/// Who writes through `mrg comment`.
+const AGENT: &str = "agent";
+
+/// A review of `base..end`, saved as `<id>.json`. Files with fields this one has not,
+/// like the `id` of older ones, do not load.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Session {
+    /// The file name, not saved in the file.
+    #[serde(skip)]
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -27,43 +36,29 @@ pub struct Session {
 pub struct Thread {
     pub id: String,
     pub anchor: Anchor,
-    /// The anchored lines when the thread was created, for `lines` anchors.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
     pub messages: Vec<Message>,
-    /// The anchored lines changed since, as of `Session::place`.
-    #[serde(skip)]
-    pub outdated: bool,
-    /// Where the anchored lines are in the whole range, as of `Session::place`; None
-    /// for other anchors, or lines that changed since.
+    /// Where the thread is in the whole range, as of `Session::place`; None when its
+    /// lines changed since, or its commit left the range.
     #[serde(skip)]
     pub place: Option<Place>,
+    /// The lines as written, for lines that changed since; as of `Session::place`.
+    #[serde(skip)]
+    pub was: Option<String>,
 }
 
-/// Lines in the whole range: on the end, or on the base for deleted ones.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Place {
-    pub file: String,
-    pub start: u32,
-    pub end: u32,
-    pub base: bool,
-}
-
+/// What a thread is on. A `rev` is pinned: a commit sha, or the tree mrg wrote for
+/// `staged` / `unstaged`; lines are numbered there.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Anchor {
     Lines {
-        /// Defaults to the range end when omitted in input.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rev: Option<String>,
+        rev: String,
         file: String,
         start: u32,
         end: u32,
-        /// The commit the lines belong to; None when the range left them alone.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        owner: Option<Owner>,
     },
     File {
+        rev: String,
         file: String,
     },
     Commit {
@@ -72,16 +67,19 @@ pub enum Anchor {
     Session,
 }
 
-/// Where lines sit in the diff of the commit they belong to.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Owner {
-    /// A commit of the range, or `staged` / `unstaged` for lines not committed.
-    pub commit: String,
-    /// Lines the commit deleted, numbered in its parent; else numbered in the commit.
-    pub deleted: bool,
-    pub file: String,
-    /// The last anchored line there.
-    pub line: u32,
+/// Where a thread is in a diff.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Place {
+    /// Above the files: the session, or a commit of the diff.
+    Whole,
+    /// On the old (left) side, or the new.
+    File { file: String, old: bool },
+    Lines {
+        file: String,
+        start: u32,
+        end: u32,
+        old: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,20 +88,20 @@ pub struct Message {
     pub body: String,
 }
 
-/// The `mrg comment` input format.
+/// A comment of `mrg comment`: a reply, or a thread on a commit, a file, lines of it,
+/// or, with none of those, the session.
 #[derive(Deserialize)]
-pub struct Input {
-    pub from: String,
-    pub comments: Vec<NewComment>,
-}
-
-#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NewComment {
+    reply_to: Option<String>,
+    commit: Option<String>,
+    file: Option<String>,
+    /// `3` or `3-5`, of `file`.
+    lines: Option<String>,
+    /// `file` is numbered at the base: lines the range deletes.
     #[serde(default)]
-    pub reply_to: Option<String>,
-    #[serde(default)]
-    pub anchor: Option<Anchor>,
-    pub body: String,
+    old: bool,
+    body: String,
 }
 
 impl Session {
@@ -131,33 +129,58 @@ impl Session {
         Ok(())
     }
 
-    /// Adds agent comments; returns the index of the thread each one went to.
-    pub fn apply(&mut self, input: Input, repo: &mut Repo) -> Result<Vec<usize>> {
-        if input.from == "user" {
-            bail!("\"from\" names the agent; \"user\" is the human in the TUI");
-        }
+    /// Adds the agent's comments; returns the index of the thread each one went to.
+    pub fn apply(&mut self, comments: Vec<NewComment>, repo: &mut Repo) -> Result<Vec<usize>> {
         let mut touched = Vec::new();
-        for c in input.comments {
-            match (c.reply_to, c.anchor) {
-                (Some(id), None) => {
-                    self.reply(&id, &input.from, c.body)?;
+        for c in comments {
+            let NewComment {
+                reply_to,
+                commit,
+                file,
+                lines,
+                old,
+                body,
+            } = c;
+            let anchor = match (reply_to, commit, file, lines, old) {
+                (Some(id), None, None, None, false) => {
+                    self.reply(&id, AGENT, body)?;
                     touched.push(
                         self.threads
                             .iter()
                             .position(|t| t.id == id)
                             .expect("replied"),
                     );
+                    continue;
                 }
-                (None, Some(mut anchor)) => {
-                    // Owners are worked out here, not taken from the agent.
-                    if let Anchor::Lines { owner, .. } = &mut anchor {
-                        *owner = None;
+                (None, Some(commit), None, None, false) => Anchor::Commit { commit },
+                (None, None, Some(file), lines, old) => {
+                    // A file the end has not is the base's.
+                    let rev = if old || repo.read(&self.end, &file)?.is_none() {
+                        self.base.clone()
+                    } else {
+                        self.end.clone()
+                    };
+                    match lines {
+                        None => Anchor::File { rev, file },
+                        Some(lines) => {
+                            let (start, end) = parse_lines(&lines)?;
+                            Anchor::Lines {
+                                rev,
+                                file,
+                                start,
+                                end,
+                            }
+                        }
                     }
-                    self.comment(anchor, &input.from, c.body, repo)?;
-                    touched.push(self.threads.len() - 1);
                 }
-                _ => bail!("each comment needs exactly one of reply_to or anchor"),
-            }
+                (None, None, None, None, false) => Anchor::Session,
+                _ => bail!(
+                    "a comment has reply_to, commit, or file (with lines and old), \
+                     or none of them for the session"
+                ),
+            };
+            self.comment(anchor, AGENT, body, repo)?;
+            touched.push(self.threads.len() - 1);
         }
         Ok(touched)
     }
@@ -168,7 +191,7 @@ impl Session {
             let Some(i) = self.threads.iter().position(|t| t.id == *id) else {
                 bail!("no thread {id}");
             };
-            if self.threads[i].messages.iter().any(|m| m.from == "user") {
+            if self.threads[i].messages.iter().any(|m| m.from == USER) {
                 bail!("{id} has a message from the user");
             }
             self.threads.remove(i);
@@ -176,6 +199,8 @@ impl Session {
         Ok(())
     }
 
+    /// Adds a thread on `anchor`, its revs (any a commit or the range end can be) pinned
+    /// and its commit made a sha. Call `place` after.
     pub fn comment(
         &mut self,
         mut anchor: Anchor,
@@ -183,39 +208,33 @@ impl Session {
         body: String,
         repo: &mut Repo,
     ) -> Result<()> {
-        let mut text = None;
-        if let Anchor::Lines {
-            rev,
-            file,
-            start,
-            end,
-            owner,
-        } = &mut anchor
-        {
-            if *start == 0 || start > end {
-                bail!("invalid line range {start}-{end}");
-            }
-            let rev = rev.get_or_insert_with(|| self.end.clone());
-            // Commits become shas; the range end and the worktree states stay symbolic
-            // until the owner is found.
-            if *rev != self.end && !repo::worktree(rev) {
-                *rev = repo.commit(rev)?;
-            }
-            text = Some(
+        match &mut anchor {
+            Anchor::Lines {
+                rev,
+                file,
+                start,
+                end,
+            } => {
+                if *start == 0 || start > end {
+                    bail!("invalid line range {start}-{end}");
+                }
                 snippet(repo, rev, file, *start, *end)?
-                    .with_context(|| format!("{file}:{start}-{end} not found at {rev}"))?,
-            );
-            if owner.is_none() {
-                let commits = self.commits(repo)?;
-                *owner = self.owner(repo, &commits, rev, file, *end)?;
-            }
-            // Then pinned too, so the lines can be carried as the end moves.
-            if !repo::sha(rev) {
+                    .with_context(|| format!("{file}:{start}-{end} not found at {}", short(rev)))?;
                 *rev = repo.pin(rev)?;
             }
-        }
-        if let Anchor::Commit { commit } = &mut anchor {
-            *commit = repo.commit(commit)?;
+            Anchor::File { rev, file } => {
+                repo.read(rev, file)?
+                    .with_context(|| format!("{file} not found at {}", short(rev)))?;
+                *rev = repo.pin(rev)?;
+            }
+            Anchor::Commit { commit } => {
+                *commit = repo.commit(commit)?;
+                // One out of it would show nowhere.
+                if !self.commits(repo)?.contains(commit) {
+                    bail!("commit {} is not in the range", short(commit));
+                }
+            }
+            Anchor::Session => {}
         }
         // After the highest id, since deleted threads leave gaps.
         let n = self
@@ -224,21 +243,16 @@ impl Session {
             .filter_map(|t| t.id[1..].parse::<usize>().ok())
             .max()
             .unwrap_or(0);
-        let mut thread = Thread {
+        self.threads.push(Thread {
             id: format!("t{}", n + 1),
             anchor,
-            text,
             messages: vec![Message {
                 from: from.to_string(),
                 body,
             }],
-            outdated: false,
             place: None,
-        };
-        let pinned = repo.pin(&self.end)?;
-        (thread.place, thread.outdated) =
-            self.locate(repo, &thread, &pinned, &mut HashMap::new())?;
-        self.threads.push(thread);
+            was: None,
+        });
         Ok(())
     }
 
@@ -249,62 +263,6 @@ impl Session {
             .into_iter()
             .map(|c| c.sha)
             .collect())
-    }
-
-    /// The owner of line `line` of `file` at `rev`: the commit that deletes it when a
-    /// later one of `commits` does, else the one that last changed it; None when that
-    /// is outside the range.
-    fn owner(
-        &self,
-        repo: &mut Repo,
-        commits: &[String],
-        rev: &str,
-        file: &str,
-        line: u32,
-    ) -> Result<Option<Owner>> {
-        let in_range = commits.iter().any(|c| c == rev);
-        // Only the base and the range commits but the tip can have lines a later one deletes.
-        // Reverse blame walks first parents, so a base merged in later is left out.
-        if let Some(tip) = commits.last()
-            && rev != tip
-            && (in_range || rev == self.base && repo.parent(&commits[0])?.as_deref() == Some(rev))
-        {
-            let b = repo.blame_reverse(rev, tip, file, line)?;
-            if b.commit != *tip {
-                // Deleted by the commit after the last one having it, the base or one in range.
-                let i = commits
-                    .iter()
-                    .position(|c| *c == b.commit)
-                    .map_or(0, |i| i + 1);
-                return Ok(Some(Owner {
-                    commit: commits[i].clone(),
-                    deleted: true,
-                    file: b.path,
-                    line: b.line,
-                }));
-            }
-        }
-        // Lines the base or an older rev has, kept, are not the range's. (Blaming a rev
-        // the base excludes would blame HEAD instead.)
-        if !in_range && rev != self.end && !repo::worktree(rev) {
-            return Ok(None);
-        }
-        // Stop at the base: older lines are not the range's, and need not be traced.
-        let since = (self.base != repo.empty_tree()?).then_some(self.base.as_str());
-        let b = repo.blame(rev, since, file, line)?;
-        let commit = if b.uncommitted() {
-            rev.to_string()
-        } else if commits.contains(&b.commit) {
-            b.commit
-        } else {
-            return Ok(None);
-        };
-        Ok(Some(Owner {
-            commit,
-            deleted: false,
-            file: b.path,
-            line: b.line,
-        }))
     }
 
     pub fn reply(&mut self, id: &str, from: &str, body: String) -> Result<()> {
@@ -352,148 +310,79 @@ impl Session {
             .zip(v["threads"].as_array_mut().expect("threads array"))
         {
             tv["waiting_on"] = t.waiting_on_agent().then_some("agent").into();
-            tv["outdated"] = t.outdated.into();
+            tv["outdated"] = t.outdated().into();
             tv["location"] = self.location(t).into();
         }
         Ok(v)
     }
 
-    /// Sets each thread's `place` and `outdated`: lines written at another rev are
-    /// carried to the range end along the diff from there, outdated when it changes
-    /// them. Symbolic revs (`HEAD`, `staged`, `unstaged`, of threads from before
-    /// revs were pinned) stand for the end as is, outdated when `text` no longer matches.
+    /// Sets each thread's `place` in the whole range, and `was` of lines that changed.
     pub fn place(&mut self, repo: &mut Repo) -> Result<()> {
-        let pinned = repo.pin(&self.end)?;
-        let mut diffs = HashMap::new();
-        for i in 0..self.threads.len() {
-            let (place, outdated) = self.locate(repo, &self.threads[i], &pinned, &mut diffs)?;
-            let t = &mut self.threads[i];
-            (t.place, t.outdated) = (place, outdated);
+        let commits = self.commits(repo)?;
+        let places = self.locate(repo, &self.base, &self.end, &commits)?;
+        for (t, place) in self.threads.iter_mut().zip(places) {
+            t.was = match (&place, &t.anchor) {
+                (
+                    None,
+                    Anchor::Lines {
+                        rev,
+                        file,
+                        start,
+                        end,
+                    },
+                ) => snippet(repo, rev, file, *start, *end)?,
+                _ => None,
+            };
+            t.place = place;
         }
         Ok(())
     }
 
-    /// `place` and `outdated` of thread `t`, the end pinned as `pinned`; `diffs` keeps
-    /// the diff from each rev to the end.
-    fn locate(
+    /// Where each thread is in the diff `left..right` of `commits`: lines and files
+    /// where they are, unchanged, on the right side, else on the left; the session and
+    /// those commits above the files. None for the rest.
+    pub fn locate(
         &self,
         repo: &mut Repo,
-        t: &Thread,
-        pinned: &str,
-        diffs: &mut HashMap<String, Vec<FileDiff>>,
-    ) -> Result<(Option<Place>, bool)> {
-        let Anchor::Lines {
-            rev: Some(rev),
-            file,
-            start,
-            end,
-            owner,
-        } = &t.anchor
-        else {
-            return Ok((None, false));
-        };
-        let here = Place {
-            file: file.clone(),
-            start: *start,
-            end: *end,
-            base: false,
-        };
-        if *rev == self.base {
-            return Ok((Some(Place { base: true, ..here }), false));
-        }
-        if !repo::sha(rev) {
-            let changed = t.text.is_some() && snippet(repo, rev, file, *start, *end)? != t.text;
-            return Ok(((*rev == self.end).then_some(here), changed));
-        }
-        if rev == pinned {
-            return Ok((Some(here), false));
-        }
-        // Lines a commit of the range deletes are on no side of the whole range, as written.
-        if owner.as_ref().is_some_and(|o| o.deleted) {
-            return Ok((None, false));
-        }
-        if repo.read(rev, file)?.is_none() {
-            // Gone with rewritten history: nothing to carry from.
-            return Ok((None, true));
-        }
-        if !diffs.contains_key(rev) {
-            let diff = repo.diff(rev, &self.end, 0)?;
-            diffs.insert(rev.clone(), diff);
-        }
-        Ok(match carry(&diffs[rev], file, *start, *end) {
-            Some((file, start, end)) => (
-                Some(Place {
-                    file,
-                    start,
-                    end,
-                    ..here
-                }),
-                false,
-            ),
-            None => (None, true),
-        })
+        left: &str,
+        right: &str,
+        commits: &[String],
+    ) -> Result<Vec<Option<Place>>> {
+        let sides = [(repo.pin(right)?, false), (repo.pin(left)?, true)];
+        self.threads
+            .iter()
+            .map(|t| locate(repo, &t.anchor, &sides, commits))
+            .collect()
     }
 
-    /// Where thread `t` is, e.g. `src/a.rs:3-5`: where its lines are now, plus `@base`
-    /// on the base; else where it was written, as `anchor_location`.
+    /// Where thread `t` is, e.g. `src/a.rs:3-5`: where it is in the whole range, else
+    /// where it was written.
     pub fn location(&self, t: &Thread) -> String {
         match &t.place {
-            Some(p) => format!("{}:{}", p.file, self.place_lines(p)),
-            None => self.anchor_location(&t.anchor),
+            Some(Place::Lines {
+                file,
+                start,
+                end,
+                old,
+            }) => format!("{file}:{}", lines(*start, *end, *old)),
+            Some(Place::File { file, old }) => format!("{file}{}", side(*old)),
+            _ => self.anchor_location(&t.anchor),
         }
     }
 
-    /// Where `anchor` points, e.g. `src/a.rs:3-5`, plus `@rev` when not the range end.
+    /// Where `anchor` points, e.g. `src/a.rs:3-5`; `(old)` on the base.
     pub fn anchor_location(&self, anchor: &Anchor) -> String {
         match anchor {
             Anchor::Lines {
-                file,
                 rev,
+                file,
                 start,
                 end,
-                ..
-            } => format!("{file}:{}", self.lines(rev, *start, *end)),
-            Anchor::File { file } => file.clone(),
+            } => format!("{file}:{}", lines(*start, *end, *rev == self.base)),
+            Anchor::File { rev, file } => format!("{file}{}", side(*rev == self.base)),
             Anchor::Commit { commit } => format!("commit {}", short(commit)),
             Anchor::Session => "session".into(),
         }
-    }
-
-    /// `location` for a thread shown under what it anchors to: lines as `L3-5`, a file as `file`.
-    pub fn inline_location(&self, t: &Thread) -> String {
-        match (&t.place, &t.anchor) {
-            (Some(p), _) => format!("L{}", self.place_lines(p)),
-            (
-                None,
-                Anchor::Lines {
-                    rev, start, end, ..
-                },
-            ) => {
-                format!("L{}", self.lines(rev, *start, *end))
-            }
-            (None, Anchor::File { .. }) => "file".into(),
-            _ => self.location(t),
-        }
-    }
-
-    fn place_lines(&self, p: &Place) -> String {
-        let rev = p.base.then(|| self.base.clone());
-        self.lines(&rev, p.start, p.end)
-    }
-
-    /// Lines `3` or `3-5`, plus `@rev` when not the range end.
-    fn lines(&self, rev: &Option<String>, start: u32, end: u32) -> String {
-        let mut s = if start == end {
-            start.to_string()
-        } else {
-            format!("{start}-{end}")
-        };
-        if let Some(rev) = rev
-            && *rev != self.end
-        {
-            s.push_str(&format!(" @{}", short(rev)));
-        }
-        s
     }
 
     /// Threads waiting on the agent, in `order`, as markdown; None if there are none.
@@ -521,8 +410,95 @@ impl Session {
 impl Thread {
     /// The last speaker being `user` means the agent should answer.
     pub fn waiting_on_agent(&self) -> bool {
-        self.messages.last().is_some_and(|m| m.from == "user")
+        self.messages.last().is_some_and(|m| m.from == USER)
     }
+
+    /// Not in the whole range any more, as of `Session::place`.
+    pub fn outdated(&self) -> bool {
+        self.place.is_none()
+    }
+}
+
+impl Place {
+    /// As shown under what it is on: lines as `L3-5`, a file as `file`.
+    pub fn inline(&self) -> String {
+        match self {
+            Place::Lines {
+                start, end, old, ..
+            } => format!("L{}", lines(*start, *end, *old)),
+            Place::File { old, .. } => format!("file{}", side(*old)),
+            Place::Whole => String::new(),
+        }
+    }
+}
+
+/// Where `anchor` is on `sides`, (pinned rev, old) tried in turn; see `Session::locate`.
+fn locate(
+    repo: &mut Repo,
+    anchor: &Anchor,
+    sides: &[(String, bool)],
+    commits: &[String],
+) -> Result<Option<Place>> {
+    let (rev, file) = match anchor {
+        Anchor::Session => return Ok(Some(Place::Whole)),
+        Anchor::Commit { commit } => return Ok(commits.contains(commit).then_some(Place::Whole)),
+        Anchor::Lines { rev, file, .. } | Anchor::File { rev, file } => (rev, file),
+    };
+    // Gone with its rev, as a commit amended away and collected: nothing to carry.
+    if repo.read(rev, file)?.is_none() {
+        return Ok(None);
+    }
+    for (side, old) in sides {
+        let files = if rev == side {
+            &[][..]
+        } else {
+            match repo.changes(rev, side)? {
+                Some(files) => files,
+                // What it needs to be carried is gone too.
+                None => return Ok(None),
+            }
+        };
+        let place = match anchor {
+            Anchor::Lines { start, end, .. } => {
+                carry(files, file, *start, *end).map(|(file, start, end)| Place::Lines {
+                    file,
+                    start,
+                    end,
+                    old: *old,
+                })
+            }
+            _ => carry_file(files, file).map(|file| Place::File { file, old: *old }),
+        };
+        if place.is_some() {
+            return Ok(place);
+        }
+    }
+    Ok(None)
+}
+
+/// `3` or `3-5` as (start, end).
+fn parse_lines(lines: &str) -> Result<(u32, u32)> {
+    let (start, end) = lines.split_once('-').unwrap_or((lines, lines));
+    let n = |s: &str| {
+        s.trim()
+            .parse()
+            .with_context(|| format!("lines must look like 3 or 3-5, got {lines:?}"))
+    };
+    Ok((n(start)?, n(end)?))
+}
+
+/// Lines `3` or `3-5`, plus `(old)` on the old side.
+fn lines(start: u32, end: u32, old: bool) -> String {
+    let lines = if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    };
+    format!("{lines}{}", side(old))
+}
+
+fn side(old: bool) -> &'static str {
+    if old { " (old)" } else { "" }
 }
 
 /// Lines `start..=end` of `file` at `rev`; None if the file or lines are absent.
@@ -569,37 +545,19 @@ mod tests {
     fn repo(name: &str, versions: &[&str]) -> (Repo, PathBuf, Vec<String>) {
         let dir = std::env::temp_dir().join(format!("mrg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.with_extension("mrg"));
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q"]);
         let shas = versions.iter().map(|v| commit(&dir, v)).collect();
-        let mut repo = Repo::at(&dir).unwrap();
-        let objects = dir.with_extension("mrg").join("objects");
-        let _ = std::fs::remove_dir_all(dir.with_extension("mrg"));
-        repo.use_objects(objects).unwrap();
-        (repo, dir, shas)
+        (reopen(&dir), dir, shas)
     }
 
-    /// The owner given to a comment on line `line` of `f` at `rev`, as (commit, deleted, line).
-    fn owner(
-        s: &mut Session,
-        repo: &mut Repo,
-        rev: &str,
-        line: u32,
-    ) -> Option<(String, bool, u32)> {
-        let anchor = Anchor::Lines {
-            rev: Some(rev.into()),
-            file: "f".into(),
-            start: line,
-            end: line,
-            owner: None,
-        };
-        s.comment(anchor, "agent", "x".into(), repo).unwrap();
-        match &s.threads.last().unwrap().anchor {
-            Anchor::Lines { owner, .. } => owner
-                .as_ref()
-                .map(|o| (o.commit.clone(), o.deleted, o.line)),
-            _ => unreachable!(),
-        }
+    /// The repo at `dir` read afresh, as by another run of mrg.
+    fn reopen(dir: &Path) -> Repo {
+        let mut repo = Repo::at(dir).unwrap();
+        repo.use_objects(dir.with_extension("mrg").join("objects"))
+            .unwrap();
+        repo
     }
 
     // base a b c d; c1 adds X; c2 deletes c; c3 adds Y.
@@ -610,168 +568,238 @@ mod tests {
         "Y\na\nX\nb\nd\n",
     ];
 
-    #[test]
-    fn owners_of_committed_lines() {
-        let (mut repo, _, c) = repo("owners", &VERSIONS);
-        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), c[3].clone());
-        let end = c[3].clone();
-        // Lines at the end belong to the commit that wrote them, numbered there.
-        assert_eq!(
-            owner(&mut s, &mut repo, &end, 3),
-            Some((c[1].clone(), false, 2))
-        );
-        assert_eq!(
-            owner(&mut s, &mut repo, &end, 1),
-            Some((c[3].clone(), false, 1))
-        );
-        // Untouched by the range.
-        assert_eq!(owner(&mut s, &mut repo, &end, 2), None);
-        // Deleted base lines belong to their deleter, numbered in its parent.
-        assert_eq!(
-            owner(&mut s, &mut repo, &c[0], 3),
-            Some((c[2].clone(), true, 4))
-        );
-        assert_eq!(owner(&mut s, &mut repo, &c[0], 1), None);
-        // Lines of a rev before the base are not the range's to delete.
-        let mut later = Session::new("2".into(), "r".into(), c[1].clone(), c[3].clone());
-        assert_eq!(owner(&mut later, &mut repo, &c[0], 3), None);
-        // A line kept from a middle commit belongs to whoever wrote it.
-        assert_eq!(
-            owner(&mut s, &mut repo, &c[1], 2),
-            Some((c[1].clone(), false, 2))
-        );
-    }
-
-    #[test]
-    fn owners_of_uncommitted_lines() {
-        let (mut repo, dir, c) = repo("uncommitted", &VERSIONS);
-        // The worktree is read once per process, so it changes before the first comment.
-        std::fs::write(dir.join("f"), "Y\na\nZ\nX\nb\nd\n").unwrap();
-        std::fs::write(dir.join("u"), "u\n").unwrap();
-        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "unstaged".into());
-        assert_eq!(
-            owner(&mut s, &mut repo, "unstaged", 3),
-            Some(("unstaged".into(), false, 3))
-        );
-        assert_eq!(
-            owner(&mut s, &mut repo, "unstaged", 4),
-            Some((c[1].clone(), false, 2))
-        );
-        // A file new to the worktree.
-        let anchor = Anchor::Lines {
-            rev: None,
-            file: "u".into(),
-            start: 1,
-            end: 1,
-            owner: None,
-        };
-        s.comment(anchor, "agent", "x".into(), &mut repo).unwrap();
-        assert!(matches!(
-            &s.threads.last().unwrap().anchor,
-            Anchor::Lines { owner: Some(o), .. } if o.commit == "unstaged"
-        ));
-    }
-
-    fn lines(rev: Option<&str>, line: u32) -> Anchor {
+    fn lines(rev: &str, start: u32, end: u32) -> Anchor {
         Anchor::Lines {
-            rev: rev.map(Into::into),
+            rev: rev.into(),
             file: "f".into(),
-            start: line,
-            end: line,
-            owner: None,
+            start,
+            end,
         }
     }
 
-    /// Where thread `t` is placed, as (start, base), and whether it is outdated.
-    fn at(t: &Thread) -> (Option<(u32, bool)>, bool) {
-        (t.place.as_ref().map(|p| (p.start, p.base)), t.outdated)
+    fn on(file: &str, start: u32, end: u32, old: bool) -> Option<Place> {
+        Some(Place::Lines {
+            file: file.into(),
+            start,
+            end,
+            old,
+        })
+    }
+
+    /// Comments `json`, an `mrg comment` input.
+    fn apply(s: &mut Session, repo: &mut Repo, json: &str) -> Result<Vec<usize>> {
+        s.apply(serde_json::from_str(json)?, repo)
     }
 
     #[test]
-    fn threads_follow_the_end() {
-        let (mut repo, dir, c) = repo("follow", &VERSIONS[..2]);
-        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "HEAD".into());
-        // b and c of a X b c d.
-        s.comment(lines(None, 3), "agent", "x".into(), &mut repo)
-            .unwrap();
-        s.comment(lines(None, 4), "agent", "x".into(), &mut repo)
-            .unwrap();
-        // Written at the commit HEAD was, not at HEAD.
-        assert!(matches!(&s.threads[0].anchor, Anchor::Lines { rev: Some(r), .. } if *r == c[1]));
-        // a of the base.
-        s.comment(lines(Some(&c[0]), 1), "agent", "x".into(), &mut repo)
-            .unwrap();
-        // From before revs were pinned: b, as HEAD.
-        s.comment(lines(None, 3), "agent", "x".into(), &mut repo)
-            .unwrap();
-        if let Anchor::Lines { rev, .. } = &mut s.threads[3].anchor {
-            *rev = Some("HEAD".into());
-        }
-        // Later commits delete c, then add a line above; read by another run, as the
-        // range is listed once per run.
-        commit(&dir, VERSIONS[2]);
-        commit(&dir, VERSIONS[3]);
-        let mut repo = Repo::at(&dir).unwrap();
-        repo.use_objects(dir.with_extension("mrg").join("objects"))
-            .unwrap();
-        // c, deleted, as its deleter's view writes it: at its parent.
-        s.comment(lines(Some(&c[1]), 4), "agent", "x".into(), &mut repo)
-            .unwrap();
-        s.place(&mut repo).unwrap();
-        let got: Vec<_> = s.threads.iter().map(at).collect();
+    fn threads_are_where_each_view_has_their_lines() {
+        let (mut repo, _, c) = repo("views", &VERSIONS);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), c[3].clone());
+        apply(
+            &mut s,
+            &mut repo,
+            &format!(
+                r#"[
+                    {{"file": "f", "lines": "3", "body": "X, c1's"}},
+                    {{"file": "f", "lines": "3", "old": true, "body": "c, deleted by c2"}},
+                    {{"file": "f", "lines": "1", "body": "Y, c3's"}},
+                    {{"commit": "{}", "body": "c2"}},
+                    {{"body": "all"}}
+                ]"#,
+                c[2]
+            ),
+        )
+        .unwrap();
+        let at = |repo: &mut Repo, left: &str, right: &str, commits: &[String]| {
+            s.locate(repo, left, right, commits).unwrap()
+        };
+        let whole = Some(Place::Whole);
         assert_eq!(
-            got,
+            at(&mut repo, &c[0], &c[3], &c[1..]),
             [
-                (Some((4, false)), false),
-                (None, true),
-                (Some((1, true)), false),
-                // Read at HEAD as is: X now, not b.
-                (Some((3, false)), true),
-                (None, false),
+                on("f", 3, 3, false),
+                on("f", 3, 3, true),
+                on("f", 1, 1, false),
+                whole.clone(),
+                whole.clone(),
             ]
         );
-        assert_eq!(s.location(&s.threads[0]), "f:4");
-        assert_eq!(s.location(&s.threads[1]), format!("f:4 @{}", short(&c[1])));
-        assert_eq!(s.location(&s.threads[2]), format!("f:1 @{}", short(&c[0])));
+        // c1: X is its own; c is kept, so on its right side; Y is not yet.
+        assert_eq!(
+            at(&mut repo, &c[0], &c[1], &c[1..2]),
+            [
+                on("f", 2, 2, false),
+                on("f", 4, 4, false),
+                None,
+                None,
+                whole.clone(),
+            ]
+        );
+        // c2 deletes c, on its left side.
+        assert_eq!(
+            at(&mut repo, &c[1], &c[2], &c[2..3]),
+            [
+                on("f", 2, 2, false),
+                on("f", 4, 4, true),
+                None,
+                whole.clone(),
+                whole.clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn threads_follow_new_and_amended_commits() {
+        let (mut repo, dir, c) = repo("amend", &VERSIONS[..2]);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "HEAD".into());
+        // c and X of a X b c d, and the commit.
+        apply(
+            &mut s,
+            &mut repo,
+            r#"[
+                {"file": "f", "lines": "4", "body": "c"},
+                {"file": "f", "lines": "2", "body": "X"},
+                {"commit": "HEAD", "body": "c1"}
+            ]"#,
+        )
+        .unwrap();
+        // Pinned to the commit HEAD was.
+        assert!(matches!(&s.threads[0].anchor, Anchor::Lines { rev, .. } if *rev == c[1]));
+        // The commit amended: a line above, X changed.
+        std::fs::write(dir.join("f"), "Y\na\nZ\nb\nc\nd\n").unwrap();
+        git(&dir, &["commit", "-qam", "c", "--amend"]);
+        let mut repo = reopen(&dir);
+        s.place(&mut repo).unwrap();
+        assert_eq!(s.threads[0].place, on("f", 5, 5, false));
+        // X is on neither side now.
+        assert!(s.threads[1].outdated());
+        assert_eq!(s.threads[1].was.as_deref(), Some("X"));
+        // Amended away, so out of the range.
+        assert!(s.threads[2].outdated());
+        assert_eq!(s.location(&s.threads[0]), "f:5");
+        assert_eq!(s.location(&s.threads[1]), "f:2");
+    }
+
+    #[test]
+    fn threads_follow_renames() {
+        let (mut repo, dir, c) = repo("rename", &VERSIONS[..2]);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "HEAD".into());
+        apply(
+            &mut s,
+            &mut repo,
+            r#"[{"file": "f", "lines": "2", "body": "X"}, {"file": "f", "body": "f"}]"#,
+        )
+        .unwrap();
+        git(&dir, &["mv", "f", "g"]);
+        git(&dir, &["commit", "-qm", "c"]);
+        let mut repo = reopen(&dir);
+        s.place(&mut repo).unwrap();
+        assert_eq!(s.threads[0].place, on("g", 2, 2, false));
+        assert_eq!(
+            s.threads[1].place,
+            Some(Place::File {
+                file: "g".into(),
+                old: false
+            })
+        );
     }
 
     #[test]
     fn worktree_threads_follow_edits() {
         let (mut repo, dir, c) = repo("worktree", &VERSIONS[..1]);
         let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "unstaged".into());
-        std::fs::write(
-            dir.join("f"),
-            "a
-b
-c
-Z
-d
-",
-        )
-        .unwrap();
-        s.comment(lines(None, 3), "agent", "x".into(), &mut repo)
+        std::fs::write(dir.join("f"), "a\nb\nc\nZ\nd\n").unwrap();
+        s.comment(lines("unstaged", 3, 3), "agent", "x".into(), &mut repo)
             .unwrap();
-        s.comment(lines(None, 4), "agent", "x".into(), &mut repo)
+        s.comment(lines("unstaged", 4, 4), "agent", "x".into(), &mut repo)
             .unwrap();
         // Pinned to the tree written for the worktree.
-        assert!(matches!(&s.threads[0].anchor, Anchor::Lines { rev: Some(r), .. } if repo::sha(r)));
+        assert!(matches!(&s.threads[0].anchor, Anchor::Lines { rev, .. } if crate::repo::sha(rev)));
         // Another run: a line above, Z changed.
-        std::fs::write(
-            dir.join("f"),
-            "Y
-a
-b
-c
-W
-d
-",
+        std::fs::write(dir.join("f"), "Y\na\nb\nc\nW\nd\n").unwrap();
+        let mut repo = reopen(&dir);
+        s.place(&mut repo).unwrap();
+        assert_eq!(s.threads[0].place, on("f", 4, 4, false));
+        assert!(s.threads[1].outdated());
+        assert_eq!(s.threads[1].was.as_deref(), Some("Z"));
+    }
+
+    #[test]
+    fn threads_on_collected_objects_are_gone() {
+        let (_, dir, c) = repo("collected", &VERSIONS[..1]);
+        std::fs::write(dir.join("g"), "g\n").unwrap();
+        git(&dir, &["add", "g"]);
+        git(&dir, &["commit", "-qm", "c"]);
+        std::fs::write(dir.join("f"), "a\nZ\n").unwrap();
+        git(&dir, &["add", "f"]);
+        let blob = git(&dir, &["rev-parse", ":f"]);
+        let mut repo = reopen(&dir);
+        let mut s = Session::new("1".into(), "r".into(), c[0].clone(), "staged".into());
+        let g = Anchor::File {
+            rev: "staged".into(),
+            file: "g".into(),
+        };
+        s.comment(g, "agent", "x".into(), &mut repo).unwrap();
+        // f staged anew, and its blob of the pinned tree collected.
+        std::fs::write(dir.join("f"), "a\nW\n").unwrap();
+        git(&dir, &["add", "f"]);
+        std::fs::remove_file(dir.join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+        let mut repo = reopen(&dir);
+        s.place(&mut repo).unwrap();
+        assert!(s.threads[0].outdated());
+    }
+
+    #[test]
+    fn agent_comments() {
+        let (mut repo, dir, _) = repo("input", &VERSIONS[..2]);
+        std::fs::write(dir.join("gone"), "g\n").unwrap();
+        git(&dir, &["add", "gone"]);
+        git(&dir, &["commit", "-qm", "c"]);
+        let base = git(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["rm", "-q", "gone"]);
+        commit(&dir, VERSIONS[2]);
+        let mut s = Session::new("1".into(), "r".into(), base.clone(), "HEAD".into());
+        let touched = apply(
+            &mut s,
+            &mut repo,
+            r#"[
+                {"file": "f", "lines": "1-2", "body": "a X"},
+                {"file": "f", "lines": "4", "old": true, "body": "c"},
+                {"file": "gone", "lines": "1", "body": "a file the end has not"},
+                {"body": "all"},
+                {"reply_to": "t1", "body": "more"}
+            ]"#,
         )
         .unwrap();
-        repo.use_objects(dir.with_extension("mrg").join("objects"))
-            .unwrap();
-        s.place(&mut repo).unwrap();
-        assert_eq!(at(&s.threads[0]), (Some((4, false)), false));
-        assert_eq!(at(&s.threads[1]), (None, true));
+        assert_eq!(touched, [0, 1, 2, 3, 0]);
+        let end = git(&dir, &["rev-parse", "HEAD"]);
+        assert!(
+            matches!(&s.threads[0].anchor, Anchor::Lines { rev, start: 1, end: 2, .. } if *rev == end)
+        );
+        assert!(matches!(&s.threads[1].anchor, Anchor::Lines { rev, .. } if *rev == base));
+        assert!(matches!(&s.threads[2].anchor, Anchor::Lines { rev, .. } if *rev == base));
+        assert!(matches!(s.threads[3].anchor, Anchor::Session));
+        assert_eq!(s.threads[0].messages[1].from, "agent");
+        for bad in [
+            r#"[{"lines": "1", "body": "no file"}]"#,
+            r#"[{"file": "f", "line": "1", "body": "a typo"}]"#,
+            r#"[{"reply_to": "t1", "file": "f", "body": "both"}]"#,
+            r#"[{"file": "f", "lines": "x", "body": "not a number"}]"#,
+            r#"[{"file": "f", "lines": "3-2", "body": "backwards"}]"#,
+            r#"[{"file": "f", "lines": "9", "body": "past the end"}]"#,
+            &*format!(r#"[{{"commit": "{base}", "body": "out of the range"}}]"#),
+        ] {
+            assert!(apply(&mut s, &mut repo, bad).is_err(), "{bad}");
+        }
+        assert_eq!(s.threads.len(), 4);
+    }
+
+    #[test]
+    fn older_sessions_do_not_load() {
+        let old = r#"{"id": "ab12", "range": "r", "base": "b", "end": "e", "threads": []}"#;
+        assert!(serde_json::from_str::<Session>(old).is_err());
+        let new = r#"{"range": "r", "base": "b", "end": "e", "threads": []}"#;
+        assert!(serde_json::from_str::<Session>(new).is_ok());
     }
 
     #[test]

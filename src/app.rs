@@ -7,7 +7,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::doc::{Doc, Scope, Step};
+use crate::doc::{Doc, Scope};
 use crate::highlight::Highlighter;
 use crate::repo::{self, Commit, Repo};
 use crate::session::{Anchor, Session};
@@ -160,8 +160,14 @@ impl Ctx {
     /// Saves the session and refreshes the thread rows after threads changed.
     fn threads_changed(&mut self) -> Result<()> {
         self.store.save(&self.session)?;
-        self.doc.set_threads(&self.session.threads);
-        Ok(())
+        self.session.place(&mut self.repo)?;
+        set_threads(
+            &mut self.repo,
+            &self.session,
+            &self.views,
+            self.shown,
+            &mut self.doc,
+        )
     }
 }
 
@@ -169,37 +175,40 @@ impl Ctx {
 fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<Doc> {
     let (left, right, scope) = match shown {
         Shown::All => (session.base.clone(), session.end.clone(), Scope::Range),
-        Shown::Run(first, last) => {
-            let run = &views[first..=last];
-            let left = parent(repo, &run[0])?;
-            let commits: Vec<String> = run.iter().map(|v| rev(session, v)).collect();
-            let right = commits[commits.len() - 1].clone();
-            let mut steps = Vec::new();
-            for (i, (v, commit)) in run.iter().zip(commits).enumerate() {
-                let kept = if i + 1 < run.len() {
-                    Some(repo.diff(&commit, &right, 0)?)
-                } else {
-                    None
-                };
-                let deleted = if i > 0 {
-                    let from = parent(repo, v)?;
-                    Some(repo.diff(&from, &left, 0)?)
-                } else {
-                    None
-                };
-                steps.push(Step {
-                    commit,
-                    kept,
-                    deleted,
-                });
-            }
-            (left, right, Scope::Run(steps))
-        }
+        Shown::Run(first, last) => (
+            parent(repo, &views[first])?,
+            rev(session, &views[last]),
+            Scope::Run,
+        ),
     };
     let files = repo.diff(&left, &right, 3)?;
     let mut doc = Doc::new(left, right, files, scope);
-    doc.set_threads(&session.threads);
+    set_threads(repo, session, views, shown, &mut doc)?;
     Ok(doc)
+}
+
+/// Puts the session's threads where they are in `doc`, the diff of `shown`.
+fn set_threads(
+    repo: &mut Repo,
+    session: &Session,
+    views: &[View],
+    shown: Shown,
+    doc: &mut Doc,
+) -> Result<()> {
+    let (first, last) = shown.bounds(views.len());
+    let commits: Vec<String> = views
+        .get(first..=last)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| match v {
+            View::Commit(c) => Some(c.sha.clone()),
+            View::Uncommitted => None,
+        })
+        .collect();
+    let (left, right) = doc.revs();
+    let places = session.locate(repo, left, right, &commits)?;
+    doc.set_threads(&session.threads, places);
+    Ok(())
 }
 
 /// The left side of `view`.

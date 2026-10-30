@@ -24,6 +24,8 @@ pub struct Repo {
     trees: HashMap<String, String>,
     /// `base..end` -> its commits, listed once per process.
     ranges: HashMap<String, Vec<Commit>>,
+    /// (from, to) -> `changes` between them.
+    changes: HashMap<(String, String), Option<Vec<FileDiff>>>,
     /// Untracked files over the size limit, left out of the unstaged tree.
     skipped: Vec<String>,
     cat: Option<CatFile>,
@@ -40,21 +42,6 @@ pub struct Commit {
     pub author: String,
     /// Relative author date, as "3 days ago".
     pub when: String,
-}
-
-/// Where a line of `git blame` comes from.
-pub struct Blame {
-    /// The zero sha for lines not committed yet.
-    pub commit: String,
-    pub path: String,
-    pub line: u32,
-}
-
-impl Blame {
-    /// The line is not committed yet.
-    pub fn uncommitted(&self) -> bool {
-        self.commit.bytes().all(|c| c == b'0')
-    }
 }
 
 struct CatFile {
@@ -88,6 +75,7 @@ impl Repo {
             index: index.into(),
             trees: HashMap::new(),
             ranges: HashMap::new(),
+            changes: HashMap::new(),
             skipped: Vec::new(),
             cat: None,
             objects: None,
@@ -156,7 +144,7 @@ impl Repo {
     pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
         let to = self.object(end)?;
         let context = format!("-U{context}");
-        let out = run(&mut self.git(&[
+        let mut cmd = self.git(&[
             "diff",
             "--histogram",
             "-M",
@@ -174,13 +162,30 @@ impl Repo {
             "--patch",
             base,
             &to,
-        ]))?;
+        ]);
+        // Errors in English, for `changes` to tell objects missing.
+        let out = run(cmd.env("LC_ALL", "C"))?;
         let mut files = parse::parse(&out)?;
         if end == "unstaged" {
             files.extend(self.skipped.iter().map(|p| FileDiff::skipped(p)));
             files.sort_by(|a, b| a.new_path.cmp(&b.new_path));
         }
         Ok(files)
+    }
+
+    /// `diff(from, to, 0)` of pinned revs, kept: what carries lines from one to the other.
+    /// None when objects it needs are gone, as blobs only ever staged, then collected.
+    pub fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>> {
+        let key = (from.to_string(), to.to_string());
+        if !self.changes.contains_key(&key) {
+            let files = match self.diff(from, to, 0) {
+                Ok(files) => Some(files),
+                Err(e) if missing(&e) => None,
+                Err(e) => return Err(e),
+            };
+            self.changes.insert(key.clone(), files);
+        }
+        Ok(self.changes[&key].as_deref())
     }
 
     /// Paths of the files at `rev`, leaving out submodules.
@@ -240,9 +245,11 @@ impl Repo {
     }
 
     /// An id for `rev` that does not move: the commit sha, or the tree of `staged` /
-    /// `unstaged` as of now.
+    /// `unstaged` as of now; an id as is.
     pub fn pin(&mut self, rev: &str) -> Result<String> {
-        if worktree(rev) {
+        if sha(rev) {
+            Ok(rev.to_string())
+        } else if worktree(rev) {
             self.object(rev)
         } else {
             self.commit(rev)
@@ -398,84 +405,6 @@ impl Repo {
             .map(str::to_string))
     }
 
-    /// The commit (first parent) that last changed line `line` of `path` at `rev`;
-    /// `since` when that is no later than `since`.
-    pub fn blame(
-        &mut self,
-        rev: &str,
-        since: Option<&str>,
-        path: &str,
-        line: u32,
-    ) -> Result<Blame> {
-        let lines = format!("{line},{line}");
-        let not = since.map(|s| format!("^{s}"));
-        let mut args = vec![
-            "-c",
-            "core.quotePath=false",
-            "blame",
-            "--porcelain",
-            "--first-parent",
-            // Not the user's ignored revs: owners are who really changed a line.
-            "--no-ignore-revs-file",
-            "-L",
-            &lines,
-        ];
-        args.extend(not.as_deref());
-        let out = if worktree(rev) {
-            let content = self
-                .read(rev, path)?
-                .with_context(|| format!("{path} not found at {rev}"))?;
-            // Blame needs the file in HEAD; a new one is all uncommitted.
-            if self.read("HEAD", path)?.is_none() {
-                return Ok(Blame {
-                    commit: "0".repeat(40),
-                    path: path.to_string(),
-                    line,
-                });
-            }
-            // On top of HEAD, as if `rev` were the worktree.
-            args.extend(["--contents", "-", "--", path]);
-            let mut child = self
-                .git(&args)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .context("run git blame")?;
-            child.stdin.take().unwrap().write_all(content.as_bytes())?;
-            let out = child.wait_with_output()?;
-            if !out.status.success() {
-                bail!("git blame: {}", String::from_utf8_lossy(&out.stderr).trim());
-            }
-            out.stdout
-        } else {
-            args.extend([rev, "--", path]);
-            run(&mut self.git(&args))?
-        };
-        blame(&out)
-    }
-
-    /// The last commit in `from..to` (first parent) that still has line `line` of
-    /// `path` at `from`.
-    pub fn blame_reverse(&self, from: &str, to: &str, path: &str, line: u32) -> Result<Blame> {
-        let lines = format!("{line},{line}");
-        let range = format!("{from}..{to}");
-        blame(&run(&mut self.git(&[
-            "-c",
-            "core.quotePath=false",
-            "blame",
-            "--porcelain",
-            "--first-parent",
-            "--no-ignore-revs-file",
-            "--reverse",
-            "-L",
-            &lines,
-            &range,
-            "--",
-            path,
-        ]))?)
-    }
-
     /// The empty tree, to diff a root commit against.
     pub fn empty_tree(&self) -> Result<String> {
         text(run(self
@@ -530,24 +459,10 @@ pub fn short(rev: &str) -> &str {
     if sha(rev) { &rev[..7] } else { rev }
 }
 
-/// The first line of `git blame --porcelain`: "<sha> <line there> <line here> <count>",
-/// then headers including "filename <path>".
-fn blame(out: &[u8]) -> Result<Blame> {
-    let out = String::from_utf8_lossy(out);
-    let mut lines = out.lines();
-    let head = lines.next().unwrap_or_default();
-    let mut fields = head.split(' ');
-    let (Some(commit), Some(Ok(line))) = (fields.next(), fields.next().map(str::parse)) else {
-        bail!("unexpected git blame output: {head:?}");
-    };
-    let path = lines
-        .find_map(|l| l.strip_prefix("filename "))
-        .context("git blame output without a filename")?;
-    Ok(Blame {
-        commit: commit.to_string(),
-        path: path.to_string(),
-        line,
-    })
+/// `e`, of a git run, is about an object it could not find.
+fn missing(e: &anyhow::Error) -> bool {
+    let e = format!("{e:#}");
+    e.contains("unable to read") || e.contains("bad object")
 }
 
 fn run(cmd: &mut Command) -> Result<Vec<u8>> {

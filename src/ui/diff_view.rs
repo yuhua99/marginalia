@@ -602,15 +602,14 @@ fn thread_lines(
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
     let t: &Thread = &ctx.session.threads[idx];
-    let outdated = t.outdated;
+    let outdated = t.outdated();
     let line = |spans: Vec<Span<'static>>| {
         Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
     let inner = width.saturating_sub(INDENT);
-    let place = if inline {
-        ctx.session.inline_location(t)
-    } else {
-        ctx.session.location(t)
+    let place = match ctx.doc.place_of(idx) {
+        Some(p) if inline => p.inline(),
+        _ => ctx.session.location(t),
     };
     let mut header = format!("{}  {place}", t.id);
     if t.waiting_on_agent() {
@@ -636,7 +635,7 @@ fn thread_lines(
         s.style = s.style.patch(mark);
     }
     let mut lines = vec![first];
-    if outdated && let Some(text) = &t.text {
+    if let Some(text) = &t.was {
         let dim = Style::new().fg(theme.dim);
         lines.push(line(vec![Span::styled("was:", dim)]));
         for l in text.lines() {

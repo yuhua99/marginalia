@@ -45,7 +45,10 @@ impl Store {
             bail!("invalid session id {id:?}");
         }
         let text = fs::read_to_string(self.path(id)).with_context(|| format!("no session {id}"))?;
-        serde_json::from_str(&text).with_context(|| format!("parse session {id}"))
+        let mut session: Session = serde_json::from_str(&text)
+            .with_context(|| format!("parse session {id} (one of an older mrg?)"))?;
+        session.id = id.to_string();
+        Ok(session)
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {
@@ -56,7 +59,8 @@ impl Store {
         Ok(())
     }
 
-    /// Sessions with their last update time (unix seconds), newest first.
+    /// Sessions with their last update time (unix seconds), newest first; those that do
+    /// not load, as of an older mrg, are left out.
     pub fn list(&self) -> Result<Vec<(Session, u64)>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.dir)? {
@@ -69,9 +73,9 @@ impl Store {
                 .modified()?
                 .duration_since(UNIX_EPOCH)?
                 .as_secs();
-            let session = self
-                .load(&id)
-                .with_context(|| format!("load {}", path.display()))?;
+            let Ok(session) = self.load(&id) else {
+                continue;
+            };
             out.push((session, updated));
         }
         out.sort_by(|a, b| b.1.cmp(&a.1));
