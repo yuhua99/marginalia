@@ -65,17 +65,14 @@ const HINTS: &[help::Entry] = &[
     (&["filter"], "search/filter"),
     (&["select"], "select"),
     (&["prev_file", "next_file"], "file"),
-    (&["next_focus", "prev_focus"], "focus"),
-    (&["check"], "check"),
-    (&["open"], "open"),
-    (&["settings"], "settings"),
     (&["help"], "help"),
     (&["back"], "picker"),
     (&["quit"], "quit"),
 ];
 
 /// The bottom layer: commits across the top, files and the diff below.
-/// `Tab` / `S-Tab` cycle the focus along commits, files, diff; `h` / `l` move by file.
+/// `Tab` / `S-Tab` cycle the focus along commits, files, diff; `h` / `l` or `Left` /
+/// `Right` move by file.
 pub struct Review {
     commits: Sidebar,
     files: Sidebar,

@@ -36,12 +36,8 @@ const HELP: &[Entry] = &[
 ];
 
 const HINTS: &[Entry] = &[
-    (&["down", "up"], "move"),
-    (&["half_page_down", "half_page_up"], "half page"),
-    (&["top", "bottom"], "top/bottom"),
     (&["filter"], "search"),
     (&["next_thread", "prev_thread"], "match"),
-    (&["settings"], "settings"),
     (&["help"], "help"),
     (&["quit", "cancel"], "back"),
 ];

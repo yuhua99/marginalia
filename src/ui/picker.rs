@@ -26,15 +26,12 @@ use crate::ui::{Panes, boxed, check, clear, cursor_bar, dialog, row_at, step};
 const COMMITS: usize = 500;
 
 const HINTS: &[Entry] = &[
-    (&["down", "up"], "move"),
     (&["focus_left", "focus_right"], "pane"),
     (&["check"], "select"),
     (&["open"], "open"),
     (&["filter"], "filter"),
     (&["edit"], "rename"),
     (&["delete"], "delete session"),
-    (&["cancel"], "clear"),
-    (&["settings"], "settings"),
     (&["help"], "help"),
     (&["quit"], "quit"),
 ];
