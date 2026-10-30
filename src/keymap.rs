@@ -26,7 +26,9 @@ pub enum Feed {
 
 const DEFAULTS: &[(&str, &str)] = &[
     ("j", "down"),
+    ("Down", "down"),
     ("k", "up"),
+    ("Up", "up"),
     ("C-d", "half_page_down"),
     ("C-u", "half_page_up"),
     ("g g", "top"),
@@ -34,7 +36,9 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("n", "next_thread"),
     ("N", "prev_thread"),
     ("h", "focus_left"),
+    ("Left", "focus_left"),
     ("l", "focus_right"),
+    ("Right", "focus_right"),
     ("Enter", "open"),
     ("Space", "check"),
     ("v", "select"),
@@ -58,7 +62,9 @@ const CONTEXTS: &[(&str, &[(&str, &str)])] = &[
         "review",
         &[
             ("h", "prev_file"),
+            ("Left", "prev_file"),
             ("l", "next_file"),
+            ("Right", "next_file"),
             ("Tab", "next_focus"),
             ("S-Tab", "prev_focus"),
         ],
@@ -169,6 +175,14 @@ impl Keymap {
             .join(",")
     }
 
+    /// The keys of the first binding of `action`, such as `g g`.
+    pub fn first_key(&self, action: &str) -> Option<&str> {
+        self.bindings
+            .iter()
+            .find(|(_, _, a)| *a == action)
+            .map(|(keys, _, _)| keys.as_str())
+    }
+
     pub fn feed(&mut self, key: KeyEvent) -> Feed {
         let mut modifiers = key.modifiers;
         if matches!(key.code, KeyCode::Char(_) | KeyCode::BackTab) {
@@ -206,7 +220,7 @@ fn parse_seq(keys: &str) -> Result<Vec<Key>> {
     Ok(seq)
 }
 
-/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab` or `S-Tab`.
+/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab`, `S-Tab`, `Up`, `Down`, `Left` or `Right`.
 fn parse(key: &str) -> Result<Key> {
     let none = KeyModifiers::NONE;
     Ok(match key {
@@ -215,6 +229,10 @@ fn parse(key: &str) -> Result<Key> {
         "Tab" => (KeyCode::Tab, none),
         "S-Tab" => (KeyCode::BackTab, none),
         "Space" => (KeyCode::Char(' '), none),
+        "Up" => (KeyCode::Up, none),
+        "Down" => (KeyCode::Down, none),
+        "Left" => (KeyCode::Left, none),
+        "Right" => (KeyCode::Right, none),
         _ => {
             let (k, modifiers) = match key.strip_prefix("C-") {
                 Some(k) => (k, KeyModifiers::CONTROL),
@@ -253,15 +271,15 @@ mod tests {
         ]))
         .unwrap();
         let review = Keymap::build("review", &user);
-        assert_eq!(review.keys("prev_file"), "h");
+        assert_eq!(review.keys("prev_file"), "h,Left");
         assert_eq!(review.keys("focus_left"), "");
-        assert_eq!(review.keys("down"), "j");
-        assert_eq!(review.keys("next_file"), "l,J");
+        assert_eq!(review.keys("down"), "j,Down");
+        assert_eq!(review.keys("next_file"), "l,Right,J");
         assert_eq!(review.keys("delete"), "");
         let picker = Keymap::build("picker", &user);
-        assert_eq!(picker.keys("down"), "j,J");
+        assert_eq!(picker.keys("down"), "j,Down,J");
         assert_eq!(picker.keys("delete"), "x");
-        assert_eq!(picker.keys("focus_left"), "h");
+        assert_eq!(picker.keys("focus_left"), "h,Left");
     }
 
     #[test]
