@@ -89,6 +89,7 @@ impl Query {
                 .map(|s| n(&s.text))
                 .sum(),
             Row::Thread { idx } => threads[*idx].messages.iter().map(|m| n(&m.body)).sum(),
+            Row::Commit { message, .. } => n(message),
             Row::Session | Row::Fold { .. } => 0,
         }
     }

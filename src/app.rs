@@ -168,12 +168,13 @@ impl Ctx {
     }
 }
 
-/// What the diff of `shown` covers: its sides, and the commits of its views.
+/// What the diff of `shown` covers: its sides, and the commit of its views when it is
+/// the only one, which the diff shows with its threads.
 struct Span {
     left: String,
     right: String,
     scope: Scope,
-    commits: Vec<String>,
+    commit: Option<String>,
 }
 
 fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<Span> {
@@ -186,7 +187,7 @@ fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<
         ),
     };
     let (first, last) = shown.bounds(views.len());
-    let commits = views
+    let commits: Vec<String> = views
         .get(first..=last)
         .unwrap_or_default()
         .iter()
@@ -195,11 +196,12 @@ fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<
             View::Uncommitted => None,
         })
         .collect();
+    let commit = (commits.len() == 1).then(|| commits[0].clone());
     Ok(Span {
         left,
         right,
         scope,
-        commits,
+        commit,
     })
 }
 
@@ -208,14 +210,24 @@ fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<
 fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<(Doc, Span)> {
     let span = span(repo, session, views, shown)?;
     let files = repo.diff(&span.left, &span.right, 3)?;
-    let mut doc = Doc::new(span.left.clone(), span.right.clone(), files, span.scope);
+    let commit = match &span.commit {
+        Some(c) => Some((c.clone(), repo.message(c)?)),
+        None => None,
+    };
+    let mut doc = Doc::new(
+        span.left.clone(),
+        span.right.clone(),
+        files,
+        span.scope,
+        commit,
+    );
     set_threads(repo, session, &span, &mut doc)?;
     Ok((doc, span))
 }
 
 /// Puts the session's threads where they are in `doc`, the diff of `span`.
 fn set_threads(repo: &mut Repo, session: &Session, span: &Span, doc: &mut Doc) -> Result<()> {
-    let places = session.locate(repo, &span.left, &span.right, &span.commits)?;
+    let places = session.locate(repo, &span.left, &span.right, span.commit.as_slice())?;
     doc.set_threads(&session.threads, places);
     Ok(())
 }

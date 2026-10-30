@@ -405,6 +405,11 @@ impl Repo {
             .map(str::to_string))
     }
 
+    /// The full message of `commit`.
+    pub fn message(&self, commit: &str) -> Result<String> {
+        text(run(&mut self.git(&["log", "-1", "--format=%B", commit]))?)
+    }
+
     /// The empty tree, to diff a root commit against.
     pub fn empty_tree(&self) -> Result<String> {
         text(run(self

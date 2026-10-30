@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{Component, Ctx, Outcome};
 use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
-use crate::repo::Kind;
+use crate::repo::{Kind, short};
 use crate::session::Thread;
 use crate::theme::Theme;
 use crate::ui::confirm::Confirm;
@@ -408,6 +408,21 @@ pub fn draw_row(
         .patch(mark);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "# session".to_string(),
+        Row::Commit { sha, message } => {
+            let mut lines = vec![Line::styled(format!("# commit {}", short(sha)), header)];
+            let options = textwrap::Options::new((width as usize).saturating_sub(INDENT).max(10))
+                .word_separator(textwrap::WordSeparator::AsciiSpace)
+                .word_splitter(textwrap::WordSplitter::NoHyphenation);
+            for l in message.lines() {
+                for part in textwrap::wrap(&clean(l), &options) {
+                    let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+                    let body = vec![Span::raw(part.into_owned())];
+                    spans.extend(query::mark(body, search, query::hit_style(theme)));
+                    lines.push(Line::from(spans));
+                }
+            }
+            return Drawn::Full(lines, mark);
+        }
         Row::File {
             file,
             status,
