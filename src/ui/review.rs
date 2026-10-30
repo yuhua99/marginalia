@@ -7,6 +7,7 @@ use ratatui::text::Span;
 
 use crate::app::{Component, Ctx, Outcome, Shown};
 use crate::keymap::{Feed, Keymap};
+use crate::session::Anchor;
 use crate::ui::confirm::Confirm;
 use crate::ui::diff_view::DiffView;
 use crate::ui::help::{self, Help};
@@ -161,9 +162,13 @@ impl Panes<Ctx> for Review {
                     }
                     ("comment", entry) => {
                         if let Some(anchor) = entry.anchor(ctx) {
-                            // Under the file's header, or the session's for commits.
-                            let row = match entry {
-                                Entry::File(file) => ctx.doc.expand_file(file),
+                            // Under the file's header, the commit's when shown alone,
+                            // else the session's.
+                            let row = match (entry, &anchor) {
+                                (Entry::File(file), _) => ctx.doc.expand_file(file),
+                                (_, Anchor::Commit { commit }) => {
+                                    ctx.doc.commit_row(commit).unwrap_or(0)
+                                }
                                 _ => 0,
                             };
                             self.diff.start(row, Input::comment(anchor, &ctx.session));
