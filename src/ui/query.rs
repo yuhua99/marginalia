@@ -107,9 +107,10 @@ impl Query {
     }
 }
 
-/// How a search match shows.
-pub fn hit_style(theme: &Theme) -> Style {
-    Style::new().fg(theme.bg).bg(theme.yellow)
+/// How a search match shows: yellow on the cursor row, teal elsewhere.
+pub fn hit_style(theme: &Theme, current: bool) -> Style {
+    let bg = if current { theme.yellow } else { theme.teal };
+    Style::new().fg(theme.bg).bg(bg)
 }
 
 /// Byte ranges of `query` in `text`, any case.

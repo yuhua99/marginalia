@@ -270,13 +270,14 @@ impl DiffView {
         self.scroll.cursor = self.scroll.cursor.min(doc.len() - 1);
         let selection = self.selection();
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
-        let search = &self.search.text;
+        let (search, cursor) = (&self.search.text, self.scroll.cursor);
         let draw = |i: usize| {
             let accent = Style::new()
                 .fg(ctx.look.theme.on_accent)
                 .bg(ctx.look.theme.accent);
             let mark = selection.contains(&i).then_some(accent);
-            draw_row(ctx, doc, i, area.width, mark, editing, search)
+            let hit = query::hit_style(ctx.look.theme, i == cursor);
+            draw_row(ctx, doc, i, area.width, mark, editing, (search, hit))
         };
         let draft_at = self.draft.as_ref().map(|(row, _)| *row);
         let draft_height = self
@@ -390,7 +391,7 @@ pub fn drawn_at(rows: &[(usize, Range<u16>)], y: u16) -> Option<usize> {
 /// `mark`: the gutter's style, for the selection or a file view's linked lines; threads
 /// take it across their header line, file and session rows whole.
 /// `editing`: the thread whose last message the draft replaces.
-/// `search`: the text whose matches to mark.
+/// `search`: the text whose matches to mark, and their style.
 pub fn draw_row(
     ctx: &Ctx,
     doc: &Doc,
@@ -398,7 +399,7 @@ pub fn draw_row(
     width: u16,
     mark: Option<Style>,
     editing: Option<usize>,
-    search: &str,
+    search: (&str, Style),
 ) -> Drawn {
     let theme = ctx.look.theme;
     let mark = mark.unwrap_or_default();
@@ -417,7 +418,7 @@ pub fn draw_row(
                 for part in textwrap::wrap(&clean(l), &options) {
                     let mut spans = vec![Span::raw(" ".repeat(INDENT))];
                     let body = vec![Span::raw(part.into_owned())];
-                    spans.extend(query::mark(body, search, query::hit_style(theme)));
+                    spans.extend(query::mark(body, search.0, search.1));
                     lines.push(Line::from(spans));
                 }
             }
@@ -442,7 +443,7 @@ pub fn draw_row(
                 Span::raw(" "),
             ];
             let path = vec![Span::raw(path.clone())];
-            spans.extend(query::mark(path, search, query::hit_style(theme)));
+            spans.extend(query::mark(path, search.0, search.1));
             spans.push(Span::raw(rest));
             // The mark goes over the status and search colors.
             let spans: Vec<_> = spans.into_iter().map(|s| s.patch_style(mark)).collect();
@@ -521,7 +522,7 @@ pub fn draw_row(
 }
 
 /// One side of a code row, wrapped by grapheme to `width`; `mark` styles the gutter,
-/// and the matches of `search` are marked.
+/// and the matches of `search`'s text take its style.
 fn code_lines(
     side: Option<&Side>,
     colors: Option<&Colors>,
@@ -529,12 +530,12 @@ fn code_lines(
     mark: Style,
     theme: &Theme,
     wrap: bool,
-    search: &str,
+    search: (&str, Style),
 ) -> (Vec<Line<'static>>, Style) {
     let Some(s) = side else {
         return (Vec::new(), Style::new());
     };
-    let hits = query::hits(&s.text, search);
+    let hits = query::hits(&s.text, search.0);
     // Changes show in the line background and number color; changed words in `emph`.
     let (color, bg, emph) = match s.kind {
         Kind::Ctx => (theme.dim, theme.bg, theme.bg),
@@ -590,7 +591,7 @@ fn code_lines(
             style = style.bg(emph);
         }
         if hits.iter().any(|r| r.contains(&at)) {
-            style = style.patch(query::hit_style(theme));
+            style = style.patch(search.1);
         }
         if style != chunk_style && !chunk.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut chunk), chunk_style));
@@ -614,7 +615,7 @@ fn thread_lines(
     hide_last: bool,
     width: usize,
     mark: Style,
-    search: &str,
+    search: (&str, Style),
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
     let t: &Thread = &ctx.session.threads[idx];
@@ -692,7 +693,7 @@ fn thread_lines(
                 body.push(Span::raw(part[at..].to_string()));
                 // Only the body is searched.
                 let mut spans = vec![Span::styled(prefix, who)];
-                spans.extend(query::mark(body, search, query::hit_style(theme)));
+                spans.extend(query::mark(body, search.0, search.1));
                 lines.push(line(spans));
             }
         }
