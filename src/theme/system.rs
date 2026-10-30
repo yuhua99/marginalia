@@ -1,4 +1,4 @@
-//! The `system` theme: the terminal's own colors, asked with OSC 10 / 11 / 4, made a
+//! The `system` theme: the terminal's own colors, asked with OSC 10 / 11 / 12 / 4, made a
 //! palette as the RGB themes are.
 
 use std::collections::HashMap;
@@ -27,13 +27,16 @@ pub fn query() -> Option<Theme> {
         .iter()
         .map(|n| colors.get(format!("4;{n}").as_str()).copied())
         .collect::<Option<_>>()?;
-    Some(build(*colors.get("10")?, *colors.get("11")?, &ansi))
+    let fg = *colors.get("10")?;
+    // Many themes leave the cursor at the text color; that makes no accent.
+    let cursor = colors.get("12").copied().filter(|&c| c != fg);
+    Some(build(fg, *colors.get("11")?, cursor, &ansi))
 }
 
 /// Sends the queries and reads the replies, up to the reply to DA1, which every
 /// terminal answers, or half a second.
 fn ask() -> std::io::Result<String> {
-    let mut query = String::from("\x1b]10;?\x07\x1b]11;?\x07");
+    let mut query = String::from("\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
     for n in ANSI {
         query.push_str(&format!("\x1b]4;{n};?\x07"));
     }
@@ -74,7 +77,7 @@ fn answered(reply: &[u8]) -> bool {
         .is_some_and(|i| reply[i..].contains(&b'c'))
 }
 
-/// `ESC ] key ; rgb:RR/GG/BB` replies (1 to 4 hex digits a channel), by key: `10`, `11`, `4;N`.
+/// `ESC ] key ; rgb:RR/GG/BB` replies (1 to 4 hex digits a channel), by key: `10`, `11`, `12`, `4;N`.
 fn parse(reply: &str) -> HashMap<&str, Rgb> {
     reply
         .split("\x1b]")
@@ -96,7 +99,8 @@ fn parse(reply: &str) -> HashMap<&str, Rgb> {
         .collect()
 }
 
-fn build(fg: Rgb, bg: Rgb, ansi: &[Rgb]) -> Theme {
+/// The accent is the cursor color, or cyan without one.
+fn build(fg: Rgb, bg: Rgb, cursor: Option<Rgb>, ansi: &[Rgb]) -> Theme {
     let [red, green, yellow, blue, magenta, cyan, gray] = ansi.try_into().expect("7 colors");
     palette(
         "system",
@@ -105,7 +109,7 @@ fn build(fg: Rgb, bg: Rgb, ansi: &[Rgb]) -> Theme {
             text: fg,
             dim: gray,
             comment: gray,
-            accent: yellow,
+            accent: cursor.unwrap_or(cyan),
             red,
             green,
             yellow,
