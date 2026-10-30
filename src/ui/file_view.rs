@@ -17,7 +17,7 @@ use crate::ui::clear;
 use crate::ui::diff_view::{draw_row, draw_rows, drawn_at};
 use crate::ui::help::{self, Entry, Help};
 use crate::ui::popup::Popup;
-use crate::ui::query::Query;
+use crate::ui::query::{self, Query};
 use crate::ui::scroll::Scroll;
 use crate::ui::settings::SettingsPopup;
 
@@ -175,7 +175,8 @@ impl Component for FileView {
             } else {
                 None
             };
-            draw_row(ctx, doc, i, inner.width, mark, None, search)
+            let hit = query::hit_style(ctx.look.theme, i == cursor);
+            draw_row(ctx, doc, i, inner.width, mark, None, (search, hit))
         };
         self.scroll.place(
             inner.height as usize,
