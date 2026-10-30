@@ -32,6 +32,8 @@ pub struct Ctx {
     /// What the diff can show: each commit, then uncommitted changes.
     pub views: Vec<View>,
     pub shown: Shown,
+    /// What `doc` covers, as of when it was loaded: HEAD may move since.
+    span: Span,
     pub highlighter: Highlighter,
     pub look: Look,
     pub files: Files,
@@ -102,7 +104,7 @@ impl Ctx {
         if repo::worktree(&session.end) {
             views.push(View::Uncommitted);
         }
-        let doc = load(&mut repo, &session, &views, Shown::All)?;
+        let (doc, span) = load(&mut repo, &session, &views, Shown::All)?;
         let files = Files::new(repo.files(&session.end)?);
         Ok(Ctx {
             session,
@@ -114,6 +116,7 @@ impl Ctx {
             on_quit: None,
             views,
             shown: Shown::All,
+            span,
             highlighter: Highlighter::new(),
             look,
             files,
@@ -122,7 +125,7 @@ impl Ctx {
 
     /// Switches the diff to `shown`.
     pub fn show(&mut self, shown: Shown) -> Result<()> {
-        self.doc = load(&mut self.repo, &self.session, &self.views, shown)?;
+        (self.doc, self.span) = load(&mut self.repo, &self.session, &self.views, shown)?;
         self.shown = shown;
         Ok(())
     }
@@ -161,18 +164,19 @@ impl Ctx {
     fn threads_changed(&mut self) -> Result<()> {
         self.store.save(&self.session)?;
         self.session.place(&mut self.repo)?;
-        set_threads(
-            &mut self.repo,
-            &self.session,
-            &self.views,
-            self.shown,
-            &mut self.doc,
-        )
+        set_threads(&mut self.repo, &self.session, &self.span, &mut self.doc)
     }
 }
 
-/// The diff of `shown`: from the left side of its first view to the right side of the last.
-fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<Doc> {
+/// What the diff of `shown` covers: its sides, and the commits of its views.
+struct Span {
+    left: String,
+    right: String,
+    scope: Scope,
+    commits: Vec<String>,
+}
+
+fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<Span> {
     let (left, right, scope) = match shown {
         Shown::All => (session.base.clone(), session.end.clone(), Scope::Range),
         Shown::Run(first, last) => (
@@ -181,22 +185,8 @@ fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Res
             Scope::Run,
         ),
     };
-    let files = repo.diff(&left, &right, 3)?;
-    let mut doc = Doc::new(left, right, files, scope);
-    set_threads(repo, session, views, shown, &mut doc)?;
-    Ok(doc)
-}
-
-/// Puts the session's threads where they are in `doc`, the diff of `shown`.
-fn set_threads(
-    repo: &mut Repo,
-    session: &Session,
-    views: &[View],
-    shown: Shown,
-    doc: &mut Doc,
-) -> Result<()> {
     let (first, last) = shown.bounds(views.len());
-    let commits: Vec<String> = views
+    let commits = views
         .get(first..=last)
         .unwrap_or_default()
         .iter()
@@ -205,8 +195,27 @@ fn set_threads(
             View::Uncommitted => None,
         })
         .collect();
-    let (left, right) = doc.revs();
-    let places = session.locate(repo, left, right, &commits)?;
+    Ok(Span {
+        left,
+        right,
+        scope,
+        commits,
+    })
+}
+
+/// The diff of `shown`, from the left side of its first view to the right side of the
+/// last, and what it covers.
+fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<(Doc, Span)> {
+    let span = span(repo, session, views, shown)?;
+    let files = repo.diff(&span.left, &span.right, 3)?;
+    let mut doc = Doc::new(span.left.clone(), span.right.clone(), files, span.scope);
+    set_threads(repo, session, &span, &mut doc)?;
+    Ok((doc, span))
+}
+
+/// Puts the session's threads where they are in `doc`, the diff of `span`.
+fn set_threads(repo: &mut Repo, session: &Session, span: &Span, doc: &mut Doc) -> Result<()> {
+    let places = session.locate(repo, &span.left, &span.right, &span.commits)?;
     doc.set_threads(&session.threads, places);
     Ok(())
 }
