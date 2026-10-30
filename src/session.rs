@@ -564,7 +564,6 @@ mod tests {
             old_path: "a".into(),
             new_path: "b".into(),
             binary: false,
-            skipped: false,
             hunks: vec![
                 Hunk {
                     old_start: 2,
@@ -604,7 +603,6 @@ mod tests {
             old_path: "a".into(),
             new_path: "a".into(),
             binary: false,
-            skipped: false,
             hunks: vec![Hunk {
                 old_start: at - 1,
                 old_len: 0,

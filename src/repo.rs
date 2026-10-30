@@ -1,10 +1,8 @@
 mod parse;
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
@@ -13,8 +11,6 @@ use anyhow::{Context, Result, bail};
 pub use parse::{FileDiff, Kind};
 #[cfg(test)]
 pub use parse::{Hunk, Line};
-
-const UNTRACKED_MAX_BYTES: u64 = 1 << 20;
 
 pub struct Repo {
     root: String,
@@ -26,8 +22,6 @@ pub struct Repo {
     ranges: HashMap<String, Vec<Commit>>,
     /// (from, to) -> `changes` between them.
     changes: HashMap<(String, String), Option<Vec<FileDiff>>>,
-    /// Untracked files over the size limit, left out of the unstaged tree.
-    skipped: Vec<String>,
     cat: Option<CatFile>,
     /// Where the objects mrg writes go (trees of `staged` / `unstaged`), the repo's
     /// own read through it, so nothing lands in `.git`; set by `use_objects`.
@@ -76,7 +70,6 @@ impl Repo {
             trees: HashMap::new(),
             ranges: HashMap::new(),
             changes: HashMap::new(),
-            skipped: Vec::new(),
             cat: None,
             objects: None,
         })
@@ -139,8 +132,7 @@ impl Repo {
         Ok(())
     }
 
-    /// Files changed from `base` to `end`, with `context` lines around each change. With
-    /// `end = unstaged`, untracked files over the size limit come last with `skipped` set.
+    /// Files changed from `base` to `end`, with `context` lines around each change.
     pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
         let to = self.object(end)?;
         let context = format!("-U{context}");
@@ -165,12 +157,7 @@ impl Repo {
         ]);
         // Errors in English, for `changes` to tell objects missing.
         let out = run(cmd.env("LC_ALL", "C"))?;
-        let mut files = parse::parse(&out)?;
-        if end == "unstaged" {
-            files.extend(self.skipped.iter().map(|p| FileDiff::skipped(p)));
-            files.sort_by(|a, b| a.new_path.cmp(&b.new_path));
-        }
-        Ok(files)
+        parse::parse(&out)
     }
 
     /// `diff(from, to, 0)` of pinned revs, kept: what carries lines from one to the other.
@@ -270,7 +257,7 @@ impl Repo {
     }
 
     /// Writes a tree from a temporary copy of the index, leaving the real index untouched.
-    /// With `worktree`, tracked changes and untracked files are added to the copy first.
+    /// With `worktree`, tracked changes are added to the copy first; untracked files stay out.
     fn index_tree(&mut self, worktree: bool) -> Result<String> {
         let Some(objects) = &self.objects else {
             bail!("no object directory set; the tree would be written into .git");
@@ -282,58 +269,16 @@ impl Repo {
         tree
     }
 
-    fn write_tree(&mut self, index: &Path, worktree: bool) -> Result<String> {
+    fn write_tree(&self, index: &Path, worktree: bool) -> Result<String> {
         let git = |args: &[&str]| {
             let mut cmd = self.git(args);
             cmd.env("GIT_INDEX_FILE", index);
             cmd
         };
-        if !worktree {
-            return text(run(&mut git(&["write-tree"]))?);
+        if worktree {
+            run(&mut git(&["add", "-u"]))?;
         }
-        run(&mut git(&["add", "-u"]))?;
-        let mut add = Vec::new();
-        let mut skipped = Vec::new();
-        for path in self.untracked()? {
-            if fs::symlink_metadata(Path::new(&self.root).join(OsStr::from_bytes(&path)))?.len()
-                > UNTRACKED_MAX_BYTES
-            {
-                skipped.push(String::from_utf8_lossy(&path).into_owned());
-            } else {
-                add.push(path);
-            }
-        }
-        if !add.is_empty() {
-            let mut cmd = git(&[
-                "--literal-pathspecs",
-                "add",
-                "--pathspec-from-file=-",
-                "--pathspec-file-nul",
-            ]);
-            let mut child = cmd
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .spawn()
-                .context("run git add")?;
-            child.stdin.take().unwrap().write_all(&add.join(&0))?;
-            if !child.wait()?.success() {
-                bail!("git add untracked files failed");
-            }
-        }
-        let tree = text(run(&mut git(&["write-tree"]))?)?;
-        self.skipped = skipped;
-        Ok(tree)
-    }
-
-    /// Untracked files that go into the unstaged tree.
-    fn untracked(&self) -> Result<Vec<Vec<u8>>> {
-        let out = run(&mut self.git(&["ls-files", "--others", "--exclude-standard", "-z"]))?;
-        Ok(out
-            .split(|&b| b == 0)
-            // Nested repos are listed as `dir/`; leave them out.
-            .filter(|p| !p.is_empty() && !p.ends_with(b"/"))
-            .map(<[u8]>::to_vec)
-            .collect())
+        text(run(&mut git(&["write-tree"]))?)
     }
 
     /// Commits in `base..end`, oldest first.
@@ -359,9 +304,7 @@ impl Repo {
             }
         };
         let mut revs = Vec::new();
-        if !self.untracked()?.is_empty()
-            || differs(&["diff", "--quiet", "--ignore-submodules=dirty", "HEAD"])?
-        {
+        if differs(&["diff", "--quiet", "--ignore-submodules=dirty", "HEAD"])? {
             revs.push("unstaged");
         }
         if differs(&["diff", "--quiet", "--cached", "HEAD"])? {

@@ -7,8 +7,6 @@ pub struct FileDiff {
     pub old_path: String,
     pub new_path: String,
     pub binary: bool,
-    /// Untracked file over the size limit; no hunks.
-    pub skipped: bool,
     pub hunks: Vec<Hunk>,
 }
 
@@ -46,19 +44,6 @@ pub enum Kind {
     Add,
 }
 
-impl FileDiff {
-    pub fn skipped(path: &str) -> FileDiff {
-        FileDiff {
-            status: 'A',
-            old_path: path.into(),
-            new_path: path.into(),
-            binary: false,
-            skipped: true,
-            hunks: Vec::new(),
-        }
-    }
-}
-
 /// Parses `git diff --raw -z --patch`.
 ///
 /// Paths and status come from the NUL-separated raw records, so the patch headers
@@ -88,7 +73,6 @@ pub fn parse(out: &[u8]) -> Result<Vec<FileDiff>> {
             old_path,
             new_path,
             binary: false,
-            skipped: false,
             hunks: Vec::new(),
         });
         rest = r;
