@@ -26,7 +26,7 @@ use base64::engine::general_purpose::STANDARD;
 use clap::{Parser, Subcommand};
 
 use repo::Repo;
-use session::{Input, Session};
+use session::{NewComment, Session};
 use store::Store;
 
 /// Mouse reporting of clicks and the wheel in SGR, and its end.
@@ -115,10 +115,12 @@ fn main() -> Result<()> {
                 text = std::fs::read_to_string(&file)
                     .with_context(|| format!("read {}", file.display()))?;
             }
-            let input: Input = serde_json::from_str(&text).context("parse comments")?;
-            let touched = session.apply(input, &mut repo)?;
-            store.save(&session)?;
+            let comments: Vec<NewComment> =
+                serde_json::from_str(&text).context("parse comments")?;
+            let touched = session.apply(comments, &mut repo)?;
+            // Placed first: saved only when the ids can be printed, so a retry adds no copies.
             session.place(&mut repo)?;
+            store.save(&session)?;
             for i in touched {
                 let t = &session.threads[i];
                 let location = session.location(t);
@@ -146,7 +148,7 @@ fn main() -> Result<()> {
             session.place(&mut repo)?;
             match only.as_deref() {
                 Some("waiting") => session.threads.retain(|t| t.waiting_on_agent()),
-                Some("outdated") => session.threads.retain(|t| t.outdated),
+                Some("outdated") => session.threads.retain(|t| t.outdated()),
                 _ => {}
             }
             println!("{}", serde_json::to_string_pretty(&session.view()?)?);

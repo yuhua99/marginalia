@@ -5,7 +5,7 @@ use anyhow::Result;
 use similar::{ChangeTag, TextDiff};
 
 use crate::repo::{FileDiff, Kind};
-use crate::session::{Anchor, Owner, Thread};
+use crate::session::{Anchor, Place, Thread};
 
 /// The logical rows of a side-by-side diff, with threads placed under what they anchor to.
 pub struct Doc {
@@ -22,28 +22,18 @@ pub struct Doc {
     scope: Scope,
     /// Per collapsed file, its rows other than the header; its threads are left out.
     collapsed: HashMap<usize, Vec<Row>>,
-    /// Where each of the session threads goes, as of `set_threads`.
+    /// Where each of the session threads is here, and so goes, as of `set_threads`.
+    places: Vec<Option<Place>>,
     spots: Vec<Spot>,
 }
 
 /// What the diff shows.
+#[derive(Clone, Copy, PartialEq)]
 pub enum Scope {
-    /// The whole range: lines go by their rev, and every thread shows.
+    /// The whole range: every thread shows, at the top when on no row.
     Range,
-    /// A run of commits, oldest first: lines go by their owner, and threads of other
-    /// commits are left out.
-    Run(Vec<Step>),
-}
-
-/// A commit of a run, with the diffs that carry its lines to the sides here; None for
-/// the side that is its own.
-pub struct Step {
-    /// Its sha, or the range end for uncommitted changes.
-    pub commit: String,
-    /// From it to the right side, for lines it keeps.
-    pub kept: Option<Vec<FileDiff>>,
-    /// From its parent to the left side, for lines it deletes.
-    pub deleted: Option<Vec<FileDiff>>,
+    /// A run of commits: only threads on its rows, and those on all of it.
+    Run,
 }
 
 pub enum Row {
@@ -87,10 +77,12 @@ type Ranges = Vec<Range<usize>>;
 /// Where a thread row goes.
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum Spot {
+    /// At the top of the whole range only: on no side here.
     Top,
-    /// At the top in every view: the session, a commit shown, or its lines that have no
-    /// side here.
+    /// At the top in every view: the session, or a commit shown.
     Whole,
+    /// Nowhere: a commit not shown.
+    Hidden,
     File(usize),
     /// File, right side, last anchored line.
     Line(usize, bool, u32),
@@ -216,6 +208,7 @@ impl Doc {
             rows,
             scope,
             collapsed: HashMap::new(),
+            places: Vec::new(),
             spots: Vec::new(),
         }
     }
@@ -247,6 +240,7 @@ impl Doc {
             rows: [header].into_iter().chain(lines).collect(),
             scope: Scope::Range,
             collapsed: HashMap::new(),
+            places: Vec::new(),
             spots: Vec::new(),
         }
     }
@@ -263,10 +257,21 @@ impl Doc {
             .unwrap_or(self.rows.len() - 1)
     }
 
-    /// Replaces the thread rows with those of `threads`, the session's after they changed.
-    pub fn set_threads(&mut self, threads: &[Thread]) {
-        self.spots = threads.iter().map(|t| self.spot(t)).collect();
+    /// Replaces the thread rows with those of `threads`, the session's after they changed,
+    /// at `places`, where `Session::locate` finds them in this diff.
+    pub fn set_threads(&mut self, threads: &[Thread], places: Vec<Option<Place>>) {
+        self.spots = threads
+            .iter()
+            .zip(&places)
+            .map(|(t, p)| self.spot(&t.anchor, p.as_ref()))
+            .collect();
+        self.places = places;
         self.place();
+    }
+
+    /// Where thread `idx` is in this diff.
+    pub fn place_of(&self, idx: usize) -> Option<&Place> {
+        self.places.get(idx)?.as_ref()
     }
 
     /// Puts the thread rows where `spots` say, for the rows there are now.
@@ -302,8 +307,10 @@ impl Doc {
             for spot in spots.into_iter().flatten() {
                 rows.extend(at.remove(&spot).into_iter().flatten().map(thread_row));
             }
-            // Threads on lines the fold hides go under it.
-            if let Some((file, old, new, hidden)) = fold {
+            // Threads on lines the fold hides go under it; a run shows only its rows'.
+            if let Some((file, old, new, hidden)) = fold
+                && self.scope == Scope::Range
+            {
                 let inside = |spot: &Spot| match *spot {
                     Spot::Line(f, right, line) => {
                         let start = if right { new } else { old };
@@ -319,11 +326,14 @@ impl Doc {
                 rows.extend(idx.into_iter().map(thread_row));
             }
         }
-        // Left over are `Whole` ones, `Top` ones (whole range only), lines past the
-        // file's rows, and those of collapsed files, which stay out.
+        // Left over are `Whole` ones, `Top` ones, lines past the file's rows (or in its
+        // folds, in a run), and those of collapsed files, which stay out.
         let mut rest: Vec<usize> = at
             .into_iter()
-            .filter(|(spot, _)| matches!(self.scope, Scope::Range) || *spot != Spot::Top)
+            .filter(|(spot, _)| match self.scope {
+                Scope::Range => *spot != Spot::Hidden,
+                Scope::Run => *spot == Spot::Whole,
+            })
             .filter(|(spot, _)| {
                 !matches!(spot, Spot::File(f) | Spot::Line(f, ..) if self.collapsed.contains_key(f))
             })
@@ -334,52 +344,20 @@ impl Doc {
         self.rows = rows;
     }
 
-    fn spot(&self, t: &Thread) -> Spot {
-        let find = |f: &dyn Fn(&(String, String)) -> bool| self.paths.iter().position(f);
-        match (&t.anchor, &self.scope) {
-            (Anchor::Lines { owner, .. }, Scope::Run(steps)) => {
-                let Some(o) = owner else {
-                    return Spot::Top;
-                };
-                let Some(step) = steps.iter().find(|s| s.commit == o.commit) else {
-                    return Spot::Top;
-                };
-                let carried = if o.deleted { &step.deleted } else { &step.kept };
-                // Lines a later shown commit changes, or an earlier one adds, have no side.
-                let (file, line) = match carried {
-                    None => (o.file.clone(), o.line),
-                    Some(files) => match carry(files, &o.file, o.line, o.line) {
-                        Some((file, _, line)) => (file, line),
-                        None => return Spot::Whole,
-                    },
-                };
-                let right = !o.deleted;
-                match find(&|p| if right { p.1 == file } else { p.0 == file }) {
-                    Some(f) => Spot::Line(f, right, line),
-                    None => Spot::Whole,
-                }
+    fn spot(&self, anchor: &Anchor, place: Option<&Place>) -> Spot {
+        let find = |file: &str, old: bool| {
+            self.paths
+                .iter()
+                .position(|p| if old { p.0 == file } else { p.1 == file })
+        };
+        match place {
+            Some(Place::Whole) => Spot::Whole,
+            Some(Place::File { file, old }) => find(file, *old).map_or(Spot::Top, Spot::File),
+            Some(Place::Lines { file, end, old, .. }) => {
+                find(file, *old).map_or(Spot::Top, |i| Spot::Line(i, !old, *end))
             }
-            // Where `Session::place` carried the lines to.
-            (Anchor::Lines { .. }, Scope::Range) => {
-                let Some(p) = &t.place else {
-                    return Spot::Top;
-                };
-                match find(&|f| if p.base { f.0 == p.file } else { f.1 == p.file }) {
-                    Some(i) => Spot::Line(i, !p.base, p.end),
-                    None => Spot::Top,
-                }
-            }
-            (Anchor::File { file }, _) => match find(&|p| p.0 == *file || p.1 == *file) {
-                Some(i) => Spot::File(i),
-                None => Spot::Top,
-            },
-            (Anchor::Session, _) => Spot::Whole,
-            (Anchor::Commit { commit }, Scope::Run(steps))
-                if steps.iter().any(|s| s.commit == *commit) =>
-            {
-                Spot::Whole
-            }
-            _ => Spot::Top,
+            None if matches!(anchor, Anchor::Commit { .. }) => Spot::Hidden,
+            None => Spot::Top,
         }
     }
 
@@ -400,8 +378,7 @@ impl Doc {
                 .clone()
                 .filter_map(|c| c.2.as_ref().map(|s| s.lineno))
                 .collect();
-            let deleted = right.is_empty();
-            let (rev, path, lines) = if deleted {
+            let (rev, path, lines) = if right.is_empty() {
                 let left = code
                     .filter_map(|c| c.1.as_ref().map(|s| s.lineno))
                     .collect();
@@ -409,33 +386,29 @@ impl Doc {
             } else {
                 (&self.right_rev, &self.paths[file].1, right)
             };
-            let end = *lines.iter().max().unwrap();
-            // A commit's own view knows whose lines these are, context lines too.
-            let owner = if let Scope::Run(steps) = &self.scope
-                && let [step] = &steps[..]
-            {
-                Some(Owner {
-                    commit: step.commit.clone(),
-                    deleted,
-                    file: path.clone(),
-                    line: end,
-                })
-            } else {
-                None
-            };
             return Anchor::Lines {
-                rev: Some(rev.clone()),
+                rev: rev.clone(),
                 file: path.clone(),
                 start: *lines.iter().min().unwrap(),
-                end,
-                owner,
+                end: *lines.iter().max().unwrap(),
             };
         }
         match rows.first() {
-            Some(Row::File { file, .. } | Row::Fold { file, .. }) => Anchor::File {
-                file: self.paths[*file].1.clone(),
-            },
+            Some(Row::File { file, .. } | Row::Fold { file, .. }) => self.file_anchor(*file),
             _ => Anchor::Session,
+        }
+    }
+
+    /// The anchor for `file`: on the right side, unless only the left has it.
+    pub fn file_anchor(&self, file: usize) -> Anchor {
+        let (rev, path) = if self.statuses[file] == 'D' {
+            (&self.left_rev, &self.paths[file].0)
+        } else {
+            (&self.right_rev, &self.paths[file].1)
+        };
+        Anchor::File {
+            rev: rev.clone(),
+            file: path.clone(),
         }
     }
 
@@ -642,7 +615,7 @@ impl Doc {
     /// The file a new `anchor`, of `anchor_at`, is on in this view.
     pub fn file_of(&self, anchor: &Anchor) -> Option<usize> {
         match anchor {
-            Anchor::Lines { file, .. } | Anchor::File { file } => {
+            Anchor::Lines { file, .. } | Anchor::File { file, .. } => {
                 self.paths.iter().position(|p| p.0 == *file || p.1 == *file)
             }
             _ => None,
@@ -694,7 +667,8 @@ pub fn carry(files: &[FileDiff], path: &str, start: u32, end: u32) -> Option<(St
     let Some(f) = files.iter().find(|f| f.old_path == path) else {
         return Some((path.to_string(), start, end));
     };
-    if f.status == 'D' {
+    // A binary change has no hunks to tell what it kept.
+    if f.status == 'D' || f.binary {
         return None;
     }
     // Where the last hunk before `start` ends, old and new.
@@ -712,6 +686,15 @@ pub fn carry(files: &[FileDiff], path: &str, start: u32, end: u32) -> Option<(St
     }
     let at = |line: u32| line - old_end + new_end;
     Some((f.new_path.clone(), at(start), at(end)))
+}
+
+/// `path` on the old side of `files`, a diff, on their new side; None when deleted.
+pub fn carry_file(files: &[FileDiff], path: &str) -> Option<String> {
+    match files.iter().find(|f| f.old_path == path) {
+        Some(f) if f.status == 'D' => None,
+        Some(f) => Some(f.new_path.clone()),
+        None => Some(path.to_string()),
+    }
 }
 
 /// First line of a hunk side; an empty side's start is the line before the change.
@@ -773,10 +756,14 @@ fn word_diff(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
 mod tests {
     use super::*;
     use crate::repo::{Hunk, Line};
-    use crate::session::{Message, Place};
+    use crate::session::Message;
 
     /// `a` changing line 2 of `x` to `y`, with a line of context on each side.
     fn doc() -> Doc {
+        doc_of(Scope::Range)
+    }
+
+    fn doc_of(scope: Scope) -> Doc {
         let line = |kind, text: &str| Line {
             kind,
             text: text.into(),
@@ -800,20 +787,19 @@ mod tests {
                 ],
             }],
         };
-        Doc::new("b".into(), "e".into(), vec![file], Scope::Range)
+        Doc::new("b".into(), "e".into(), vec![file], scope)
     }
 
     fn thread(anchor: Anchor) -> Thread {
         Thread {
             id: "t1".into(),
             anchor,
-            text: None,
             messages: vec![Message {
                 from: "user".into(),
                 body: "?".into(),
             }],
-            outdated: false,
             place: None,
+            was: None,
         }
     }
 
@@ -891,20 +877,22 @@ mod tests {
     #[test]
     fn threads_follow_collapsing() {
         let mut doc = doc();
-        let mut line2 = thread(Anchor::Lines {
-            rev: Some("e".into()),
+        let line2 = thread(Anchor::Lines {
+            rev: "e".into(),
             file: "a".into(),
             start: 2,
             end: 2,
-            owner: None,
         });
-        line2.place = Some(Place {
+        let at2 = Place::Lines {
             file: "a".into(),
             start: 2,
             end: 2,
-            base: false,
-        });
-        doc.set_threads(&[thread(Anchor::Session), line2]);
+            old: false,
+        };
+        doc.set_threads(
+            &[thread(Anchor::Session), line2],
+            vec![Some(Place::Whole), Some(at2)],
+        );
         // Session, its thread, the file, line 1, the changed line 2, its thread, line 3.
         assert_eq!(thread_rows(&doc), [1, 5]);
         assert_eq!(doc.thread_order(), [0, 1]);
@@ -914,6 +902,44 @@ mod tests {
         assert_eq!(doc.thread_order(), [0, 1]);
         doc.expand_file(0);
         assert_eq!(thread_rows(&doc), [1, 5]);
+    }
+
+    #[test]
+    fn runs_show_only_threads_on_their_rows() {
+        let at = |line| {
+            Some(Place::Lines {
+                file: "a".into(),
+                start: line,
+                end: line,
+                old: false,
+            })
+        };
+        let lines = |line| {
+            thread(Anchor::Lines {
+                rev: "e".into(),
+                file: "a".into(),
+                start: line,
+                end: line,
+            })
+        };
+        let threads = [
+            thread(Anchor::Session),
+            lines(2),
+            lines(9),
+            thread(Anchor::Commit {
+                commit: "gone".into(),
+            }),
+        ];
+        let places = || vec![Some(Place::Whole), at(2), at(9), None];
+        // Session, the file, line 1, the changed line 2, line 3; threads after.
+        let mut range = doc_of(Scope::Range);
+        range.set_threads(&threads, places());
+        assert_eq!(thread_rows(&range), [1, 2, 6]);
+        assert_eq!(range.thread_order(), [0, 2, 1, 3]);
+        let mut run = doc_of(Scope::Run);
+        run.set_threads(&threads, places());
+        assert_eq!(thread_rows(&run), [1, 5]);
+        assert_eq!(run.thread_order(), [0, 1, 2, 3]);
     }
 
     #[test]
