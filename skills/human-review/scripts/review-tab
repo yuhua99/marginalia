@@ -1,59 +1,56 @@
 #!/usr/bin/env bash
-# review-tab SESSION: open an mrg session in a herdr tab or tmux window beside this agent.
+# review-tab SESSION: open an mrg session in a multiplexer tab beside this agent.
 # On quit, the hook (review-tab --notify PANE) tells the agent pane how the review ended.
-# Outside both, print the command for the human to run instead.
+# Outside every supported multiplexer, print the command for the human to run instead.
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
+# Each multiplexer M in MUXES implements:
+#   M_active                 succeeds when running inside M
+#   M_pane                   prints the current pane id
+#   M_open CMD NAME PANE     runs CMD in a new focused tab NAME in $PWD; when CMD exits, focuses
+#                            PANE's tab and closes the new one
+#   M_send PANE TEXT         submits TEXT to PANE
+MUXES=(herdr tmux)
+
+herdr_active() { [ "${HERDR_ENV:-}" = 1 ]; }
+herdr_pane() { echo "${HERDR_PANE_ID:?HERDR_PANE_ID unset}"; }
+herdr_open() {
+    local tab back
+    back="$(herdr pane get "$3" | jq -er '.result.pane.tab_id')"
+    tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label "$2" --cwd "$PWD" --focus)"
+    herdr pane run "$(jq -r '.result.root_pane.pane_id' <<<"$tab")" \
+        "$1; herdr tab focus $back; herdr tab close $(jq -r '.result.tab.tab_id' <<<"$tab")" >/dev/null
+}
+# Typed only when the agent cannot take a prompt (e.g. blocked), so the text is not lost.
+herdr_send() { herdr agent prompt "$1" "$2" >/dev/null 2>&1 || herdr pane send-text "$1" "$2" >/dev/null; }
+
+tmux_active() { [ -n "${TMUX:-}" ]; }
+tmux_pane() { echo "${TMUX_PANE:?TMUX_PANE unset}"; }
+tmux_open() { tmux new-window -a -n "$2" -c "$PWD" "$1; tmux select-window -t $3"; }
+tmux_send() { tmux send-keys -t "$1" -l "$2"; tmux send-keys -t "$1" Enter; }
+
 mux=
-if [ "${HERDR_ENV:-}" = 1 ]; then
-    mux=herdr
-    agent_pane="${HERDR_PANE_ID:?HERDR_PANE_ID unset}"
-elif [ -n "${TMUX:-}" ]; then
-    mux=tmux
-    agent_pane="${TMUX_PANE:?TMUX_PANE unset}"
-fi
+for m in "${MUXES[@]}"; do
+    "${m}_active" || continue
+    mux=$m
+    break
+done
 
-# Runs CMD in a new focused tab named review-ID, in the current directory; the tab closes when CMD
-# exits, after Enter if it failed so its error stays readable.
-mux_open() {
-    local cmd="$1 || { echo 'mrg failed; Enter closes'; read -r _; }" name="review-$2"
-    if [ "$mux" = herdr ]; then
-        local tab
-        tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label "$name" --cwd "$PWD" --focus)"
-        herdr pane run "$(jq -r '.result.root_pane.pane_id' <<<"$tab")" \
-            "$cmd; herdr tab close $(jq -r '.result.tab.tab_id' <<<"$tab")" >/dev/null
-    else
-        tmux new-window -a -n "$name" -c "$PWD" "$cmd"
-    fi
-}
-
-# Types TEXT into PANE; with a third argument, submits it too.
-mux_send() {
-    local pane="$1" text="$2" submit="${3:-}"
-    if [ "$mux" = herdr ]; then
-        if [ -n "$submit" ]; then
-            # Typed only when the agent cannot take a prompt (e.g. blocked), so the text is not lost.
-            herdr agent prompt "$pane" "$text" >/dev/null 2>&1 || herdr pane send-text "$pane" "$text" >/dev/null
-        else
-            herdr pane send-text "$pane" "$text" >/dev/null
-        fi
-    else
-        tmux send-keys -t "$pane" -l "$text"
-        [ -z "$submit" ] || tmux send-keys -t "$pane" Enter
-    fi
-}
+# Runs CMD in review tab review-ID, back to the agent pane on exit; after Enter if CMD failed so its
+# error stays readable.
+mux_open() { "${mux}_open" "$1 || { echo 'mrg failed; Enter closes'; read -r _; }" "review-$2" "$3"; }
 
 # Nothing waiting on the agent sends nothing.
 notify() {
     local waiting
     if ! read -r waiting < <(mrg list | jq -r --arg id "$MRG_SESSION" '.[] | select(.id == $id) | .waiting_on_agent'); then
-        mux_send "$1" "mrg $MRG_SESSION: quit, but reading its state failed; run mrg show" submit
+        "${mux}_send" "$1" "mrg $MRG_SESSION: quit, but reading its state failed; run mrg show"
         return
     fi
     if [ "$waiting" -gt 0 ]; then
-        mux_send "$1" "mrg $MRG_SESSION: $waiting threads waiting on agent" submit
+        "${mux}_send" "$1" "mrg $MRG_SESSION: $waiting threads waiting on agent"
     fi
 }
 
@@ -64,10 +61,11 @@ case "${1:-}" in
         # A bad id fails here, where the agent sees it.
         mrg show --session "$1" >/dev/null
         if [ -z "$mux" ]; then
-            printf 'Not in herdr or tmux. Ask the human to run this in another terminal:\n  cd %q && mrg resume --session %q\nand to come back when done, pasting the threads if saved to the clipboard on quit.\n' "$PWD" "$1"
+            printf 'Not in %s. Ask the human to run this in another terminal:\n  cd %q && mrg resume --session %q\nand to come back when done, pasting the threads if saved to the clipboard on quit.\n' "${MUXES[*]}" "$PWD" "$1"
             exit 0
         fi
+        agent_pane="$("${mux}_pane")"
         hook="$(printf '%q --notify %q' "$(realpath "$0")" "$agent_pane")"
-        mux_open "$(printf 'mrg resume --session %q --on-quit %q' "$1" "$hook")" "$1"
+        mux_open "$(printf 'mrg resume --session %q --on-quit %q' "$1" "$hook")" "$1" "$agent_pane"
         ;;
 esac
