@@ -24,7 +24,9 @@ In your agent:
 /human-review review latest 3 commits
 ```
 
-Works best inside herdr or tmux: the review opens in a new tab and the agent picks up when you quit. Elsewhere, the agent prints a command for you to run.
+Works best inside herdr/rex/tmux: the review opens in a new tab and the agent picks up when you quit. Elsewhere, the agent prints a command for you to run.
+
+Run `mrg` to pick an open pull / merge request to review; needs [`gh`](https://cli.github.com) or [`glab`](https://gitlab.com/gitlab-org/cli).
 
 ## Acknowledgements
 
