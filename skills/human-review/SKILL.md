@@ -37,7 +37,7 @@ A range over 5 commits: split it along feature boundaries into consecutive sub-r
    Summarize tests, codegen, and pure moves in one line per logical group; still name any behavior or test-expectation changes. For copied blocks, link the source in one line; explain any differences from the source and their behavioral effects separately.
    Cite code outside the diff (a caller, a definition, a copy source) as a link: a repo-relative `path:line` or `path:start-end` at the range end.
    Ground reasons in the implementation context; label inferred reasons as assumptions.
-   Add a likely objection or toy before/after only when it clarifies a trade-off or a confusing change. Open a comment on a known problem with `問題：`. Redact secrets.
+   Add a likely objection or toy before/after only when it clarifies a trade-off or a confusing change. Open a comment on a known problem with the label `Problem:`, written in the comments' language. Redact secrets.
    Done when every changed hunk is covered by block-level explanations or explicitly included in a brief-summary exception above.
 
 3. Order the file, `mrg new RANGE --name NAME`, `mrg comment` it, then `review-tab ID`:
