@@ -92,7 +92,7 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut repo = Repo::open()?;
-    let store = Store::open(&repo.key())?;
+    let store = Store::open(repo.common_dir())?;
     match cli.cmd {
         None => {
             need_terminal()?;
@@ -115,7 +115,6 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Comment { session, file }) => {
             let mut session = store.load(&session)?;
-            repo.use_objects(store.objects(&session.id))?;
             let mut text = String::new();
             if file.as_os_str() == "-" {
                 std::io::stdin()
@@ -154,7 +153,6 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Show { session, only }) => {
             let mut session = store.load(&session)?;
-            repo.use_objects(store.objects(&session.id))?;
             session.place(&mut repo)?;
             match only.as_deref() {
                 Some("waiting") => session.threads.retain(|t| t.waiting_on_agent()),
@@ -304,7 +302,6 @@ fn tui(
             return Ok(());
         }
         (store, repo, session, look) = (ctx.review.store, ctx.review.repo, None, ctx.look);
-        repo.leave_objects()?;
     }
 }
 

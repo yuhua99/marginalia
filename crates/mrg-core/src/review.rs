@@ -54,7 +54,7 @@ impl Shown {
 
 impl Review {
     pub fn new(mut session: Session, mut repo: Repo, store: Store) -> Result<Review> {
-        repo.use_objects(store.objects(&session.id))?;
+        repo.refresh();
         session.place(&mut repo)?;
         let mut views: Vec<View> = repo
             .commits(&session.base, &session.end)?

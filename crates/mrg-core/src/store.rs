@@ -1,6 +1,6 @@
 use std::fs;
 use std::hash::{BuildHasher, RandomState};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -21,9 +21,9 @@ pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Store {
-    /// `$XDG_STATE_HOME/marginalia/<repo key>/`
-    pub fn open(repo_key: &str) -> Result<Store> {
-        let dir = xdg_dir("XDG_STATE_HOME", ".local/state")?.join(repo_key);
+    /// `marginalia/` in `git_dir`, the git dir the repo's worktrees share.
+    pub fn open(git_dir: &Path) -> Result<Store> {
+        let dir = git_dir.join("marginalia");
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         Ok(Store { dir })
     }
@@ -82,20 +82,9 @@ impl Store {
         Ok(out)
     }
 
-    /// Removes the session and its objects.
+    /// Removes the session; `Repo::forget` drops what the repo keeps for it.
     pub fn delete(&self, id: &str) -> Result<()> {
-        fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))?;
-        match fs::remove_dir_all(self.dir.join(id)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                Err(e).with_context(|| format!("delete objects of session {id}"))
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Where the objects mrg writes for session `id` go: `<id>/objects`.
-    pub fn objects(&self, id: &str) -> PathBuf {
-        self.dir.join(id).join("objects")
+        fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))
     }
 
     fn path(&self, id: &str) -> PathBuf {
