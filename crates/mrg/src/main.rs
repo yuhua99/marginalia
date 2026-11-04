@@ -304,6 +304,7 @@ fn tui(
             return Ok(());
         }
         (store, repo, session, look) = (ctx.review.store, ctx.review.repo, None, ctx.look);
+        repo.leave_objects()?;
     }
 }
 
