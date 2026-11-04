@@ -44,7 +44,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged|refs/...; no A starts before the root; HEAD and refs/... follow the ref) and print its id
+    /// Create a session for RANGE ([A]..<commit>|HEAD|staged|unstaged|refs/...; no A starts before the root; HEAD and refs/... follow the ref; staged..unstaged for what is not staged) and print its id
     New {
         range: String,
         #[arg(long)]

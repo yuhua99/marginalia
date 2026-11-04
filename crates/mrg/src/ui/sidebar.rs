@@ -42,7 +42,7 @@ impl Entry {
                 View::Commit(c) => Anchor::Commit {
                     commit: c.sha.clone(),
                 },
-                View::Uncommitted => Anchor::Session,
+                View::Uncommitted(_) => Anchor::Session,
             }),
             Entry::File(file) => Some(ctx.review.doc.file_anchor(file)),
             Entry::Other => None,
@@ -221,7 +221,7 @@ fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
             let text = match view {
                 // Drawn by `Columns::row`.
                 View::Commit(_) => String::new(),
-                View::Uncommitted => ctx.review.session.end.clone(),
+                View::Uncommitted(name) => name.to_string(),
             };
             Item {
                 entry: Entry::View(v),

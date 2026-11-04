@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::doc::{Doc, Scope};
-use crate::repo::{self, Commit, Repo};
+use crate::repo::{Commit, Repo};
 use crate::session::{Anchor, Session};
 use crate::store::Store;
 
@@ -21,8 +21,8 @@ pub struct Review {
 pub enum View {
     /// `C^ C`.
     Commit(Commit),
-    /// `HEAD staged` or `HEAD unstaged`.
-    Uncommitted,
+    /// `staged` (`HEAD staged`) or `unstaged` (`staged unstaged`).
+    Uncommitted(&'static str),
 }
 
 /// The views the diff shows: the whole range (`base end`), or a run of them as one diff.
@@ -61,8 +61,17 @@ impl Review {
             .into_iter()
             .map(View::Commit)
             .collect();
-        if repo::worktree(&session.end) {
-            views.push(View::Uncommitted);
+        let staged = match session.end.as_str() {
+            "staged" => true,
+            // Left out from the index, and when nothing is staged.
+            "unstaged" => session.base != "staged" && repo.uncommitted()?.contains(&"staged"),
+            _ => false,
+        };
+        if staged {
+            views.push(View::Uncommitted("staged"));
+        }
+        if session.end == "unstaged" {
+            views.push(View::Uncommitted("unstaged"));
         }
         let (doc, span) = load(&mut repo, &session, &views, Shown::All)?;
         Ok(Review {
@@ -133,11 +142,7 @@ struct Span {
 fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<Span> {
     let (left, right, scope) = match shown {
         Shown::All => (session.base.clone(), session.end.clone(), Scope::Range),
-        Shown::Run(first, last) => (
-            parent(repo, &views[first])?,
-            rev(session, &views[last]),
-            Scope::Run,
-        ),
+        Shown::Run(first, last) => (parent(repo, &views[first])?, rev(&views[last]), Scope::Run),
     };
     let (first, last) = shown.bounds(views.len());
     let commits: Vec<String> = views
@@ -146,7 +151,7 @@ fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<
         .iter()
         .filter_map(|v| match v {
             View::Commit(c) => Some(c.sha.clone()),
-            View::Uncommitted => None,
+            View::Uncommitted(_) => None,
         })
         .collect();
     let commit = (commits.len() == 1).then(|| commits[0].clone());
@@ -192,15 +197,16 @@ fn parent(repo: &Repo, view: &View) -> Result<String> {
             Some(parent) => Ok(parent),
             None => repo.empty_tree(),
         },
-        View::Uncommitted => repo.commit("HEAD"),
+        View::Uncommitted("staged") => repo.commit("HEAD"),
+        View::Uncommitted(_) => Ok("staged".to_string()),
     }
 }
 
 /// The right side of `view`.
-fn rev(session: &Session, view: &View) -> String {
+fn rev(view: &View) -> String {
     match view {
         View::Commit(c) => c.sha.clone(),
-        View::Uncommitted => session.end.clone(),
+        View::Uncommitted(name) => name.to_string(),
     }
 }
 

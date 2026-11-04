@@ -106,8 +106,9 @@ impl Repo {
     }
 
     /// Splits `A..end` into the base commit sha (the empty tree when A is left out,
-    /// to start before the root commit) and the end (a commit sha, or `HEAD` /
-    /// `staged` / `unstaged` / a full ref `refs/...` kept symbolic, to follow it).
+    /// to start before the root commit; `staged` kept symbolic, before `unstaged`) and
+    /// the end (a commit sha, or `HEAD` / `staged` / `unstaged` / a full ref `refs/...`
+    /// kept symbolic, to follow it).
     pub fn resolve(&self, range: &str) -> Result<(String, String)> {
         let Some((base, end)) = range.split_once("..") else {
             bail!("range must look like A..END or ..END, got {range:?}");
@@ -116,6 +117,8 @@ impl Repo {
         // The empty tree as well: the base `mrg show` prints for a range from before the root.
         let base = if base.is_empty() || base == empty {
             empty
+        } else if base == "staged" {
+            base.to_string()
         } else {
             self.commit(base)?
         };
@@ -134,6 +137,13 @@ impl Repo {
 
     /// Fails when `base` is no longer an ancestor of the range tip (history rewritten).
     pub fn verify(&self, base: &str, end: &str) -> Result<()> {
+        // The index is no commit: only what is not staged comes after it.
+        if base == "staged" {
+            if end != "unstaged" {
+                bail!("a range from staged ends at unstaged, got {end:?}");
+            }
+            return Ok(());
+        }
         let tip = tip(end);
         let ok = self
             .git(&["merge-base", "--is-ancestor", base, tip])
@@ -150,16 +160,19 @@ impl Repo {
 
     /// Files changed from `base` to `end`, with `context` lines around each change.
     pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
+        let from = self.object(base)?;
         let to = self.object(end)?;
-        self.diff_of(&[base, &to], context, &[])
+        self.diff_of(&[&from, &to], context, &[])
     }
 
     /// `diff` from `base` to `end` as it is now, in `paths` if any: `staged` and
     /// `unstaged` are read in place, writing no tree.
     pub fn diff_now(&self, base: &str, end: &str, paths: &[String]) -> Result<Vec<FileDiff>> {
-        let revs = match end {
-            "unstaged" => vec![base],
-            "staged" => vec!["--cached", base],
+        let revs = match (base, end) {
+            // The index to the worktree; `verify` made the end `unstaged`.
+            ("staged", _) => vec![],
+            (_, "unstaged") => vec![base],
+            (_, "staged") => vec!["--cached", base],
             _ => vec![base, end],
         };
         self.diff_of(&revs, 3, paths)
@@ -313,6 +326,10 @@ impl Repo {
 
     /// Commits in `base..end`, oldest first.
     pub fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
+        // From the index, there are none.
+        if base == "staged" {
+            return Ok(Vec::new());
+        }
         // A tree as base (before the root) is ignored by git log, listing all history.
         let range = format!("{base}..{}", self.commit(tip(end))?);
         if !self.ranges.contains_key(&range) {
@@ -322,7 +339,8 @@ impl Repo {
         Ok(self.ranges[&range].clone())
     }
 
-    /// `unstaged` / `staged` when their tree differs from HEAD, as `index_tree` builds it.
+    /// `unstaged` when the worktree differs from the index, `staged` when the index
+    /// differs from HEAD; as `index_tree` builds them.
     pub fn uncommitted(&self) -> Result<Vec<&'static str>> {
         let differs = |args: &[&str]| -> Result<bool> {
             let mut cmd = self.git(args);
@@ -334,7 +352,7 @@ impl Repo {
             }
         };
         let mut revs = Vec::new();
-        if differs(&["diff", "--quiet", "--ignore-submodules=dirty", "HEAD"])? {
+        if differs(&["diff", "--quiet", "--ignore-submodules=dirty"])? {
             revs.push("unstaged");
         }
         if differs(&["diff", "--quiet", "--cached", "HEAD"])? {
