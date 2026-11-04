@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{Component, Layers, Look, Outcome};
 use crate::forge::{self, Forge, Request};
 use crate::keymap::{Feed, Keymap};
-use crate::repo::{self, Commit, Repo, short};
+use crate::repo::{Commit, Repo, short};
 use crate::session::Session;
 use crate::store::Store;
 use crate::theme::Theme;
@@ -289,11 +289,11 @@ impl Picker {
         let (top, bottom) = self.checked.unwrap_or((i, i));
         let all = self.all(RANGE, ctx);
         let (end, bottom) = (&all[top].1, &all[bottom].1);
-        let base = if repo::worktree(bottom) {
-            "HEAD".to_string()
-        } else {
+        let base = match bottom.as_str() {
+            "unstaged" => "staged".to_string(),
+            "staged" => "HEAD".to_string(),
             // Left out for the root commit: the range starts before it.
-            ctx.repo.parent(bottom)?.unwrap_or_default()
+            _ => ctx.repo.parent(bottom)?.unwrap_or_default(),
         };
         match ctx.repo.resolve(&format!("{base}..{end}")) {
             Ok((resolved, end)) => {
