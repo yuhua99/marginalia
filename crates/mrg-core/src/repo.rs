@@ -80,7 +80,17 @@ impl Repo {
     pub fn use_objects(&mut self, dir: PathBuf) -> Result<()> {
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         // Absolute: git runs from the repo root.
-        self.objects = Some(fs::canonicalize(&dir)?);
+        self.set_objects(Some(fs::canonicalize(&dir)?))
+    }
+
+    /// Writes objects to `.git` again, as before `use_objects`: the session whose
+    /// directory it was may be deleted.
+    pub fn leave_objects(&mut self) -> Result<()> {
+        self.set_objects(None)
+    }
+
+    fn set_objects(&mut self, dir: Option<PathBuf>) -> Result<()> {
+        self.objects = dir;
         self.trees.clear();
         if let Some(mut cat) = self.cat.take() {
             // Closing its input ends it.
