@@ -9,19 +9,38 @@ die() { echo "error: $*" >&2; exit 1; }
 # Each multiplexer M in MUXES implements:
 #   M_active                 succeeds when running inside M
 #   M_pane                   prints the current pane id
-#   M_open CMD NAME PANE     runs CMD in a new focused tab NAME in $PWD; when CMD exits, focuses
-#                            PANE's tab and closes the new one
+#   M_open CMD NAME PANE     runs CMD in a new focused tab NAME in $PWD, right of PANE's tab where
+#                            M can; when CMD exits, focuses PANE's tab and closes the new one
 #   M_send PANE TEXT         submits TEXT to PANE
 MUXES=(herdr tmux rex)
 
 herdr_active() { [ "${HERDR_ENV:-}" = 1 ]; }
 herdr_pane() { echo "${HERDR_PANE_ID:?HERDR_PANE_ID unset}"; }
 herdr_open() {
-    local tab back
+    local tab back new
     back="$(herdr pane get "$3" | jq -er '.result.pane.tab_id')"
     tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label "$2" --cwd "$PWD" --focus)"
+    new="$(jq -r '.result.tab.tab_id' <<<"$tab")"
+    # tab create appends at the end; a failed move leaves the tab there.
+    herdr_move_beside "$new" "$back" 2>/dev/null || true
     herdr pane run "$(jq -r '.result.root_pane.pane_id' <<<"$tab")" \
-        "$1; herdr tab focus $back; herdr tab close $(jq -r '.result.tab.tab_id' <<<"$tab")" >/dev/null
+        "$1; herdr tab focus $back; herdr tab close $new" >/dev/null
+}
+# Moves TAB right of ANCHOR through the socket's tab.move, which the CLI lacks. insert_index counts
+# the tabs before TAB leaves its place, so ANCHOR's index + 1 is right of it.
+herdr_move_beside() {
+    local at
+    at="$(herdr tab list --workspace "$HERDR_WORKSPACE_ID" |
+        jq -er --arg t "$2" '(.result.tabs | map(.tab_id) | index($t) // empty) + 1')" &&
+        python3 - "${HERDR_SOCKET_PATH:-}" "$1" "$at" <<'EOF'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+s.connect(sys.argv[1])
+req = {"id": "review-tab", "method": "tab.move", "params": {"tab_id": sys.argv[2], "insert_index": int(sys.argv[3])}}
+s.sendall((json.dumps(req) + "\n").encode())
+s.recv(65536)
+EOF
 }
 # Typed only when the agent cannot take a prompt (e.g. blocked), so the text is not lost.
 herdr_send() { herdr agent prompt "$1" "$2" >/dev/null 2>&1 || herdr pane send-text "$1" "$2" >/dev/null; }
