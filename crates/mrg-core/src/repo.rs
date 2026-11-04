@@ -3,8 +3,8 @@ mod parse;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::path::Path;
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -16,16 +16,13 @@ pub struct Repo {
     root: String,
     common_dir: String,
     index: String,
-    /// `staged` / `unstaged` -> tree id, computed once per object directory.
+    /// `staged` / `unstaged` -> tree id, computed once until `refresh`.
     trees: HashMap<String, String>,
     /// `base..tip` -> its commits, the tip pinned so a moved end lists again.
     ranges: HashMap<String, Vec<Commit>>,
     /// (from, to) -> `changes` between them.
     changes: HashMap<(String, String), Option<Vec<FileDiff>>>,
     cat: Option<CatFile>,
-    /// Where the objects mrg writes go (trees of `staged` / `unstaged`), the repo's
-    /// own read through it, so nothing lands in `.git`; set by `use_objects`.
-    objects: Option<PathBuf>,
 }
 
 /// A commit of `git log`.
@@ -38,8 +35,8 @@ pub struct Commit {
     pub when: String,
 }
 
+/// A `git cat-file --batch`; it ends when its input closes, with the repo.
 struct CatFile {
-    child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
 }
@@ -71,38 +68,45 @@ impl Repo {
             ranges: HashMap::new(),
             changes: HashMap::new(),
             cat: None,
-            objects: None,
         })
     }
 
-    /// Writes objects to `dir` from now on. Trees and the reader made for the
-    /// previous directory are dropped.
-    pub fn use_objects(&mut self, dir: PathBuf) -> Result<()> {
-        fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-        // Absolute: git runs from the repo root.
-        self.set_objects(Some(fs::canonicalize(&dir)?))
-    }
-
-    /// Writes objects to `.git` again, as before `use_objects`: the session whose
-    /// directory it was may be deleted.
-    pub fn leave_objects(&mut self) -> Result<()> {
-        self.set_objects(None)
-    }
-
-    fn set_objects(&mut self, dir: Option<PathBuf>) -> Result<()> {
-        self.objects = dir;
+    /// Writes the trees of `staged` / `unstaged` again on their next use, as they are then.
+    pub fn refresh(&mut self) {
         self.trees.clear();
-        if let Some(mut cat) = self.cat.take() {
-            // Closing its input ends it.
-            drop(cat.stdin);
-            cat.child.wait()?;
-        }
+    }
+
+    /// The git dir the worktrees of the repo share.
+    pub fn common_dir(&self) -> &Path {
+        Path::new(&self.common_dir)
+    }
+
+    /// Keeps `tree` from git gc while session `id` lasts, as `refs/mrg/<id>/<tree>`.
+    pub fn keep(&self, id: &str, tree: &str) -> Result<()> {
+        run(&mut self.git(&["update-ref", &format!("refs/mrg/{id}/{tree}"), tree]))?;
         Ok(())
     }
 
-    /// Identifies the repo; worktrees of one repo share the same key.
-    pub fn key(&self) -> String {
-        self.common_dir.replace('/', "%")
+    /// Drops what `keep` kept for session `id`.
+    pub fn forget(&self, id: &str) -> Result<()> {
+        let refs = run(&mut self.git(&[
+            "for-each-ref",
+            "--format=delete %(refname)",
+            &format!("refs/mrg/{id}"),
+        ]))?;
+        let mut child = self
+            .git(&["update-ref", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("run git update-ref")?;
+        child.stdin.take().unwrap().write_all(&refs)?;
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            bail!("git update-ref: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
     }
 
     /// Splits `A..end` into the base commit sha (the empty tree when A is left out,
@@ -248,7 +252,6 @@ impl Repo {
             let stdin = child.stdin.take().unwrap();
             let stdout = BufReader::new(child.stdout.take().unwrap());
             self.cat = Some(CatFile {
-                child,
                 stdin,
                 stdout,
             });
@@ -302,12 +305,10 @@ impl Repo {
     /// Writes a tree from a temporary copy of the index, leaving the real index untouched.
     /// With `worktree`, tracked changes are added to the copy first; untracked files stay out.
     fn index_tree(&mut self, worktree: bool) -> Result<String> {
-        let Some(objects) = &self.objects else {
-            bail!("no object directory set; the tree would be written into .git");
-        };
-        let tmp = objects.with_file_name(format!("index-{}", std::process::id()));
+        // Beside the index, as git stash's was.
+        let tmp = format!("{}.mrg.{}", self.index, std::process::id());
         fs::copy(&self.index, &tmp).context("copy git index")?;
-        let tree = self.write_tree(&tmp, worktree);
+        let tree = self.write_tree(Path::new(&tmp), worktree);
         let _ = fs::remove_file(&tmp);
         tree
     }
@@ -407,14 +408,10 @@ impl Repo {
     }
 
     /// Fetches `refspecs` from origin; with `prompt`, git and ssh may ask for a
-    /// password, else the terminal is the TUI's and they fail. Not through `git`: the
-    /// objects go to `.git` with the refs, not to a session's directory.
+    /// password, else the terminal is the TUI's and they fail.
     pub fn fetch(&self, refspecs: &[String], prompt: bool) -> Result<()> {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C")
-            .arg(&self.root)
-            .args(["fetch", "--quiet", "--no-tags", "origin"])
-            .args(refspecs);
+        let mut cmd = self.git(&["fetch", "--quiet", "--no-tags", "origin"]);
+        cmd.args(refspecs);
         if !prompt {
             cmd.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null());
             // ssh asks on /dev/tty, past stdin; unless the user set how ssh runs.
@@ -461,14 +458,6 @@ impl Repo {
     fn git(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.root).args(args);
-        if let Some(dir) = &self.objects {
-            // Quoted, as the list is split on colons.
-            let repo = format!("{}/objects", self.common_dir)
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            cmd.env("GIT_OBJECT_DIRECTORY", dir)
-                .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", format!("\"{repo}\""));
-        }
         cmd
     }
 }
@@ -480,6 +469,10 @@ impl Source for Repo {
 
     fn pin(&mut self, rev: &str) -> Result<String> {
         Repo::pin(self, rev)
+    }
+
+    fn keep(&self, id: &str, tree: &str) -> Result<()> {
+        Repo::keep(self, id, tree)
     }
 
     fn commit(&self, rev: &str) -> Result<String> {

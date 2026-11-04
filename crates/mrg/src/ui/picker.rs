@@ -393,6 +393,7 @@ impl Panes<Pick> for Picker {
                     return Ok(Outcome::Push(Box::new(
                         Confirm::new("Delete", "delete this session?", "y delete  n/Esc cancel")
                             .on('y', move |ctx: &mut Pick| {
+                                ctx.repo.forget(&id)?;
                                 ctx.store.delete(&id)?;
                                 ctx.sessions = ctx.store.list()?;
                                 Ok(Outcome::Close)

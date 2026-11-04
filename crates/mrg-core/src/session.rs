@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::repo::{Commit, FileDiff, short};
+use crate::repo::{Commit, FileDiff, short, worktree};
 
 /// What a session needs of the code it reviews: a git repo, or a snapshot of one.
 pub trait Source {
@@ -10,6 +10,8 @@ pub trait Source {
     fn read(&mut self, rev: &str, path: &str) -> Result<Option<String>>;
     /// An id for `rev` that does not move.
     fn pin(&mut self, rev: &str) -> Result<String>;
+    /// Keeps `tree`, pinned of `staged` / `unstaged`, while session `id` lasts.
+    fn keep(&self, id: &str, tree: &str) -> Result<()>;
     /// Full sha of commit `rev`.
     fn commit(&self, rev: &str) -> Result<String>;
     /// Commits in `base..end`, oldest first.
@@ -231,12 +233,12 @@ impl Session {
                 }
                 snippet(repo, rev, file, *start, *end)?
                     .with_context(|| format!("{file}:{start}-{end} not found at {}", short(rev)))?;
-                *rev = repo.pin(rev)?;
+                *rev = pin(repo, &self.id, rev)?;
             }
             Anchor::File { rev, file } => {
                 repo.read(rev, file)?
                     .with_context(|| format!("{file} not found at {}", short(rev)))?;
-                *rev = repo.pin(rev)?;
+                *rev = pin(repo, &self.id, rev)?;
             }
             Anchor::Commit { commit } => {
                 *commit = repo.commit(commit)?;
@@ -546,6 +548,16 @@ fn lines(start: u32, end: u32, old: bool) -> String {
 
 fn side(old: bool) -> &'static str {
     if old { " (old)" } else { "" }
+}
+
+/// `rev` pinned for a thread of session `id`: the tree of `staged` / `unstaged` is
+/// kept, as nothing else keeps it from git gc.
+fn pin(repo: &mut dyn Source, id: &str, rev: &str) -> Result<String> {
+    let pinned = repo.pin(rev)?;
+    if worktree(rev) {
+        repo.keep(id, &pinned)?;
+    }
+    Ok(pinned)
 }
 
 /// Lines `start..=end` of `file` at `rev`; None if the file or lines are absent.
