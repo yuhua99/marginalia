@@ -17,6 +17,8 @@ pub struct Repo {
     root: String,
     common_dir: String,
     index: String,
+    /// Of `Repo::bare`: an upload, with no worktree or index.
+    bare: bool,
     /// `staged` / `unstaged` -> tree id, computed once until `refresh`.
     trees: HashMap<String, String>,
     /// `base..tip` -> its commits, the tip pinned so a moved end lists again.
@@ -65,6 +67,25 @@ impl Repo {
             root: root.into(),
             common_dir: common_dir.into(),
             index: index.into(),
+            bare: false,
+            trees: HashMap::new(),
+            ranges: HashMap::new(),
+            changes: HashMap::new(),
+            cat: None,
+        })
+    }
+
+    /// The bare repo at `dir`, of what a client uploaded: HEAD is the client's, and
+    /// `staged` / `unstaged` the trees of `refs/mrg/staged` / `refs/mrg/unstaged`.
+    /// Git reads no user or system config here, as that of the server is not the user's.
+    pub fn bare(dir: &Path) -> Result<Repo> {
+        let dir = fs::canonicalize(dir)?;
+        let dir = dir.to_str().context("a path not in UTF-8")?.to_string();
+        Ok(Repo {
+            root: dir.clone(),
+            common_dir: dir,
+            index: String::new(),
+            bare: true,
             trees: HashMap::new(),
             ranges: HashMap::new(),
             changes: HashMap::new(),
@@ -290,7 +311,8 @@ impl Repo {
         }
     }
 
-    /// A tree-ish for `rev`: commits as is, `staged` / `unstaged` as a written tree.
+    /// A tree-ish for `rev`: commits as is, `staged` / `unstaged` as a written tree, or
+    /// the uploaded one in a bare repo.
     fn object(&mut self, rev: &str) -> Result<String> {
         if !worktree(rev) {
             return Ok(rev.to_string());
@@ -298,7 +320,12 @@ impl Repo {
         if let Some(tree) = self.trees.get(rev) {
             return Ok(tree.clone());
         }
-        let tree = self.index_tree(rev == "unstaged")?;
+        let tree = if self.bare {
+            self.tree(&format!("refs/mrg/{rev}"))
+                .with_context(|| format!("no {rev} uploaded"))?
+        } else {
+            self.index_tree(rev == "unstaged")?
+        };
         self.trees.insert(rev.to_string(), tree.clone());
         Ok(tree)
     }
@@ -342,8 +369,23 @@ impl Repo {
     }
 
     /// `unstaged` when the worktree differs from the index, `staged` when the index
-    /// differs from HEAD; as `index_tree` builds them.
+    /// differs from HEAD; as `index_tree` builds them, or as uploaded in a bare repo.
     pub fn uncommitted(&self) -> Result<Vec<&'static str>> {
+        if self.bare {
+            // Both are uploaded for an end of `unstaged`, the only one that asks.
+            let tree = |rev: &str| self.tree(rev).with_context(|| format!("no {rev} uploaded"));
+            let head = tree("HEAD")?;
+            let staged = tree("refs/mrg/staged")?;
+            let unstaged = tree("refs/mrg/unstaged")?;
+            let mut revs = Vec::new();
+            if unstaged != staged {
+                revs.push("unstaged");
+            }
+            if staged != head {
+                revs.push("staged");
+            }
+            return Ok(revs);
+        }
         let differs = |args: &[&str]| -> Result<bool> {
             let mut cmd = self.git(args);
             let out = cmd.output().context("run git")?;
@@ -456,9 +498,25 @@ impl Repo {
         .with_context(|| format!("unknown commit {rev:?}"))
     }
 
+    /// The tree of `rev`.
+    fn tree(&self, rev: &str) -> Result<String> {
+        text(run(&mut self.git(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{tree}}"),
+        ]))?)
+    }
+
     fn git(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.root).args(args);
+        if self.bare {
+            // GIT_DIR: a broken repo there fails, rather than git finding one around it.
+            cmd.env("GIT_DIR", &self.root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1");
+        }
         cmd
     }
 }
