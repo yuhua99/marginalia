@@ -22,8 +22,8 @@ pub struct Scroll {
     wheeled: Option<usize>,
     /// Lines the wheel turned since the last `place`, down positive.
     wheel: isize,
-    /// The last row on screen, as of the last `place` after a wheel turn.
-    last: usize,
+    /// The last row on screen, when the last `place` rolled the screen for the wheel.
+    last: Option<usize>,
 }
 
 impl Scroll {
@@ -92,7 +92,11 @@ impl Scroll {
     /// the cursor through this or `act`.
     pub fn settle(&mut self) -> usize {
         if self.wheeled.take().is_some() {
-            self.cursor = self.cursor.clamp(self.top, self.last);
+            // Turns not placed yet never showed: the cursor acts on the screen drawn.
+            self.wheel = 0;
+            if let Some(last) = self.last {
+                self.cursor = self.cursor.clamp(self.top, last);
+            }
         }
         self.cursor
     }
@@ -130,6 +134,7 @@ impl Scroll {
             return;
         }
         self.wheeled = None;
+        self.last = None;
         let cursor = self.cursor;
         let hc = height(cursor);
         let tall = hc > h;
@@ -215,13 +220,13 @@ impl Scroll {
             up(self);
         }
         // Lines from the top of the top row to where each row starts.
-        let (mut i, mut start) = (self.top, 0);
-        self.last = self.top;
+        let (mut i, mut start, mut last) = (self.top, 0, self.top);
         while i < len && start < self.off + h {
-            self.last = i;
+            last = i;
             start += height(i);
             i += 1;
         }
+        self.last = Some(last);
     }
 }
 
@@ -322,6 +327,20 @@ mod tests {
         // From the bottom row on screen.
         run(&mut s, &rows, &["up"]);
         assert_eq!((s.cursor, s.top()), (4, (3, 0)));
+    }
+
+    #[test]
+    fn acts_on_the_screen_drawn_before_a_wheel_turn_is_placed() {
+        let rows = [1; 10];
+        let mut s = Scroll::default();
+        run(&mut s, &rows, &["bottom"]);
+        assert_eq!((s.cursor, s.top()), (9, (7, 0)));
+        // The turn never showed: the cursor moves from where it is.
+        s.wheel(false);
+        s.act("up", rows.len());
+        assert_eq!(s.cursor, 8);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!(s.top(), (7, 0));
     }
 
     #[test]

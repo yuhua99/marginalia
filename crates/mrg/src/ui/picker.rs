@@ -196,6 +196,8 @@ struct Picker {
     hints: String,
     /// The blocks, as of the last render.
     panes: [Rect; 3],
+    /// Column widths of `commits`.
+    columns: Columns,
 }
 
 impl Picker {
@@ -204,6 +206,7 @@ impl Picker {
         let keymap = Keymap::new("picker");
         Ok(Picker {
             exhausted: commits.len() < COMMITS,
+            columns: Columns::new(&commits),
             commits,
             uncommitted: pick.repo.uncommitted()?,
             focused: if pick.sessions.is_empty() {
@@ -226,6 +229,7 @@ impl Picker {
         let page = repo.recent(&last.sha, COMMITS + 1)?;
         self.exhausted = page.len() <= COMMITS;
         self.commits.extend(page.into_iter().skip(1));
+        self.columns = Columns::new(&self.commits);
         Ok(())
     }
 
@@ -288,9 +292,25 @@ impl Picker {
         }
     }
 
+    /// Rows of `all(pane)`, without making them.
+    fn count(&self, pane: usize, ctx: &Pick) -> usize {
+        match pane {
+            RANGE => self.uncommitted.len() + self.commits.len(),
+            REVIEWS => match &ctx.reviews {
+                Reviews::Listed(_, requests) => requests.len(),
+                _ => 0,
+            },
+            _ => ctx.sessions.len(),
+        }
+    }
+
     /// Indices into `all(pane)` that pass the filter.
     fn shown(&self, pane: usize, ctx: &Pick) -> Vec<usize> {
         let filter = self.filter[pane].text.to_lowercase();
+        // No filter passes every row, with no text to make for them.
+        if filter.is_empty() {
+            return (0..self.count(pane, ctx)).collect();
+        }
         self.all(pane, ctx)
             .iter()
             .enumerate()
@@ -391,10 +411,7 @@ impl Panes<Pick> for Picker {
         let pane = self.pane();
         let cursor = self.scroll[pane].settle();
         // Down on the last row of the range block loads older commits.
-        if pane == RANGE
-            && action == "down"
-            && cursor + 1 == self.uncommitted.len() + self.commits.len()
-        {
+        if pane == RANGE && action == "down" && cursor + 1 == self.count(RANGE, ctx) {
             self.load_more(ctx);
         }
         let shown = self.shown(pane, ctx);
@@ -470,10 +487,7 @@ impl Panes<Pick> for Picker {
         self.scroll[pane].wheel(down);
         // The wheel down with the last row of the range block on screen loads older commits.
         let rows = self.panes[pane].height.saturating_sub(2) as usize;
-        if pane == RANGE
-            && down
-            && self.skip(RANGE) + rows >= self.uncommitted.len() + self.commits.len()
-        {
+        if pane == RANGE && down && self.skip(RANGE) + rows >= self.count(RANGE, ctx) {
             self.load_more(ctx);
         }
     }
@@ -564,8 +578,6 @@ impl Component<Pick> for Picker {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick, pointer: Option<Position>) {
         let theme = ctx.look.theme;
-        // Sessions change under the layers above: deleted, or renamed out of the filter.
-        self.scroll[SESSIONS].clamp(self.shown(SESSIONS, ctx).len());
         // The focused block takes the height the others leave, a title line each.
         let heights = (0..TITLES.len()).map(|pane| {
             if pane == self.focused {
@@ -577,7 +589,10 @@ impl Component<Pick> for Picker {
         self.panes = Layout::vertical(heights).areas(area);
         let pane = self.pane();
         let area = self.panes[pane];
-        self.len = self.shown(pane, ctx).len();
+        // Sessions change under the layers above: deleted, or renamed out of the filter;
+        // placing keeps the cursor within them.
+        let shown = self.shown(pane, ctx);
+        self.len = shown.len();
         self.scroll[pane].place(
             area.height.saturating_sub(2) as usize,
             self.len,
@@ -603,7 +618,7 @@ impl Component<Pick> for Picker {
                 let inner = block.inner(rect);
                 f.render_widget(block, rect);
                 let row = hovered.and_then(|(_, row)| row);
-                self.render_rows(f, inner, row, ctx);
+                self.render_rows(f, inner, &shown, row, ctx);
             } else {
                 let line = Block::new()
                     .borders(Borders::TOP)
@@ -616,17 +631,23 @@ impl Component<Pick> for Picker {
 }
 
 impl Picker {
-    /// The rows of the focused block in `inner`, the cursor's marked and the `hover`ed
-    /// one's text underlined.
-    fn render_rows(&self, f: &mut Frame, inner: Rect, hover: Option<usize>, ctx: &Pick) {
+    /// The `shown` rows of the focused block in `inner`, the cursor's marked and the
+    /// `hover`ed one's text underlined.
+    fn render_rows(
+        &self,
+        f: &mut Frame,
+        inner: Rect,
+        shown: &[usize],
+        hover: Option<usize>,
+        ctx: &Pick,
+    ) {
         let theme = ctx.look.theme;
         let pane = self.pane();
         let (height, width) = (inner.height as usize, inner.width as usize);
         let cursor = self.scroll[pane].cursor();
         let skip = self.skip(pane);
-        let shown = self.shown(pane, ctx);
         let rows = shown.len();
-        let shown = shown.into_iter().skip(skip).take(height);
+        let shown = shown.iter().copied().skip(skip).take(height);
         let mut checked_rows = Vec::new();
         let hovers = |row: usize| hover == Some(skip + row);
         let lines: Vec<Line> = match pane {
@@ -641,7 +662,7 @@ impl Picker {
                     .collect()
             }
             RANGE => {
-                let columns = Columns::new(&self.commits);
+                let columns = &self.columns;
                 shown
                     .enumerate()
                     .map(|(row, i)| {

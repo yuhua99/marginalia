@@ -19,6 +19,7 @@ pub fn mark(checked: bool, theme: &Theme) -> Span<'static> {
 }
 
 /// Widths of the author and date columns, shared by the rows of a commit list.
+#[derive(Default)]
 pub struct Columns {
     author: usize,
     when: usize,
