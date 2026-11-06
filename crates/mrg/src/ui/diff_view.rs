@@ -1,9 +1,11 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::{Range, RangeInclusive};
 
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -21,7 +23,7 @@ use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
 use crate::ui::query::{self, Query};
 use crate::ui::scroll::Scroll;
-use crate::ui::status_style;
+use crate::ui::{lit, status_style};
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
@@ -42,6 +44,8 @@ pub struct DiffView {
     search: Query,
     /// The rows drawn and their screen lines, as of the last render.
     rows: Vec<(usize, Range<u16>)>,
+    /// A press began here, until the button is let go: a drag selects lines.
+    pressed: bool,
 }
 
 /// What a row draws: full width with a style, or the two halves of a code row.
@@ -62,13 +66,13 @@ impl Drawn {
 
 impl DiffView {
     fn selection(&self) -> RangeInclusive<usize> {
-        let cursor = self.scroll.cursor;
+        let cursor = self.scroll.cursor();
         let mark = self.mark.unwrap_or(cursor);
         mark.min(cursor)..=mark.max(cursor)
     }
 
     fn thread_at_cursor(&self, ctx: &Ctx) -> Option<usize> {
-        match ctx.review.doc.window(self.scroll.cursor, 1).first() {
+        match ctx.review.doc.window(self.scroll.cursor(), 1).first() {
             Some(Row::Thread { idx }) => Some(*idx),
             _ => None,
         }
@@ -76,12 +80,12 @@ impl DiffView {
 
     /// The file the cursor is in.
     pub fn current_file(&self, ctx: &Ctx) -> Option<usize> {
-        ctx.review.doc.file_at(self.scroll.cursor)
+        ctx.review.doc.file_at(self.scroll.cursor())
     }
 
     /// Starts writing `input` under `row`.
     pub fn start(&mut self, row: usize, input: Input) {
-        self.scroll.cursor = row;
+        self.scroll.go(row);
         self.mark = None;
         self.draft = Some((row, input));
     }
@@ -90,14 +94,14 @@ impl DiffView {
     pub fn search_title(&mut self, ctx: &Ctx) -> String {
         self.search.search_title(
             &ctx.review.doc,
-            self.scroll.cursor,
+            self.scroll.cursor(),
             &ctx.review.session.threads,
         )
     }
 
     /// Moves to the next (or previous) search match.
     fn find(&mut self, ctx: &mut Ctx, forward: bool) {
-        let (cursor, len) = (self.scroll.cursor, ctx.review.doc.len());
+        let (cursor, len) = (self.scroll.settle(), ctx.review.doc.len());
         if let Some(row) = self.search.find(
             &mut ctx.review.doc,
             cursor,
@@ -146,11 +150,51 @@ impl DiffView {
         self.links.is_some() || self.draft.is_some() || self.search.typing
     }
 
-    /// Moves the cursor to the row drawn at screen line `y`, if any.
-    pub fn click(&mut self, y: u16) {
-        if let Some(row) = drawn_at(&self.rows, y) {
-            self.scroll.cursor = row;
+    /// Scrolls a wheel turn down or up, the cursor left.
+    pub fn wheel(&mut self, down: bool) {
+        self.scroll.wheel(down);
+    }
+
+    /// The row drawn at screen line `y`, as of the last render.
+    pub fn row_at(&self, y: u16) -> Option<usize> {
+        drawn_at(&self.rows, y)
+    }
+
+    /// A press at screen line `y`: the cursor to the row there, a selection's start.
+    pub fn press(&mut self, y: u16) {
+        let row = drawn_at(&self.rows, y);
+        self.pressed = row.is_some();
+        if let Some(row) = row {
+            self.scroll.go(row);
+            self.mark = None;
         }
+    }
+
+    /// The button held over screen line `y` after a press: selects the rows from the
+    /// press to the one there; past the screen's edge, a row on, the screen following.
+    pub fn drag(&mut self, y: u16, len: usize) {
+        let (Some((_, first)), Some((_, last))) = (self.rows.first(), self.rows.last()) else {
+            return;
+        };
+        if !self.pressed {
+            return;
+        }
+        let cursor = self.scroll.cursor();
+        let to = match drawn_at(&self.rows, y) {
+            Some(row) => row,
+            None if y < first.start => cursor.saturating_sub(1),
+            None if y >= last.end => (cursor + 1).min(len - 1),
+            None => return,
+        };
+        if to != cursor {
+            self.mark.get_or_insert(cursor);
+            self.scroll.go(to);
+        }
+    }
+
+    /// The button let go: ends the press's selecting.
+    pub fn release(&mut self) {
+        self.pressed = false;
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -171,7 +215,7 @@ impl DiffView {
         if self.scroll.act(action, ctx.review.doc.len()) {
             return Ok(Outcome::Consumed);
         }
-        let cursor = self.scroll.cursor;
+        let cursor = self.scroll.cursor();
         match action {
             "filter" => self.search = Query::start(),
             "next_thread" | "prev_thread" if !self.search.text.is_empty() => {
@@ -203,7 +247,7 @@ impl DiffView {
                     .review
                     .doc
                     .expand(cursor, |rev, path| ctx.review.repo.read(rev, path))?;
-                self.scroll.cursor = row.min(ctx.review.doc.len() - 1);
+                self.scroll.go(row.min(ctx.review.doc.len() - 1));
                 self.mark = None;
             }
             "select" => {
@@ -259,11 +303,11 @@ impl DiffView {
             }
             "collapse" => {
                 if let Some(file) = self.current_file(ctx) {
-                    self.scroll.cursor = if ctx.review.doc.collapsed(file) {
+                    self.scroll.go(if ctx.review.doc.collapsed(file) {
                         ctx.review.doc.expand_file(file)
                     } else {
                         ctx.review.doc.collapse_file(file)
-                    };
+                    });
                     self.mark = None;
                 }
             }
@@ -272,17 +316,23 @@ impl DiffView {
         Ok(Outcome::Consumed)
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
+    /// The diff in `area`, what a click acts on in the row under the `pointer` underlined.
+    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, pointer: Option<Position>) {
         let doc = &ctx.review.doc;
-        self.scroll.cursor = self.scroll.cursor.min(doc.len() - 1);
+        self.scroll.clamp(doc.len());
         let selection = self.selection();
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
-        let (search, cursor) = (&self.search.text, self.scroll.cursor);
-        let draw = |i: usize| {
+        let (search, cursor) = (&self.search.text, self.scroll.cursor());
+        let marked = |i: usize, hover: bool| {
             let accent = Style::new()
                 .fg(ctx.look.theme.on_accent)
                 .bg(ctx.look.theme.accent);
-            let mark = selection.contains(&i).then_some(accent);
+            let style = if selection.contains(&i) {
+                accent
+            } else {
+                Style::new()
+            };
+            let mark = Mark { style, hover };
             let hit = query::hit_style(ctx.look.theme, i == cursor);
             draw_row(ctx, doc, i, area.width, mark, editing, (search, hit))
         };
@@ -292,28 +342,43 @@ impl DiffView {
             .as_ref()
             .map_or(0, |(_, input)| input.height(area.width as usize));
         // The draft counts as part of its row, so it stays on screen with the cursor; under
-        // a row taller than the screen, it shows from its end.
-        let height =
-            |i: usize| draw(i).height() + if draft_at == Some(i) { draft_height } else { 0 };
-        let from_end = draft_at == Some(self.scroll.cursor);
+        // a row taller than the screen, it shows from its end. Placing asks a row's height
+        // often, and a row draws to tell it.
+        let heights = RefCell::new(HashMap::new());
+        let height = |i: usize| {
+            *heights.borrow_mut().entry(i).or_insert_with(|| {
+                marked(i, false).height() + if draft_at == Some(i) { draft_height } else { 0 }
+            })
+        };
+        let from_end = draft_at == Some(self.scroll.cursor());
         self.scroll
             .place(area.height as usize, doc.len(), height, from_end);
+        let pointer = pointer.filter(|&p| area.contains(p)).map(|p| p.y);
         let draft = &mut self.draft;
-        self.rows = draw_rows(f, area, &self.scroll, doc, draw, |f, i, rest| match draft {
-            Some((row, input)) if *row == i => {
-                let shown = draft_height.min(rest.height as usize);
-                input.render(
-                    f,
-                    Rect {
-                        height: shown as u16,
-                        ..rest
-                    },
-                    ctx,
-                );
-                shown
-            }
-            _ => 0,
-        });
+        self.rows = draw_rows(
+            f,
+            area,
+            &self.scroll,
+            doc,
+            pointer,
+            marked,
+            |f, i, rest| match draft {
+                Some((row, input)) if *row == i => {
+                    let shown = draft_height.min(rest.height as usize);
+                    input.render(
+                        f,
+                        Rect {
+                            height: shown as u16,
+                            ..rest
+                        },
+                        ctx,
+                        None,
+                    );
+                    shown
+                }
+                _ => 0,
+            },
+        );
         if let Some(picker) = &mut self.links {
             picker.render(f, area, ctx.look.theme);
         }
@@ -328,15 +393,17 @@ fn follow(link: &Link, ctx: &mut Ctx) -> Result<Outcome> {
     })
 }
 
-/// Draws `doc`'s rows from the top of `scroll` on, each as `draw` makes it. Under row
-/// `i` goes what `under(f, i, rest)` draws in the `rest` of the area, returning its height.
+/// Draws `doc`'s rows from the top of `scroll` on, each as `draw(i, hover)` makes it,
+/// `hover` on the row drawn over screen line `pointer`. Under row `i` goes what
+/// `under(f, i, rest)` draws in the `rest` of the area, returning its height.
 /// Returns the rows drawn and their screen lines, `under` included.
 pub fn draw_rows(
     f: &mut Frame,
     area: Rect,
     scroll: &Scroll,
     doc: &Doc,
-    draw: impl Fn(usize) -> Drawn,
+    pointer: Option<u16>,
+    draw: impl Fn(usize, bool) -> Drawn,
     mut under: impl FnMut(&mut Frame, usize, Rect) -> usize,
 ) -> Vec<(usize, Range<u16>)> {
     let h = area.height as usize;
@@ -346,8 +413,12 @@ pub fn draw_rows(
     let mut rows = Vec::new();
     while y < h && i < doc.len() {
         let start = y;
-        let drawn = draw(i);
+        let mut drawn = draw(i, false);
         let shown = drawn.height().saturating_sub(skip).min(h - y);
+        let lines = area.y + y as u16..area.y + (y + shown) as u16;
+        if pointer.is_some_and(|p| lines.contains(&p)) {
+            drawn = draw(i, true);
+        }
         let rect = Rect {
             y: area.y + y as u16,
             height: shown as u16,
@@ -395,8 +466,28 @@ pub fn drawn_at(rows: &[(usize, Range<u16>)], y: u16) -> Option<usize> {
         .map(|(i, _)| *i)
 }
 
-/// `mark`: the gutter's style, for the selection or a file view's linked lines; threads
-/// take it across their header line, file and session rows whole.
+/// How a row is marked.
+#[derive(Clone, Copy, Default)]
+pub struct Mark {
+    /// The gutter's style, for the selection or a file view's linked lines; threads take
+    /// it across their header line, file and session rows whole.
+    pub style: Style,
+    /// Under the pointer: what a click acts on is underlined, a line number or a header's
+    /// text.
+    pub hover: bool,
+}
+
+impl Mark {
+    /// `style`, underlined under the pointer.
+    fn lit(self, style: Style) -> Style {
+        if self.hover {
+            style.add_modifier(Modifier::UNDERLINED)
+        } else {
+            style
+        }
+    }
+}
+
 /// `editing`: the thread whose last message the draft replaces.
 /// `search`: the text whose matches to mark, and their style.
 pub fn draw_row(
@@ -404,20 +495,20 @@ pub fn draw_row(
     doc: &Doc,
     i: usize,
     width: u16,
-    mark: Option<Style>,
+    mark: Mark,
     editing: Option<usize>,
     search: (&str, Style),
 ) -> Drawn {
     let theme = ctx.look.theme;
-    let mark = mark.unwrap_or_default();
     let header = Style::new()
         .fg(theme.blue)
         .add_modifier(Modifier::BOLD)
-        .patch(mark);
+        .patch(mark.style);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "# session".to_string(),
         Row::Commit { sha, message } => {
-            let mut lines = vec![Line::styled(format!("# commit {}", short(sha)), header)];
+            let title = Span::styled(format!("# commit {}", short(sha)), mark.lit(Style::new()));
+            let mut lines = vec![Line::from(title).style(header)];
             let options = textwrap::Options::new((width as usize).saturating_sub(INDENT).max(10))
                 .word_separator(textwrap::WordSeparator::AsciiSpace)
                 .word_splitter(textwrap::WordSplitter::NoHyphenation);
@@ -429,7 +520,7 @@ pub fn draw_row(
                     lines.push(Line::from(spans));
                 }
             }
-            return Drawn::Full(lines, mark);
+            return Drawn::Full(lines, mark.style);
         }
         Row::File {
             file,
@@ -449,11 +540,14 @@ pub fn draw_row(
                 Span::styled(status.to_string(), status_style(*status, theme)),
                 Span::raw(" "),
             ];
-            let path = vec![Span::raw(path.clone())];
-            spans.extend(query::mark(path, search.0, search.1));
+            let path = query::mark(vec![Span::raw(path.clone())], search.0, search.1);
+            spans.extend(path.into_iter().map(|s| lit(s, mark.hover)));
             spans.push(Span::raw(rest));
             // The mark goes over the status and search colors.
-            let spans: Vec<_> = spans.into_iter().map(|s| s.patch_style(mark)).collect();
+            let spans: Vec<_> = spans
+                .into_iter()
+                .map(|s| s.patch_style(mark.style))
+                .collect();
             return Drawn::Full(vec![Line::from(spans)], header);
         }
         Row::Fold { hidden, .. } => {
@@ -461,8 +555,12 @@ pub fn draw_row(
                 Some(n) => format!("{n} unchanged lines"),
                 None => "more lines".to_string(),
             };
-            let gutter = format!("{:>1$} ", "...", INDENT - 1);
-            let line = Line::from(vec![Span::styled(gutter, mark), Span::raw(text)]);
+            let line = Line::from(vec![
+                Span::styled(" ".repeat(INDENT - 4), mark.style),
+                Span::styled("...", mark.lit(mark.style)),
+                Span::styled(" ", mark.style),
+                Span::raw(text),
+            ]);
             return Drawn::Full(vec![line], Style::new().fg(theme.dim));
         }
         Row::Thread { idx } => {
@@ -525,7 +623,8 @@ pub fn draw_row(
             ]);
         }
     };
-    Drawn::Full(vec![Line::raw(text)], header)
+    let text = Span::styled(text, mark.lit(Style::new()));
+    Drawn::Full(vec![Line::from(text)], header)
 }
 
 /// One side of a code row, wrapped by grapheme to `width`; `mark` styles the gutter,
@@ -534,7 +633,7 @@ fn code_lines(
     side: Option<&Side>,
     colors: Option<&Colors>,
     width: usize,
-    mark: Style,
+    mark: Mark,
     theme: &Theme,
     wrap: bool,
     search: (&str, Style),
@@ -549,9 +648,10 @@ fn code_lines(
         Kind::Del => (theme.red, theme.del_bg, theme.del_emph),
         Kind::Add => (theme.green, theme.add_bg, theme.add_emph),
     };
-    let gutter = Style::new().fg(color).patch(mark);
+    let gutter = Style::new().fg(color).patch(mark.style);
     let number = format!("{:>1$} ", s.lineno, INDENT - 1);
     let gutter_width = number.len();
+    let digits = number.trim();
     let text_width = width.saturating_sub(gutter_width).max(1);
     let mut runs = colors
         .and_then(|c| c.get(s.lineno as usize - 1))
@@ -560,7 +660,12 @@ fn code_lines(
     let (mut run_end, mut fg) = (0, None);
 
     let mut lines = Vec::new();
-    let mut spans = vec![Span::styled(number, gutter)];
+    // Only the number underlined, not its padding nor a wrapped line's.
+    let mut spans = vec![
+        Span::styled(" ".repeat(gutter_width - digits.len() - 1), gutter),
+        Span::styled(digits.to_string(), mark.lit(gutter)),
+        Span::styled(" ", gutter),
+    ];
     let (mut chunk, mut chunk_style, mut col) = (String::new(), Style::new(), 0);
     for (at, g) in s.text.grapheme_indices(true) {
         while at >= run_end {
@@ -621,7 +726,7 @@ fn thread_lines(
     inline: bool,
     hide_last: bool,
     width: usize,
-    mark: Style,
+    mark: Mark,
     search: (&str, Style),
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
@@ -643,7 +748,7 @@ fn thread_lines(
         header.push_str("  outdated");
     }
     let header_style = Style::new().add_modifier(Modifier::BOLD);
-    let mut header = vec![Span::styled(header, header_style)];
+    let mut header = vec![Span::styled(header, mark.lit(header_style))];
     let links = file_view::thread_links(t, &ctx.files).len();
     if links > 0 {
         let s = if links == 1 { "" } else { "s" };
@@ -656,7 +761,7 @@ fn thread_lines(
     let pad = width.saturating_sub(first.width());
     first.spans.push(Span::raw(" ".repeat(pad)));
     for s in &mut first.spans {
-        s.style = s.style.patch(mark);
+        s.style = s.style.patch(mark.style);
     }
     let mut lines = vec![first];
     if let Some(text) = &t.was {

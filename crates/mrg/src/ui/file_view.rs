@@ -7,14 +7,14 @@ use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
-use crate::app::{Component, Ctx, Outcome};
+use crate::app::{Component, Ctx, Mouse, Outcome};
 use crate::doc::Doc;
 use crate::keymap::{Feed, Keymap};
 use crate::session::Thread;
 use crate::theme::Theme;
 use crate::ui::boxed;
 use crate::ui::clear;
-use crate::ui::diff_view::{draw_row, draw_rows, drawn_at};
+use crate::ui::diff_view::{Mark, draw_row, draw_rows, drawn_at};
 use crate::ui::help::{self, Entry, Help};
 use crate::ui::popup::Popup;
 use crate::ui::query::{self, Query};
@@ -85,7 +85,7 @@ impl FileView {
 impl FileView {
     /// Moves to the next (or previous) search match.
     fn find(&mut self, forward: bool) {
-        let cursor = self.scroll.cursor;
+        let cursor = self.scroll.settle();
         // `Doc::file` has no thread rows.
         if let Some(row) = self.search.find(&mut self.doc, cursor, forward, &[]) {
             self.scroll.center(row);
@@ -128,18 +128,18 @@ impl Component for FileView {
         }
     }
 
-    fn wheel(&mut self, action: &str, _at: Position, _ctx: &mut Ctx) -> Result<()> {
-        if !self.search.typing {
-            self.scroll.act(action, self.doc.len());
+    /// The wheel scrolls; a press moves the cursor to the row there.
+    fn mouse(&mut self, m: Mouse, at: Position, _ctx: &mut Ctx) -> Result<Outcome> {
+        if self.search.typing {
+            return Ok(Outcome::Unchanged);
         }
-        Ok(())
-    }
-
-    fn click(&mut self, at: Position, _ctx: &mut Ctx) -> Result<Outcome> {
-        if !self.search.typing
-            && let Some(row) = drawn_at(&self.rows, at.y)
-        {
-            self.scroll.cursor = row;
+        match m {
+            Mouse::Wheel { down } => self.scroll.wheel(down),
+            Mouse::Press => match drawn_at(&self.rows, at.y) {
+                Some(row) => self.scroll.go(row),
+                None => return Ok(Outcome::Unchanged),
+            },
+            Mouse::Drag { .. } | Mouse::Release { .. } => return Ok(Outcome::Unchanged),
         }
         Ok(Outcome::Consumed)
     }
@@ -148,32 +148,34 @@ impl Component for FileView {
         Some(&self.hints)
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, _pointer: Option<Position>) {
         clear(f, area, ctx.look.theme);
-        let found = self.search.search_title(&self.doc, self.scroll.cursor, &[]);
+        let found = self
+            .search
+            .search_title(&self.doc, self.scroll.cursor(), &[]);
         let title = format!(" {} {}", self.label, found);
         let block = boxed(title, true, ctx.look.theme);
         let inner = block.inner(area);
         f.render_widget(block, area);
-        let (doc, linked, cursor) = (&self.doc, &self.linked, self.scroll.cursor);
+        let (doc, linked, cursor) = (&self.doc, &self.linked, self.scroll.cursor());
         let search = &self.search.text;
-        let draw = |i: usize| {
+        let draw = |i: usize, _hover: bool| {
             // The cursor as an accent block; linked lines as bold blue numbers, apart from
             // it in themes whose accent is blue.
-            let mark = if i == cursor {
-                Some(
-                    Style::new()
-                        .fg(ctx.look.theme.on_accent)
-                        .bg(ctx.look.theme.accent),
-                )
+            let style = if i == cursor {
+                Style::new()
+                    .fg(ctx.look.theme.on_accent)
+                    .bg(ctx.look.theme.accent)
             } else if linked.contains(&i) {
-                Some(
-                    Style::new()
-                        .fg(ctx.look.theme.blue)
-                        .add_modifier(Modifier::BOLD),
-                )
+                Style::new()
+                    .fg(ctx.look.theme.blue)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                None
+                Style::new()
+            };
+            let mark = Mark {
+                style,
+                hover: false,
             };
             let hit = query::hit_style(ctx.look.theme, i == cursor);
             draw_row(ctx, doc, i, inner.width, mark, None, (search, hit))
@@ -181,10 +183,10 @@ impl Component for FileView {
         self.scroll.place(
             inner.height as usize,
             doc.len(),
-            |i| draw(i).height(),
+            |i| draw(i, false).height(),
             false,
         );
-        self.rows = draw_rows(f, inner, &self.scroll, doc, draw, |_, _, _| 0);
+        self.rows = draw_rows(f, inner, &self.scroll, doc, None, draw, |_, _, _| 0);
     }
 }
 

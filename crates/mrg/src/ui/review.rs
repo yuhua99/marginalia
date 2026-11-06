@@ -1,11 +1,11 @@
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use crate::app::{Component, Ctx, Outcome};
+use crate::app::{Component, Ctx, Mouse, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::review::Shown;
 use crate::session::Anchor;
@@ -112,6 +112,23 @@ impl Review {
             self.commits.focus(ctx, self.focus == COMMITS);
         }
     }
+
+    /// Shows the checked commits, unless shown already.
+    fn show_checked(&mut self, ctx: &mut Ctx) -> Result<()> {
+        if let Some(run) = self.commits.checked()
+            && run != ctx.review.shown.bounds(ctx.review.views.len())
+        {
+            self.show(run, ctx)?;
+        }
+        Ok(())
+    }
+
+    /// Shows the views `run`, the diff from its top.
+    fn show(&mut self, run: (usize, usize), ctx: &mut Ctx) -> Result<()> {
+        ctx.review.show(Shown::of(run, ctx.review.views.len()))?;
+        self.diff = DiffView::default();
+        Ok(())
+    }
 }
 
 impl Panes<Ctx> for Review {
@@ -150,11 +167,11 @@ impl Panes<Ctx> for Review {
                 } else {
                     &mut self.commits
                 };
+                list.settle();
                 match (action, list.entry(ctx)) {
                     ("open", Entry::View(view)) => {
                         let run = self.commits.checked().unwrap_or((view, view));
-                        ctx.review.show(Shown::of(run, ctx.review.views.len()))?;
-                        self.diff = DiffView::default();
+                        self.show(run, ctx)?;
                         self.focus = DIFF;
                     }
                     ("open", Entry::File(file)) => {
@@ -196,23 +213,48 @@ impl Panes<Ctx> for Review {
         self.refocus(focus, ctx);
     }
 
+    fn scroll_focused(&mut self, down: bool, _ctx: &mut Ctx) {
+        match self.focus {
+            COMMITS => self.commits.wheel(down),
+            FILES => self.files.wheel(down),
+            _ => self.diff.wheel(down),
+        }
+    }
+
     fn busy(&self) -> bool {
         self.diff.busy() || self.files.typing()
     }
 
-    /// A commit checks as Space does, a file opens as Enter does; a diff row only takes
-    /// the cursor.
-    fn pick(&mut self, pane: usize, y: u16, ctx: &mut Ctx) -> Result<Outcome> {
-        let action = match pane {
-            COMMITS if self.commits.click(self.panes[COMMITS], y, ctx) => "check",
-            FILES if self.files.click(self.panes[FILES], y, ctx) => "open",
-            DIFF => {
-                self.diff.click(y);
-                return Ok(Outcome::Consumed);
-            }
-            _ => return Ok(Outcome::Consumed),
-        };
-        self.act(action, ctx)
+    /// A commit checks alone, the start of a drag over the commits to show; a file opens
+    /// as Enter does; a diff row takes the cursor, the start of a drag over the lines to
+    /// select.
+    fn press(&mut self, pane: usize, y: u16, ctx: &mut Ctx) -> Result<Outcome> {
+        match pane {
+            COMMITS => self.commits.press(self.panes[COMMITS], y, ctx),
+            FILES if self.files.click(self.panes[FILES], y) => return self.act("open", ctx),
+            DIFF => self.diff.press(y),
+            _ => {}
+        }
+        Ok(Outcome::Consumed)
+    }
+
+    /// Over the commits, checks those dragged over; over the diff, selects the lines.
+    fn drag(&mut self, pane: usize, y: u16, ctx: &mut Ctx) {
+        match pane {
+            COMMITS => self.commits.drag(self.panes[COMMITS], y, ctx),
+            DIFF => self.diff.drag(y, ctx.review.doc.len()),
+            _ => {}
+        }
+    }
+
+    /// Letting go over the commits shows those checked.
+    fn release(&mut self, pane: usize, ctx: &mut Ctx) -> Result<Outcome> {
+        match pane {
+            COMMITS if self.commits.release() => self.show_checked(ctx)?,
+            DIFF => self.diff.release(),
+            _ => {}
+        }
+        Ok(Outcome::Consumed)
     }
 }
 
@@ -230,12 +272,21 @@ impl Component for Review {
         self.act(action, ctx)
     }
 
-    fn wheel(&mut self, action: &str, at: Position, ctx: &mut Ctx) -> Result<()> {
-        self.wheel_at(action, at, ctx)
+    fn mouse(&mut self, m: Mouse, at: Position, ctx: &mut Ctx) -> Result<Outcome> {
+        self.mouse_at(m, at, ctx)
     }
 
-    fn click(&mut self, at: Position, ctx: &mut Ctx) -> Result<Outcome> {
-        self.click_at(at, ctx)
+    /// The box under `at` and its row there.
+    fn target(&self, at: Position) -> Option<(usize, Option<usize>)> {
+        let pane = self.pane_at(at)?;
+        let row = match pane {
+            COMMITS => self.commits.row_at(self.panes[COMMITS], at.y),
+            FILES => self.files.row_at(self.panes[FILES], at.y),
+            // Inside the borders, where the diff underlines.
+            _ if self.panes[DIFF].inner(Margin::new(1, 1)).contains(at) => self.diff.row_at(at.y),
+            _ => None,
+        }?;
+        Some((pane, Some(row)))
     }
 
     fn paste(&mut self, text: &str) {
@@ -243,7 +294,9 @@ impl Component for Review {
         self.diff.paste(text);
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, pointer: Option<Position>) {
+        // Typing leaves the mouse alone.
+        let pointer = pointer.filter(|_| !self.busy());
         // Commits as tall as their rows, up to 4.
         let rows = ctx.review.views.len().min(4) as u16;
         let [top, bottom] =
@@ -251,8 +304,10 @@ impl Component for Review {
         let [left, right] =
             Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(bottom);
         self.panes = [top, left, right];
-        self.commits.render(f, top, ctx, self.focus == COMMITS);
-        self.files.render(f, left, ctx, self.focus == FILES);
+        self.commits
+            .render(f, top, ctx, self.focus == COMMITS, pointer);
+        self.files
+            .render(f, left, ctx, self.focus == FILES, pointer);
         let block = boxed(
             Span::styled(
                 header(ctx, self.diff.current_file(ctx)) + &self.diff.search_title(ctx),
@@ -263,7 +318,7 @@ impl Component for Review {
         );
         let inner = block.inner(right);
         f.render_widget(block, right);
-        self.diff.render(f, inner, ctx);
+        self.diff.render(f, inner, ctx, pointer);
     }
 
     fn hints(&self) -> Option<&str> {

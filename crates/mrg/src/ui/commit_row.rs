@@ -4,6 +4,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::repo::Commit;
 use crate::theme::Theme;
+use crate::ui::lit;
 
 /// Columns kept for a subject before the author and date are left out.
 pub const MIN_SUBJECT: usize = 20;
@@ -33,8 +34,14 @@ impl Columns {
     }
 
     /// `sha subject  author  date` in `width` columns, the author and date
-    /// right-aligned.
-    pub fn row<'a>(&self, commit: &'a Commit, width: usize, theme: &Theme) -> Vec<Span<'a>> {
+    /// right-aligned. Under the pointer (`hover`), the sha and subject underlined.
+    pub fn row<'a>(
+        &self,
+        commit: &'a Commit,
+        width: usize,
+        theme: &Theme,
+        hover: bool,
+    ) -> Vec<Span<'a>> {
         let author = fit(&commit.author, self.author);
         let mut meta = format!(
             "{author}{}  {}{}",
@@ -52,8 +59,11 @@ impl Columns {
         let subject = fit(&commit.subject, room);
         let pad = " ".repeat(room - subject.width() + 2);
         vec![
-            Span::styled(&commit.sha[..7], Style::new().fg(theme.dim)),
-            Span::raw(format!(" {subject}")),
+            lit(
+                Span::styled(&commit.sha[..7], Style::new().fg(theme.dim)),
+                hover,
+            ),
+            lit(Span::raw(format!(" {subject}")), hover),
             Span::raw(pad),
             Span::styled(meta, Style::new().fg(theme.dim)),
         ]
