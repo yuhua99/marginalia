@@ -122,6 +122,8 @@ pub struct Layers<C> {
     pointer: Option<Position>,
     /// The cell the left button was pressed on, until it is let go.
     press: Option<Position>,
+    /// An event read after mouse events that changed the screen, held for after the draw.
+    pending: Option<Event>,
 }
 
 impl<C: AsRef<Look>> Layers<C> {
@@ -130,6 +132,7 @@ impl<C: AsRef<Look>> Layers<C> {
             layers: vec![Box::new(bottom)],
             pointer: None,
             press: None,
+            pending: None,
         }
     }
 
@@ -158,18 +161,36 @@ impl<C: AsRef<Look>> Layers<C> {
         foot
     }
 
-    /// Gives events from `read` to the layers until one changes the screen; true when they
+    /// Gives events from `read` to the layers until the screen needs a draw; true when they
     /// quit. `read` gives None to draw without an event.
     pub fn wait(
         &mut self,
         ctx: &mut C,
         mut read: impl FnMut(&mut C) -> Result<Option<Event>>,
     ) -> Result<bool> {
-        while let Some(event) = read(ctx)? {
+        let mut draw = false;
+        // Mouse events already waiting go in before the draw: one draw catches up with a
+        // burst of pointer moves, rather than one per move. Anything else acts on the screen
+        // drawn: a key after them waits for the draw, and a key that changes the screen draws
+        // before the next event, as moves through a tall row go by the lines laid out.
+        while !draw || event::poll(Duration::ZERO)? {
+            let event = match self.pending.take() {
+                Some(event) => event,
+                None => match read(ctx)? {
+                    Some(event) => event,
+                    None => break,
+                },
+            };
+            let mouse = matches!(event, Event::Mouse(_));
+            if draw && !mouse {
+                self.pending = Some(event);
+                break;
+            }
             match self.event(event, ctx)? {
                 Outcome::Unchanged => {}
                 Outcome::Quit => return Ok(true),
-                _ => return Ok(false),
+                _ if !mouse => break,
+                _ => draw = true,
             }
         }
         Ok(false)
