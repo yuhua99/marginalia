@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui_textarea::{TextArea, WrapMode};
@@ -141,7 +141,7 @@ impl Component for Input {
             .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, _pointer: Option<Position>) {
         let theme = ctx.look.theme;
         f.render_widget(Block::new().style(Style::new().bg(theme.surface)), area);
         let indent = INDENT as u16;

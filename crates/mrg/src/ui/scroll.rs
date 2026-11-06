@@ -1,10 +1,14 @@
 use crate::ui::step;
 
+/// Lines a wheel turn scrolls.
+const WHEEL: isize = 3;
+
 /// A cursor over rows of any height, and where the screen is in them: it starts `off`
 /// lines into row `top`.
 #[derive(Default)]
 pub struct Scroll {
-    pub cursor: usize,
+    /// Set through `go`, which ends a wheel turn's hold on the screen.
+    cursor: usize,
     top: usize,
     off: usize,
     /// Screen lines, as of the last `place`.
@@ -13,6 +17,13 @@ pub struct Scroll {
     overflow: usize,
     /// The next `place` puts the cursor row mid-screen.
     center: bool,
+    /// The cursor as of the last wheel turn: the screen stays where the wheel left it
+    /// until the cursor moves or acts.
+    wheeled: Option<usize>,
+    /// Lines the wheel turned since the last `place`, down positive.
+    wheel: isize,
+    /// The last row on screen, as of the last `place` after a wheel turn.
+    last: usize,
 }
 
 impl Scroll {
@@ -54,11 +65,46 @@ impl Scroll {
         (self.top, self.off)
     }
 
+    /// The cursor row; after a wheel turn, maybe off screen until `settle`.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Keeps the cursor within `len` rows.
+    pub fn clamp(&mut self, len: usize) {
+        self.cursor = self.cursor.min(len.saturating_sub(1));
+    }
+
+    /// Moves the cursor to `row`, the screen following it.
+    pub fn go(&mut self, row: usize) {
+        self.cursor = row;
+        self.wheeled = None;
+    }
+
+    /// Scrolls the screen a wheel turn down or up, the cursor left where it is.
+    pub fn wheel(&mut self, down: bool) {
+        self.wheeled = Some(self.cursor);
+        self.wheel += if down { WHEEL } else { -WHEEL };
+    }
+
+    /// After a wheel turn, brings a cursor the screen left onto its nearest row on screen,
+    /// and the screen back to following it; the cursor an action acts on. Actions read
+    /// the cursor through this or `act`.
+    pub fn settle(&mut self) -> usize {
+        if self.wheeled.take().is_some() {
+            self.cursor = self.cursor.clamp(self.top, self.last);
+        }
+        self.cursor
+    }
+
     /// Moves the cursor over `len` rows for movement actions, or first scrolls a cursor row
-    /// taller than the screen; false for other actions.
+    /// taller than the screen; false for other actions. After a wheel turn the cursor moves
+    /// from the screen, as `settle` brings it there.
     pub fn act(&mut self, action: &str, len: usize) -> bool {
         let half = (self.height / 2).max(1);
-        let scrolled = self.top == self.cursor && self.off > 0;
+        let wheeled = self.wheeled.is_some();
+        self.settle();
+        let scrolled = !wheeled && self.top == self.cursor && self.off > 0;
         match action {
             "down" if self.overflow > 0 => self.off += 1,
             "half_page_down" if self.overflow > 0 => self.off += half.min(self.overflow),
@@ -76,7 +122,14 @@ impl Scroll {
     /// as shows the cursor row: whole if it fits, else a line of it, or its end with `from_end`.
     pub fn place(&mut self, h: usize, len: usize, height: impl Fn(usize) -> usize, from_end: bool) {
         self.height = h;
-        self.cursor = self.cursor.min(len.saturating_sub(1));
+        self.clamp(len);
+        let lines = std::mem::take(&mut self.wheel);
+        if self.wheeled == Some(self.cursor) && self.top < len {
+            self.roll(lines, h, len, &height);
+            self.overflow = 0;
+            return;
+        }
+        self.wheeled = None;
         let cursor = self.cursor;
         let hc = height(cursor);
         let tall = hc > h;
@@ -130,6 +183,45 @@ impl Scroll {
         }
         let end = (self.top..cursor).map(&height).sum::<usize>() + hc;
         self.overflow = (end - self.off).saturating_sub(h);
+    }
+
+    /// Moves the screen of `h` lines `lines` down (up when negative) over `len` rows of
+    /// `height(i)` lines, down no further than shows the last line at the bottom.
+    fn roll(&mut self, lines: isize, h: usize, len: usize, height: impl Fn(usize) -> usize) {
+        // Lines from the top of the screen on, up to one more than it shows.
+        let rest = |s: &Scroll| (s.top..len).map(&height).take(h + 1).sum::<usize>() - s.off;
+        let up = |s: &mut Scroll| {
+            if s.off > 0 {
+                s.off -= 1;
+            } else if s.top > 0 {
+                s.top -= 1;
+                s.off = height(s.top) - 1;
+            }
+        };
+        for _ in 0..lines.max(0) {
+            if rest(self) > h {
+                self.off += 1;
+                if self.off == height(self.top) {
+                    self.top += 1;
+                    self.off = 0;
+                }
+            }
+        }
+        for _ in 0..(-lines).max(0) {
+            up(self);
+        }
+        // Rows gone from under the screen: back up to fill it.
+        while rest(self) < h && (self.top > 0 || self.off > 0) {
+            up(self);
+        }
+        // Lines from the top of the top row to where each row starts.
+        let (mut i, mut start) = (self.top, 0);
+        self.last = self.top;
+        while i < len && start < self.off + h {
+            self.last = i;
+            start += height(i);
+            i += 1;
+        }
     }
 }
 
@@ -190,6 +282,46 @@ mod tests {
         s.act("down", 10);
         s.place(5, 10, |_| 1, false);
         assert_eq!(s.top(), (3, 0));
+    }
+
+    #[test]
+    fn wheels_without_the_cursor() {
+        let rows = [1, 2, 1, 1, 1, 1, 1];
+        let mut s = Scroll::default();
+        run(&mut s, &rows, &[]);
+        s.wheel(true);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!((s.cursor, s.top()), (0, (2, 0)));
+        // No further than the last line at the bottom.
+        s.wheel(true);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!((s.cursor, s.top()), (0, (4, 0)));
+        s.wheel(false);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!((s.cursor, s.top()), (0, (1, 1)));
+        // A move goes on from the top row on screen.
+        run(&mut s, &rows, &["down"]);
+        assert_eq!((s.cursor, s.top()), (2, (1, 1)));
+    }
+
+    #[test]
+    fn moves_from_the_screen_after_the_wheel() {
+        let rows = [1; 10];
+        let mut s = Scroll::default();
+        run(&mut s, &rows, &[]);
+        s.wheel(true);
+        s.wheel(true);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!((s.cursor, s.top()), (0, (6, 0)));
+        // From the top row on screen.
+        run(&mut s, &rows, &["down"]);
+        assert_eq!((s.cursor, s.top()), (7, (6, 0)));
+        s.wheel(false);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!((s.cursor, s.top()), (7, (3, 0)));
+        // From the bottom row on screen.
+        run(&mut s, &rows, &["up"]);
+        assert_eq!((s.cursor, s.top()), (4, (3, 0)));
     }
 
     #[test]

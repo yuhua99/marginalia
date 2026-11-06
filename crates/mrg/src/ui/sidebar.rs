@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -9,19 +9,22 @@ use crate::review::View;
 use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::query::Query;
-use crate::ui::{boxed, check, checked_bar, cursor_bar, row_at, status_style, step};
+use crate::ui::scroll::Scroll;
+use crate::ui::{boxed, check, checked_bar, cursor_bar, lit, row_at, status_style};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
 /// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
 #[derive(Default)]
 pub struct Sidebar {
     files: bool,
-    cursor: usize,
-    top: usize,
-    height: usize,
+    scroll: Scroll,
     /// While the commits box has focus: the checked views first..=last, or None for none.
     /// Outside it (None) the box marks the views shown.
     checked: Option<Option<(usize, usize)>>,
+    /// The view a press in the commits box began on, until the button is let go.
+    anchor: Option<usize>,
+    /// Rows, as of the last render.
+    len: usize,
     /// The files box's `/` filter on paths.
     filter: Query,
 }
@@ -77,7 +80,7 @@ impl Sidebar {
 
     pub fn entry(&self, ctx: &Ctx) -> Entry {
         self.items(ctx)
-            .get(self.cursor)
+            .get(self.scroll.cursor())
             .map_or(Entry::Other, |i| i.entry)
     }
 
@@ -96,14 +99,57 @@ impl Sidebar {
         self.filter.typing
     }
 
+    /// The row at screen line `y` of the box over `area`, as of the last render.
+    pub fn row_at(&self, area: Rect, y: u16) -> Option<usize> {
+        row_at(area, self.scroll.top().0, self.len, y)
+    }
+
     /// Moves the cursor to the row at screen line `y` of the box over `area`; false when
     /// there is none.
-    pub fn click(&mut self, area: Rect, y: u16, ctx: &Ctx) -> bool {
-        let row = row_at(area, self.top, self.items(ctx).len(), y);
+    pub fn click(&mut self, area: Rect, y: u16) -> bool {
+        let row = self.row_at(area, y);
         if let Some(row) = row {
-            self.cursor = row;
+            self.scroll.go(row);
         }
         row.is_some()
+    }
+
+    /// A press at screen line `y` of the commits box over `area`: checks the view there
+    /// alone, the start of a sweep over views.
+    pub fn press(&mut self, area: Rect, y: u16, ctx: &Ctx) {
+        self.anchor = None;
+        if self.click(area, y)
+            && let Entry::View(v) = self.entry(ctx)
+        {
+            self.anchor = Some(v);
+            self.checked = Some(Some((v, v)));
+        }
+    }
+
+    /// The button held over screen line `y` after a press on a view: checks the views from
+    /// it to the one there.
+    pub fn drag(&mut self, area: Rect, y: u16, ctx: &Ctx) {
+        if let Some(from) = self.anchor
+            && self.click(area, y)
+            && let Entry::View(v) = self.entry(ctx)
+        {
+            self.checked = Some(Some((from.min(v), from.max(v))));
+        }
+    }
+
+    /// The button let go; whether it ends a sweep.
+    pub fn release(&mut self) -> bool {
+        self.anchor.take().is_some()
+    }
+
+    /// Scrolls a wheel turn down or up, the cursor left.
+    pub fn wheel(&mut self, down: bool) {
+        self.scroll.wheel(down);
+    }
+
+    /// After a wheel turn, brings the cursor onto the screen.
+    pub fn settle(&mut self) {
+        self.scroll.settle();
     }
 
     /// While typing the filter, takes `key`; false otherwise.
@@ -112,7 +158,7 @@ impl Sidebar {
             return false;
         }
         self.filter.key(key);
-        self.cursor = 0;
+        self.scroll.go(0);
         true
     }
 
@@ -120,41 +166,46 @@ impl Sidebar {
     pub fn paste(&mut self, text: &str) {
         if self.filter.typing {
             self.filter.paste(text);
-            self.cursor = 0;
+            self.scroll.go(0);
         }
     }
 
     pub fn act(&mut self, action: &str, ctx: &Ctx) {
         let len = self.items(ctx).len();
+        self.scroll.act(action, len);
         match action {
             "filter" if self.files => self.filter.typing = true,
             "cancel" if self.files => {
                 self.filter = Query::default();
-                self.cursor = 0;
+                self.scroll.go(0);
             }
             _ => {}
         }
-        if action == "check" {
-            if let Entry::View(v) = self.entry(ctx)
-                && let Some(checked) = &mut self.checked
-            {
-                *checked = check(*checked, v);
-            }
-            return;
-        }
-        if let Some(cursor) = step(self.cursor, action, len, self.height) {
-            self.cursor = cursor;
+        if action == "check"
+            && let Entry::View(v) = self.entry(ctx)
+            && let Some(checked) = &mut self.checked
+        {
+            *checked = check(*checked, v);
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, focused: bool) {
+    /// The box over `area`, the text of the row under the `pointer` underlined.
+    pub fn render(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &Ctx,
+        focused: bool,
+        pointer: Option<Position>,
+    ) {
         let items = self.items(ctx);
-        self.height = area.height.saturating_sub(2) as usize;
-        self.cursor = self.cursor.min(items.len().saturating_sub(1));
-        self.top = self.top.min(self.cursor);
-        if self.cursor >= self.top + self.height {
-            self.top = self.cursor + 1 - self.height;
-        }
+        self.len = items.len();
+        let height = area.height.saturating_sub(2) as usize;
+        self.scroll.place(height, items.len(), |_| 1, false);
+        let (top, cursor) = (self.scroll.top().0, self.scroll.cursor());
+        let hovered = pointer
+            .filter(|&p| area.contains(p))
+            .and_then(|p| self.row_at(area, p.y));
         let columns = Columns::new(ctx.review.views.iter().filter_map(|v| match v {
             View::Commit(c) => Some(c),
             _ => None,
@@ -164,13 +215,14 @@ impl Sidebar {
         let mut checked_rows = Vec::new();
         let lines: Vec<Line> = items
             .iter()
-            .skip(self.top)
-            .take(self.height)
+            .skip(top)
+            .take(height)
             .enumerate()
             .map(|(row, item)| {
                 if !self.files && item.checked == Some(true) {
                     checked_rows.push(row);
                 }
+                let on = hovered == Some(top + row);
                 let mut spans = vec![Span::raw(" ".repeat(item.indent))];
                 spans.extend(item.checked.map(|on| mark(on, ctx.look.theme)));
                 if let Entry::File(file) = item.entry {
@@ -183,10 +235,12 @@ impl Sidebar {
                 if let Entry::View(v) = item.entry
                     && let View::Commit(c) = &ctx.review.views[v]
                 {
-                    spans.extend(columns.row(c, width, ctx.look.theme));
+                    spans.extend(columns.row(c, width, ctx.look.theme, on));
                     return Line::from(spans);
                 }
-                spans.push(Span::raw(item.text.clone()));
+                // A file's name or the uncommitted changes; a directory takes no click.
+                let on = on && !matches!(item.entry, Entry::Other);
+                spans.push(lit(Span::raw(item.text.clone()), on));
                 Line::from(spans)
             })
             .collect();
@@ -198,8 +252,8 @@ impl Sidebar {
         for row in checked_rows {
             checked_bar(f, inner, inner.y + row as u16, ctx.look.theme);
         }
-        if focused && self.cursor < items.len() && self.height > 0 {
-            let y = inner.y + (self.cursor - self.top) as u16;
+        if focused && cursor < items.len() && (top..top + height).contains(&cursor) {
+            let y = inner.y + (cursor - top) as u16;
             cursor_bar(f, inner, y, ctx.look.theme);
         }
     }

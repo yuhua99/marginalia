@@ -11,7 +11,7 @@ use ratatui_textarea::TextArea;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Component, Layers, Look, Outcome};
+use crate::app::{Component, Layers, Look, Mouse, Outcome};
 use crate::forge::{self, Forge, Request};
 use crate::keymap::{Feed, Keymap};
 use crate::repo::{Commit, Repo, short};
@@ -22,8 +22,9 @@ use crate::ui::commit_row::{Columns, MIN_SUBJECT, fit, mark};
 use crate::ui::confirm::Confirm;
 use crate::ui::help::{self, Entry, Help};
 use crate::ui::query::Query;
+use crate::ui::scroll::Scroll;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{Panes, boxed, check, checked_bar, clear, cursor_bar, dialog, row_at, step};
+use crate::ui::{Panes, boxed, check, checked_bar, clear, cursor_bar, dialog, lit, row_at};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -146,14 +147,26 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
             };
             continue;
         }
-        let event = event::read()?;
-        // Not on a button's release, which follows the click that made the error.
-        if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press)
-            || matches!(&event, Event::Mouse(m) if !matches!(m.kind, MouseEventKind::Up(_)))
-        {
-            pick.error = None;
-        }
-        if layers.event(event, pick)? {
+        let shown = pick.error.is_some();
+        let quit = layers.wait(pick, |pick| {
+            // An error cleared by an event that changed nothing else: draw its going.
+            if shown && pick.error.is_none() {
+                return Ok(None);
+            }
+            let event = event::read()?;
+            // Not on a button's drag or release, which follow the click that made the error,
+            // nor on the pointer's moves.
+            if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press)
+                || matches!(&event, Event::Mouse(m) if matches!(
+                    m.kind,
+                    MouseEventKind::Down(_) | MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                ))
+            {
+                pick.error = None;
+            }
+            Ok(Some(event))
+        })?;
+        if quit {
             return Ok(());
         }
     }
@@ -169,13 +182,15 @@ struct Picker {
     uncommitted: Vec<&'static str>,
     /// `SESSIONS`, `RANGE` or `REVIEWS`.
     focused: usize,
-    /// Per block, into its shown rows.
-    cursor: [usize; 3],
+    /// Per block, its cursor into its shown rows and the screen over them.
+    scroll: [Scroll; 3],
     filter: [Query; 3],
     /// Checked rows of the range block, top..=bottom into all its rows.
     checked: Option<(usize, usize)>,
+    /// The range row a press began on, until letting go opens the rows dragged over.
+    anchor: Option<usize>,
     /// Rows the focused block shows, as of the last render.
-    height: usize,
+    len: usize,
     keymap: Keymap,
     /// The footer, from `HINTS`.
     hints: String,
@@ -218,9 +233,19 @@ impl Picker {
         self.focused
     }
 
-    /// The first row `pane` shows: enough down for its cursor.
+    /// Loads older commits into the unfiltered range block.
+    fn load_more(&mut self, ctx: &mut Pick) {
+        if !self.exhausted
+            && self.filter[RANGE].text.is_empty()
+            && let Err(e) = self.more(&ctx.repo)
+        {
+            ctx.error = Some(format!("{e:#}"));
+        }
+    }
+
+    /// The first row `pane` shows.
     fn skip(&self, pane: usize) -> usize {
-        (self.cursor[pane] + 1).saturating_sub(self.height)
+        self.scroll[pane].top().0
     }
 
     /// (text, value) of every row of a block: session ids; unstaged, staged and commit
@@ -364,22 +389,17 @@ fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
 impl Panes<Pick> for Picker {
     fn act(&mut self, action: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let pane = self.pane();
-        // Down on the last row of the unfiltered range block loads older commits.
+        let cursor = self.scroll[pane].settle();
+        // Down on the last row of the range block loads older commits.
         if pane == RANGE
             && action == "down"
-            && !self.exhausted
-            && self.filter[RANGE].text.is_empty()
-            && self.cursor[RANGE] + 1 == self.uncommitted.len() + self.commits.len()
-            && let Err(e) = self.more(&ctx.repo)
+            && cursor + 1 == self.uncommitted.len() + self.commits.len()
         {
-            ctx.error = Some(format!("{e:#}"));
+            self.load_more(ctx);
         }
         let shown = self.shown(pane, ctx);
-        let at = shown.get(self.cursor[pane]).copied();
-        let cursor = self.cursor[pane];
-        if let Some(to) = step(cursor, action, shown.len(), self.height) {
-            self.cursor[pane] = to;
-        }
+        let at = shown.get(cursor).copied();
+        self.scroll[pane].act(action, shown.len());
         match action {
             "check" if pane == RANGE => {
                 if let Some(i) = at {
@@ -417,7 +437,7 @@ impl Panes<Pick> for Picker {
                     self.checked = None;
                 } else {
                     self.filter[pane] = Query::default();
-                    self.cursor[pane] = 0;
+                    self.scroll[pane].go(0);
                 }
             }
             "open" => {
@@ -445,18 +465,60 @@ impl Panes<Pick> for Picker {
         }
     }
 
+    fn scroll_focused(&mut self, down: bool, ctx: &mut Pick) {
+        let pane = self.pane();
+        self.scroll[pane].wheel(down);
+        // The wheel down with the last row of the range block on screen loads older commits.
+        let rows = self.panes[pane].height.saturating_sub(2) as usize;
+        if pane == RANGE
+            && down
+            && self.skip(RANGE) + rows >= self.uncommitted.len() + self.commits.len()
+        {
+            self.load_more(ctx);
+        }
+    }
+
     fn busy(&self) -> bool {
         self.filter[self.pane()].typing
     }
 
-    /// A session or a request opens as Enter does, a range row checks as Space does.
-    fn pick(&mut self, pane: usize, y: u16, ctx: &mut Pick) -> Result<Outcome<Pick>> {
-        let len = self.shown(pane, ctx).len();
-        let Some(row) = row_at(self.panes[pane], self.skip(pane), len, y) else {
+    /// A session or a request opens as Enter does; a range row checks alone, the start
+    /// of a drag over the rows to open.
+    fn press(&mut self, pane: usize, y: u16, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        self.anchor = None;
+        let shown = self.shown(pane, ctx);
+        let Some(row) = row_at(self.panes[pane], self.skip(pane), shown.len(), y) else {
             return Ok(Outcome::Consumed);
         };
-        self.cursor[pane] = row;
-        self.act(["open", "check", "open"][pane], ctx)
+        self.scroll[pane].go(row);
+        if pane != RANGE {
+            return self.act("open", ctx);
+        }
+        self.anchor = Some(shown[row]);
+        self.checked = Some((shown[row], shown[row]));
+        Ok(Outcome::Consumed)
+    }
+
+    /// After a press on a range row, checks the rows from it to the one at line `y`.
+    fn drag(&mut self, _pane: usize, y: u16, ctx: &mut Pick) {
+        let Some(anchor) = self.anchor else {
+            return;
+        };
+        let shown = self.shown(RANGE, ctx);
+        if let Some(row) = row_at(self.panes[RANGE], self.skip(RANGE), shown.len(), y) {
+            self.scroll[RANGE].go(row);
+            let i = shown[row];
+            self.checked = Some((anchor.min(i), anchor.max(i)));
+        }
+    }
+
+    /// Letting go after a press on a range row opens the rows checked, unless the focus
+    /// left the range block meanwhile.
+    fn release(&mut self, _pane: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        if self.anchor.take().is_none() || self.focused != RANGE {
+            return Ok(Outcome::Consumed);
+        }
+        self.act("open", ctx)
     }
 }
 
@@ -465,7 +527,7 @@ impl Component<Pick> for Picker {
         let pane = self.pane();
         if self.filter[pane].typing {
             self.filter[pane].key(key);
-            self.cursor[pane] = 0;
+            self.scroll[pane].go(0);
             return Ok(Outcome::Consumed);
         }
         let Feed::Action(action) = self.keymap.feed(key) else {
@@ -474,19 +536,25 @@ impl Component<Pick> for Picker {
         self.act(action, ctx)
     }
 
-    fn wheel(&mut self, action: &str, at: Position, ctx: &mut Pick) -> Result<()> {
-        self.wheel_at(action, at, ctx)
+    fn mouse(&mut self, m: Mouse, at: Position, ctx: &mut Pick) -> Result<Outcome<Pick>> {
+        self.mouse_at(m, at, ctx)
     }
 
-    fn click(&mut self, at: Position, ctx: &mut Pick) -> Result<Outcome<Pick>> {
-        self.click_at(at, ctx)
+    /// The block under `at` and, in the focused one, its row.
+    fn target(&self, at: Position) -> Option<(usize, Option<usize>)> {
+        let pane = self.pane_at(at)?;
+        if pane != self.focused {
+            return Some((pane, None));
+        }
+        let row = row_at(self.panes[pane], self.skip(pane), self.len, at.y)?;
+        Some((pane, Some(row)))
     }
 
     fn paste(&mut self, text: &str) {
         let pane = self.pane();
         if self.filter[pane].typing {
             self.filter[pane].paste(text);
-            self.cursor[pane] = 0;
+            self.scroll[pane].go(0);
         }
     }
 
@@ -494,11 +562,10 @@ impl Component<Pick> for Picker {
         Some(&self.hints)
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick, pointer: Option<Position>) {
         let theme = ctx.look.theme;
         // Sessions change under the layers above: deleted, or renamed out of the filter.
-        self.cursor[SESSIONS] =
-            self.cursor[SESSIONS].min(self.shown(SESSIONS, ctx).len().saturating_sub(1));
+        self.scroll[SESSIONS].clamp(self.shown(SESSIONS, ctx).len());
         // The focused block takes the height the others leave, a title line each.
         let heights = (0..TITLES.len()).map(|pane| {
             if pane == self.focused {
@@ -510,19 +577,33 @@ impl Component<Pick> for Picker {
         self.panes = Layout::vertical(heights).areas(area);
         let pane = self.pane();
         let area = self.panes[pane];
-        self.height = area.height.saturating_sub(2) as usize;
+        self.len = self.shown(pane, ctx).len();
+        self.scroll[pane].place(
+            area.height.saturating_sub(2) as usize,
+            self.len,
+            |_| 1,
+            false,
+        );
+        let hovered = pointer.and_then(|p| self.target(p));
         for (p, &rect) in self.panes.iter().enumerate() {
             let count = match (p, &ctx.reviews) {
                 (SESSIONS, _) => format!(" ({})", ctx.sessions.len()),
                 (REVIEWS, Reviews::Listed(_, requests)) => format!(" ({})", requests.len()),
                 _ => String::new(),
             };
-            let title = format!(" {}{count} {}", TITLES[p], self.filter[p].title());
+            // A folded block's name, which a click opens.
+            let name = Span::raw(format!("{}{count}", TITLES[p]));
+            let title = Line::from(vec![
+                Span::raw(" "),
+                lit(name, hovered == Some((p, None))),
+                Span::raw(format!(" {}", self.filter[p].title())),
+            ]);
             if p == pane {
                 let block = boxed(title, true, theme);
                 let inner = block.inner(rect);
                 f.render_widget(block, rect);
-                self.render_rows(f, inner, ctx);
+                let row = hovered.and_then(|(_, row)| row);
+                self.render_rows(f, inner, row, ctx);
             } else {
                 let line = Block::new()
                     .borders(Borders::TOP)
@@ -535,22 +616,28 @@ impl Component<Pick> for Picker {
 }
 
 impl Picker {
-    /// The rows of the focused block in `inner`, the cursor's marked.
-    fn render_rows(&self, f: &mut Frame, inner: Rect, ctx: &Pick) {
+    /// The rows of the focused block in `inner`, the cursor's marked and the `hover`ed
+    /// one's text underlined.
+    fn render_rows(&self, f: &mut Frame, inner: Rect, hover: Option<usize>, ctx: &Pick) {
         let theme = ctx.look.theme;
         let pane = self.pane();
         let (height, width) = (inner.height as usize, inner.width as usize);
-        let cursor = self.cursor[pane];
+        let cursor = self.scroll[pane].cursor();
         let skip = self.skip(pane);
         let shown = self.shown(pane, ctx);
         let rows = shown.len();
         let shown = shown.into_iter().skip(skip).take(height);
         let mut checked_rows = Vec::new();
+        let hovers = |row: usize| hover == Some(skip + row);
         let lines: Vec<Line> = match pane {
             SESSIONS => {
                 let name_width = name_width(&ctx.sessions);
                 shown
-                    .map(|i| Line::from(session_row(&ctx.sessions[i].0, name_width, width, theme)))
+                    .enumerate()
+                    .map(|(row, i)| {
+                        let s = &ctx.sessions[i].0;
+                        Line::from(session_row(s, name_width, width, theme, hovers(row)))
+                    })
                     .collect()
             }
             RANGE => {
@@ -565,9 +652,12 @@ impl Picker {
                         let mut spans = vec![mark(checked, theme)];
                         // After the mark.
                         let width = width.saturating_sub(2);
+                        let on = hovers(row);
                         match i.checked_sub(self.uncommitted.len()) {
-                            Some(c) => spans.extend(columns.row(&self.commits[c], width, theme)),
-                            None => spans.push(Span::raw(self.uncommitted[i])),
+                            Some(c) => {
+                                spans.extend(columns.row(&self.commits[c], width, theme, on))
+                            }
+                            None => spans.push(lit(Span::raw(self.uncommitted[i]), on)),
                         }
                         Line::from(spans)
                     })
@@ -578,12 +668,13 @@ impl Picker {
                     let number_width = requests.iter().map(|r| r.number.to_string().len());
                     let number_width = number_width.max().unwrap_or(0);
                     shown
-                        .map(|i| {
+                        .enumerate()
+                        .map(|(row, i)| {
                             let r = &requests[i];
                             let head = forge.head(r.number);
                             let reviewed = ctx.sessions.iter().any(|(s, _)| s.end == head);
-                            let row = (forge.word(), r, reviewed, number_width);
-                            Line::from(review_row(row, width, theme))
+                            let row_of = (forge.word(), r, reviewed, number_width);
+                            Line::from(review_row(row_of, width, theme, hovers(row)))
                         })
                         .collect()
                 }
@@ -598,18 +689,20 @@ impl Picker {
         for row in checked_rows {
             checked_bar(f, inner, inner.y + row as u16, theme);
         }
-        if cursor < rows && height > 0 {
+        if cursor < rows && (skip..skip + height).contains(&cursor) {
             cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
         }
     }
 }
 
 /// `● pull 12  title  author → target` in `width` columns, the author and target
-/// right-aligned and left out first when narrow; ● when a session reviews it.
+/// right-aligned and left out first when narrow; ● when a session reviews it. Under the
+/// pointer (`hover`), the number and title underlined.
 fn review_row<'a>(
     (word, r, reviewed, number_width): (&str, &'a Request, bool, usize),
     width: usize,
     theme: &Theme,
+    hover: bool,
 ) -> Vec<Span<'a>> {
     let mark = if reviewed { "● " } else { "  " };
     let id = format!("{word} {:<number_width$}  ", r.number);
@@ -624,8 +717,8 @@ fn review_row<'a>(
     let pad = " ".repeat(room - title.width() + 2);
     vec![
         Span::styled(mark, Style::new().fg(theme.accent)),
-        Span::styled(id, Style::new().fg(theme.dim)),
-        Span::raw(title),
+        lit(Span::styled(id, Style::new().fg(theme.dim)), hover),
+        lit(Span::raw(title), hover),
         Span::raw(pad),
         Span::styled(meta, Style::new().fg(theme.dim)),
     ]
@@ -652,22 +745,29 @@ fn name_column(s: &Session, name_width: Option<usize>) -> String {
 }
 
 /// `id  name  range` in `width` columns, the range right-aligned; the name column
-/// only when some session has a name, narrowed so the range fits.
+/// only when some session has a name, narrowed so the range fits. Under the pointer
+/// (`hover`), the id and name underlined.
 fn session_row<'a>(
     s: &'a Session,
     name_width: Option<usize>,
     width: usize,
     theme: &Theme,
+    hover: bool,
 ) -> Vec<Span<'a>> {
     // Width left for the name after the id, the range and the spaces around the name.
     let room = width.saturating_sub(s.id.width() + s.range.width() + 4);
     // No room: the name column goes, so the range fits.
     let name = name_column(s, name_width.map(|w| w.min(room)).filter(|&w| w > 0));
     let used = s.id.width() + name.width() + s.range.width();
-    let pad = " ".repeat(width.saturating_sub(used).max(2));
+    // The name's padding joins the pad, out of the name's underline.
+    let text = name.trim_end();
+    let pad = " ".repeat(name.len() - text.len() + width.saturating_sub(used).max(2));
     vec![
-        Span::styled(s.id.as_str(), Style::new().fg(theme.dim)),
-        Span::raw(name),
+        lit(
+            Span::styled(s.id.as_str(), Style::new().fg(theme.dim)),
+            hover,
+        ),
+        lit(Span::raw(text.to_string()), hover),
         Span::raw(pad),
         Span::styled(s.range.as_str(), Style::new().fg(theme.dim)),
     ]
@@ -736,7 +836,7 @@ impl Component<Pick> for Rename {
         self.text.insert_str(line);
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick, _pointer: Option<Position>) {
         dialog::input(
             f,
             area,

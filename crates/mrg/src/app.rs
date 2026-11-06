@@ -68,25 +68,46 @@ impl Ctx {
 
 pub enum Outcome<C = Ctx> {
     Consumed,
+    /// Nothing on screen changed: no draw.
+    Unchanged,
     Push(Box<dyn Component<C>>),
     Close,
     Quit,
 }
 
+/// A wheel turn or the left button, over a cell.
+#[derive(Clone, Copy)]
+pub enum Mouse {
+    Wheel {
+        down: bool,
+    },
+    Press,
+    /// The button, held since a press on the cell `from`, moved.
+    Drag {
+        from: Position,
+    },
+    /// The button let go after a press on the cell `from`.
+    Release {
+        from: Position,
+    },
+}
+
 /// A layer of the screen over the state `C` the layers share: the review's `Ctx`, or
 /// the picker's. Layers render bottom-up; keys and the mouse go to the top layer only.
 pub trait Component<C = Ctx> {
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C);
+    /// `pointer`: the cell under the mouse, for the top layer only.
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C, pointer: Option<Position>);
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut C) -> Result<Outcome<C>>;
     /// Pasted text; only text being typed takes it.
     fn paste(&mut self, _text: &str) {}
-    /// A wheel turn over the cell `at`, as the movement `action`: "down" or "up".
-    fn wheel(&mut self, _action: &str, _at: Position, _ctx: &mut C) -> Result<()> {
-        Ok(())
+    /// The mouse event `m` over the cell `at`.
+    fn mouse(&mut self, _m: Mouse, _at: Position, _ctx: &mut C) -> Result<Outcome<C>> {
+        Ok(Outcome::Unchanged)
     }
-    /// A left click on the cell `at`.
-    fn click(&mut self, _at: Position, _ctx: &mut C) -> Result<Outcome<C>> {
-        Ok(Outcome::Consumed)
+    /// What a click on the cell `at` acts on, as of the last render: a box and its row
+    /// there. A pointer move that changes it draws, for `render` to underline it.
+    fn target(&self, _at: Position) -> Option<(usize, Option<usize>)> {
+        None
     }
     /// Footer hints; None leaves the footer to the layers below.
     fn hints(&self) -> Option<&str> {
@@ -95,11 +116,21 @@ pub trait Component<C = Ctx> {
 }
 
 /// The layers of a screen, the bottom one first; it never closes.
-pub struct Layers<C>(Vec<Box<dyn Component<C>>>);
+pub struct Layers<C> {
+    layers: Vec<Box<dyn Component<C>>>,
+    /// The cell under the mouse.
+    pointer: Option<Position>,
+    /// The cell the left button was pressed on, until it is let go.
+    press: Option<Position>,
+}
 
 impl<C: AsRef<Look>> Layers<C> {
     pub fn new(bottom: impl Component<C> + 'static) -> Layers<C> {
-        Layers(vec![Box::new(bottom)])
+        Layers {
+            layers: vec![Box::new(bottom)],
+            pointer: None,
+            press: None,
+        }
     }
 
     /// Renders the layers over the body and the top hints in the footer; returns the footer.
@@ -110,7 +141,7 @@ impl<C: AsRef<Look>> Layers<C> {
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(f.area());
         f.render_widget(
             Paragraph::new(
-                self.0
+                self.layers
                     .iter()
                     .rev()
                     .find_map(|l| l.hints())
@@ -119,16 +150,35 @@ impl<C: AsRef<Look>> Layers<C> {
             .style(Style::new().fg(theme.dim)),
             foot,
         );
-        for layer in &mut self.0 {
-            layer.render(f, body, ctx);
+        let top = self.layers.len() - 1;
+        for (i, layer) in self.layers.iter_mut().enumerate() {
+            let pointer = self.pointer.filter(|_| i == top);
+            layer.render(f, body, ctx, pointer);
         }
         foot
     }
 
-    /// Gives a key press, pasted text, a wheel turn or a click to the top layer; true when
-    /// it quits.
-    pub fn event(&mut self, event: Event, ctx: &mut C) -> Result<bool> {
-        let top = self.0.last_mut().expect("the bottom layer");
+    /// Gives events from `read` to the layers until one changes the screen; true when they
+    /// quit. `read` gives None to draw without an event.
+    pub fn wait(
+        &mut self,
+        ctx: &mut C,
+        mut read: impl FnMut(&mut C) -> Result<Option<Event>>,
+    ) -> Result<bool> {
+        while let Some(event) = read(ctx)? {
+            match self.event(event, ctx)? {
+                Outcome::Unchanged => {}
+                Outcome::Quit => return Ok(true),
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Gives a key press, pasted text or a mouse event to the top layer, and pushes or
+    /// pops the layer it asks for; a pointer move draws only when it changes the target.
+    fn event(&mut self, event: Event, ctx: &mut C) -> Result<Outcome<C>> {
+        let top = self.layers.last_mut().expect("the bottom layer");
         let outcome = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => top.handle_key(key, ctx)?,
             Event::Paste(text) => {
@@ -137,45 +187,64 @@ impl<C: AsRef<Look>> Layers<C> {
             }
             Event::Mouse(m) => {
                 let at = Position::new(m.column, m.row);
+                let before = self.pointer.replace(at);
                 match m.kind {
                     MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                         let down = m.kind == MouseEventKind::ScrollDown;
-                        top.wheel(if down { "down" } else { "up" }, at, ctx)?;
+                        top.mouse(Mouse::Wheel { down }, at, ctx)?
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.press = Some(at);
+                        top.mouse(Mouse::Press, at, ctx)?
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => match self.press {
+                        Some(from) => top.mouse(Mouse::Drag { from }, at, ctx)?,
+                        None => Outcome::Unchanged,
+                    },
+                    MouseEventKind::Up(MouseButton::Left) => match self.press.take() {
+                        Some(from) => top.mouse(Mouse::Release { from }, at, ctx)?,
+                        None => Outcome::Unchanged,
+                    },
+                    MouseEventKind::Moved
+                        if before.and_then(|p| top.target(p)) != top.target(at) =>
+                    {
                         Outcome::Consumed
                     }
-                    MouseEventKind::Down(MouseButton::Left) => top.click(at, ctx)?,
-                    _ => Outcome::Consumed,
+                    _ => Outcome::Unchanged,
                 }
             }
+            // A resize, among others.
             _ => Outcome::Consumed,
         };
         match outcome {
-            Outcome::Consumed => {}
-            Outcome::Push(layer) => self.0.push(layer),
+            Outcome::Push(layer) => self.layers.push(layer),
             Outcome::Close => {
-                self.0.pop();
+                self.layers.pop();
             }
-            Outcome::Quit => return Ok(true),
+            outcome => return Ok(outcome),
         }
-        Ok(false)
+        Ok(Outcome::Consumed)
     }
 }
 
 pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
     let mut layers = Layers::new(Review::new());
-    'draw: loop {
+    loop {
         ctx.highlighter.receive();
         terminal.draw(|f| {
             layers.render(f, ctx);
         })?;
         ctx.highlighter.flush(&mut ctx.review.repo);
-        // Wait for a key, redrawing as colors arrive.
-        while ctx.highlighter.busy() && !event::poll(Duration::from_millis(30))? {
-            if ctx.highlighter.receive() {
-                continue 'draw;
+        let quit = layers.wait(ctx, |ctx| {
+            // Wait for an event, redrawing as colors arrive.
+            while ctx.highlighter.busy() && !event::poll(Duration::from_millis(30))? {
+                if ctx.highlighter.receive() {
+                    return Ok(None);
+                }
             }
-        }
-        if layers.event(event::read()?, ctx)? {
+            Ok(Some(event::read()?))
+        })?;
+        if quit {
             return Ok(());
         }
     }

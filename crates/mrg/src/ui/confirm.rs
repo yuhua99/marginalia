@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use crate::app::{Component, Look, Outcome};
 use crate::ui::dialog;
@@ -50,7 +50,7 @@ impl<C: AsRef<Look>> Component<C> for Confirm<C> {
         Ok(Outcome::Consumed)
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C, _pointer: Option<Position>) {
         let theme = ctx.as_ref().theme;
         dialog::confirm(f, area, self.title, &self.question, self.keys, theme);
     }

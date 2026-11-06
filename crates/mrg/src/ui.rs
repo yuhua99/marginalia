@@ -16,11 +16,11 @@ pub mod sidebar;
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
-use ratatui::text::Line;
+use ratatui::style::{Style, Stylize};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear};
 
-use crate::app::Outcome;
+use crate::app::{Mouse, Outcome};
 use crate::theme::Theme;
 
 /// A bordered box; the focused one in the accent color.
@@ -91,6 +91,11 @@ fn bar(f: &mut Frame, area: Rect, y: u16, style: Style) {
     f.buffer_mut().set_style(rect, style);
 }
 
+/// `span`, underlined when `on`: the text a click acts on, under the pointer.
+pub fn lit(span: Span<'_>, on: bool) -> Span<'_> {
+    if on { span.underlined() } else { span }
+}
+
 /// A file's status letter: added green, deleted red, modified yellow, renamed blue,
 /// type changed mauve; others, like `Doc::file`'s ' ', keep the surrounding style.
 pub fn status_style(status: char, theme: &Theme) -> Style {
@@ -140,26 +145,39 @@ pub trait Panes<C> {
     fn busy(&self) -> bool;
     /// The key action `action` in the focused box.
     fn act(&mut self, action: &str, ctx: &mut C) -> Result<Outcome<C>>;
-    /// A click on screen line `y` of the focused `pane`: moves its cursor to the row
-    /// there, and acts on it.
-    fn pick(&mut self, pane: usize, y: u16, ctx: &mut C) -> Result<Outcome<C>>;
+    /// Scrolls the focused box a wheel turn down or up, its cursor left.
+    fn scroll_focused(&mut self, down: bool, ctx: &mut C);
+    /// A press on screen line `y` of the focused `pane`: moves its cursor to the row
+    /// there, and acts on it or starts a drag from it.
+    fn press(&mut self, pane: usize, y: u16, ctx: &mut C) -> Result<Outcome<C>>;
+    /// The button held over screen line `y` after a press in `pane`.
+    fn drag(&mut self, pane: usize, y: u16, ctx: &mut C);
+    /// The button let go after a press in `pane`.
+    fn release(&mut self, pane: usize, ctx: &mut C) -> Result<Outcome<C>>;
 
-    /// Focuses the box under the wheel and moves its cursor by `action`.
-    fn wheel_at(&mut self, action: &str, at: Position, ctx: &mut C) -> Result<()> {
-        if let Some(pane) = self.pane_at(at) {
-            self.focus(pane, ctx);
-            self.act(action, ctx)?;
-        }
-        Ok(())
-    }
-
-    /// Focuses the box clicked and picks the row clicked.
-    fn click_at(&mut self, at: Position, ctx: &mut C) -> Result<Outcome<C>> {
-        let Some(pane) = self.pane_at(at) else {
-            return Ok(Outcome::Consumed);
+    /// The wheel focuses the box under it and scrolls it; a press focuses the box and
+    /// presses in it; a drag and the letting go go to the box pressed in.
+    fn mouse_at(&mut self, m: Mouse, at: Position, ctx: &mut C) -> Result<Outcome<C>> {
+        let on = match m {
+            Mouse::Drag { from } | Mouse::Release { from } => from,
+            Mouse::Wheel { .. } | Mouse::Press => at,
         };
-        self.focus(pane, ctx);
-        self.pick(pane, at.y, ctx)
+        let Some(pane) = self.pane_at(on) else {
+            return Ok(Outcome::Unchanged);
+        };
+        match m {
+            Mouse::Wheel { down } => {
+                self.focus(pane, ctx);
+                self.scroll_focused(down, ctx);
+            }
+            Mouse::Press => {
+                self.focus(pane, ctx);
+                return self.press(pane, at.y, ctx);
+            }
+            Mouse::Drag { .. } => self.drag(pane, at.y, ctx),
+            Mouse::Release { .. } => return self.release(pane, ctx),
+        }
+        Ok(Outcome::Consumed)
     }
 
     /// The box under `at`, unless typing.

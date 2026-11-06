@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use crate::app::{Component, Look, Outcome};
 use crate::keymap::{Feed, Keymap};
@@ -75,7 +75,7 @@ impl<C: AsRef<Look>> Component<C> for Help {
         })
     }
 
-    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C) {
+    fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C, _pointer: Option<Position>) {
         self.popup.render(f, area, ctx.as_ref().theme);
     }
 }
