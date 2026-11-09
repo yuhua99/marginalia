@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::doc::{Doc, Scope};
 use crate::repo::{Commit, Repo};
-use crate::session::{Anchor, Session};
+use crate::session::{self, Anchor, Session, Source};
 use crate::store::Store;
 
 /// A session open for review: its diff, and the threads placed in it.
@@ -91,9 +91,19 @@ impl Review {
         Ok(())
     }
 
-    /// The user's comment on `anchor`. The inner error is the session turning it down,
-    /// the outer one saving failing; so for `reply`.
+    /// The user's comment on `anchor`, of the diff shown, put on the view it is about
+    /// (`session::attribute`). The inner error is the session turning it down, the outer
+    /// one git or saving failing; so for `reply`.
     pub fn comment(&mut self, anchor: Anchor, body: String) -> Result<Result<()>> {
+        let (first, last) = self.shown.bounds(self.views.len());
+        let views = self
+            .views
+            .get(first..=last)
+            .unwrap_or_default()
+            .iter()
+            .map(|v| Ok((parent(&self.repo, v)?, rev(v), commit(v))))
+            .collect::<Result<Vec<_>>>()?;
+        let anchor = session::attribute(&mut self.repo, anchor, &views)?;
         if let Err(e) = self.session.comment(anchor, "user", body, &mut self.repo) {
             return Ok(Err(e));
         }
@@ -128,12 +138,13 @@ impl Review {
     }
 }
 
-/// What the diff of `shown` covers: its sides, and the commit of its views when it is
-/// the only one, which the diff shows with its threads.
+/// What the diff of `shown` covers: its sides, the commits of its views, and the
+/// commit when it is the only one, which the diff shows with its threads.
 struct Span {
     left: String,
     right: String,
     scope: Scope,
+    commits: Vec<String>,
     commit: Option<String>,
 }
 
@@ -147,16 +158,14 @@ fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<
         .get(first..=last)
         .unwrap_or_default()
         .iter()
-        .filter_map(|v| match v {
-            View::Commit(c) => Some(c.sha.clone()),
-            View::Uncommitted(_) => None,
-        })
+        .filter_map(commit)
         .collect();
     let commit = (commits.len() == 1).then(|| commits[0].clone());
     Ok(Span {
         left,
         right,
         scope,
+        commits,
         commit,
     })
 }
@@ -183,7 +192,7 @@ fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Res
 
 /// Puts the session's threads where they are in `doc`, the diff of `span`.
 fn set_threads(repo: &mut Repo, session: &Session, span: &Span, doc: &mut Doc) -> Result<()> {
-    let places = session.locate(repo, &span.left, &span.right, span.commit.as_slice())?;
+    let places = session.locate(repo, &span.left, &span.right, &span.commits)?;
     doc.set_threads(&session.threads, places);
     Ok(())
 }
@@ -191,10 +200,7 @@ fn set_threads(repo: &mut Repo, session: &Session, span: &Span, doc: &mut Doc) -
 /// The left side of `view`.
 fn parent(repo: &Repo, view: &View) -> Result<String> {
     match view {
-        View::Commit(c) => match repo.parent(&c.sha)? {
-            Some(parent) => Ok(parent),
-            None => repo.empty_tree(),
-        },
+        View::Commit(c) => repo.left(&c.sha),
         View::Uncommitted("staged") => repo.commit("HEAD"),
         View::Uncommitted(_) => Ok("staged".to_string()),
     }
@@ -205,6 +211,14 @@ fn rev(view: &View) -> String {
     match view {
         View::Commit(c) => c.sha.clone(),
         View::Uncommitted(name) => name.to_string(),
+    }
+}
+
+/// The commit of `view`; None for uncommitted changes.
+fn commit(view: &View) -> Option<String> {
+    match view {
+        View::Commit(c) => Some(c.sha.clone()),
+        View::Uncommitted(_) => None,
     }
 }
 

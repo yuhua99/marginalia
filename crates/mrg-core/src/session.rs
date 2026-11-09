@@ -14,6 +14,8 @@ pub trait Source {
     fn keep(&self, id: &str, tree: &str) -> Result<()>;
     /// Full sha of commit `rev`.
     fn commit(&self, rev: &str) -> Result<String>;
+    /// Where the diff of `commit` starts: its first parent, or the empty tree.
+    fn left(&self, commit: &str) -> Result<String>;
     /// Commits in `base..end`, oldest first.
     fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>>;
     /// The diff without context of pinned revs `from` to `to`; None when what it
@@ -52,7 +54,10 @@ pub struct Thread {
 }
 
 /// What a thread is on. A `rev` is pinned: a commit sha, or the tree mrg wrote for
-/// `staged` / `unstaged`; lines are numbered there.
+/// `staged` / `unstaged`; lines are numbered there. Lines and files of a commit's
+/// diff have that `commit`, `rev` being it or where its diff starts; those of
+/// `staged` / `unstaged` have none. `old`: `rev` is the left side of the diff
+/// written on, for lines or a file it deletes.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Anchor {
@@ -61,10 +66,18 @@ pub enum Anchor {
         file: String,
         start: u32,
         end: u32,
+        #[serde(default)]
+        old: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
     },
     File {
         rev: String,
         file: String,
+        #[serde(default)]
+        old: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<String>,
     },
     Commit {
         commit: String,
@@ -75,7 +88,8 @@ pub enum Anchor {
 /// Where a thread is in a diff.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Place {
-    /// Above the files: the session, or a commit of the diff.
+    /// Above the files: the session, or a commit of the diff with what of it changed
+    /// further on.
     Whole,
     /// On the old (left) side, or the new.
     File { file: String, old: bool },
@@ -93,17 +107,17 @@ pub struct Message {
     pub body: String,
 }
 
-/// A comment of `mrg comment`: a reply, or a thread on a commit, a file, lines of it,
-/// or, with none of those, the session.
+/// A comment of `mrg comment`: a reply, or a thread on a commit, a file of a commit (or
+/// of `staged` / `unstaged`), lines of it, or, with none of those, the session.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewComment {
     reply_to: Option<String>,
     commit: Option<String>,
     file: Option<String>,
-    /// `3` or `3-5`, of `file`.
+    /// `3` or `3-5`, of `file` in `commit`.
     lines: Option<String>,
-    /// `file` is numbered at the base: lines the range deletes.
+    /// `file` is numbered where the diff of `commit` starts: lines it deletes.
     #[serde(default)]
     old: bool,
     body: String,
@@ -159,15 +173,32 @@ impl Session {
                     continue;
                 }
                 (None, Some(commit), None, None, false) => Anchor::Commit { commit },
-                (None, None, Some(file), lines, old) => {
-                    // A file the end has not is the base's.
-                    let rev = if old || repo.read(&self.end, &file)?.is_none() {
-                        self.base.clone()
-                    } else {
-                        self.end.clone()
+                (None, Some(commit), Some(file), lines, old) => {
+                    // The sides of the diff of `commit`.
+                    let (left, right, commit) = match commit.as_str() {
+                        "staged" if !worktree(&self.end) || self.base == "staged" => {
+                            bail!("staged is not in the range")
+                        }
+                        "unstaged" if self.end != "unstaged" => {
+                            bail!("unstaged is not in the range")
+                        }
+                        "staged" => ("HEAD".to_string(), commit, None),
+                        "unstaged" => ("staged".to_string(), commit, None),
+                        _ => {
+                            let commit = repo.commit(&commit)?;
+                            (repo.left(&commit)?, commit.clone(), Some(commit))
+                        }
                     };
+                    // A file the right side has not is the left's.
+                    let old = old || repo.read(&right, &file)?.is_none();
+                    let rev = if old { left } else { right };
                     match lines {
-                        None => Anchor::File { rev, file },
+                        None => Anchor::File {
+                            rev,
+                            file,
+                            old,
+                            commit,
+                        },
                         Some(lines) => {
                             let (start, end) = parse_lines(&lines)?;
                             Anchor::Lines {
@@ -175,13 +206,15 @@ impl Session {
                                 file,
                                 start,
                                 end,
+                                old,
+                                commit,
                             }
                         }
                     }
                 }
                 (None, None, None, None, false) => Anchor::Session,
                 _ => bail!(
-                    "a comment has reply_to, commit, or file (with lines and old), \
+                    "a comment has reply_to, commit (with file, lines and old), \
                      or none of them for the session"
                 ),
             };
@@ -220,6 +253,7 @@ impl Session {
                 file,
                 start,
                 end,
+                ..
             } => {
                 if *start == 0 || start > end {
                     bail!("invalid line range {start}-{end}");
@@ -228,19 +262,19 @@ impl Session {
                     .with_context(|| format!("{file}:{start}-{end} not found at {}", short(rev)))?;
                 *rev = pin(repo, &self.id, rev)?;
             }
-            Anchor::File { rev, file } => {
+            Anchor::File { rev, file, .. } => {
                 repo.read(rev, file)?
                     .with_context(|| format!("{file} not found at {}", short(rev)))?;
                 *rev = pin(repo, &self.id, rev)?;
             }
-            Anchor::Commit { commit } => {
-                *commit = repo.commit(commit)?;
-                // One out of it would show nowhere.
-                if !self.commits(repo)?.contains(commit) {
-                    bail!("commit {} is not in the range", short(commit));
-                }
-            }
+            Anchor::Commit { commit } => *commit = repo.commit(commit)?,
             Anchor::Session => {}
+        }
+        // One of a commit out of the range would show nowhere.
+        if let Some(commit) = anchor.commit()
+            && !self.commits(repo)?.contains(commit)
+        {
+            bail!("commit {} is not in the range", short(commit));
         }
         // After the highest id, since deleted threads leave gaps.
         let n = self
@@ -320,7 +354,8 @@ impl Session {
 
     /// Where each thread is in the diff `left..right` of `commits`: lines and files
     /// where they are, unchanged, on the right side, else on the left; the session and
-    /// those commits above the files. None for the rest.
+    /// those commits above the files. Lines and files of those commits that changed
+    /// further on go with their commit; of other commits, nowhere. None for the rest.
     pub fn locate(
         &self,
         repo: &mut dyn Source,
@@ -335,16 +370,25 @@ impl Session {
             .collect()
     }
 
-    /// Where `anchor` points, e.g. `src/a.rs:3-5`; `(old)` on the base.
+    /// Where `anchor` points, e.g. `src/a.rs:3-5 @ 1a2b3c4`; `(old)` on the left side.
     pub fn location(&self, anchor: &Anchor) -> String {
+        let at = |commit: &Option<String>| {
+            commit
+                .as_ref()
+                .map_or(String::new(), |c| format!(" @ {}", short(c)))
+        };
         match anchor {
             Anchor::Lines {
-                rev,
                 file,
                 start,
                 end,
-            } => format!("{file}:{}", lines(*start, *end, *rev == self.base)),
-            Anchor::File { rev, file } => format!("{file}{}", side(*rev == self.base)),
+                old,
+                commit,
+                ..
+            } => format!("{file}:{}{}", lines(*start, *end, *old), at(commit)),
+            Anchor::File {
+                file, old, commit, ..
+            } => format!("{file}{}{}", side(*old), at(commit)),
             Anchor::Commit { commit } => format!("commit {}", short(commit)),
             Anchor::Session => "session".into(),
         }
@@ -379,6 +423,17 @@ impl Thread {
     }
 }
 
+impl Anchor {
+    /// The commit it goes with; None for the session and `staged` / `unstaged`.
+    pub fn commit(&self) -> Option<&String> {
+        match self {
+            Anchor::Lines { commit, .. } | Anchor::File { commit, .. } => commit.as_ref(),
+            Anchor::Commit { commit } => Some(commit),
+            Anchor::Session => None,
+        }
+    }
+}
+
 impl Place {
     /// As shown under what it is on: lines as `L3-5`, a file as `file`.
     pub fn inline(&self) -> String {
@@ -402,8 +457,12 @@ fn locate(
     let (rev, file) = match anchor {
         Anchor::Session => return Ok(Some(Place::Whole)),
         Anchor::Commit { commit } => return Ok(commits.contains(commit).then_some(Place::Whole)),
-        Anchor::Lines { rev, file, .. } | Anchor::File { rev, file } => (rev, file),
+        Anchor::Lines { rev, file, .. } | Anchor::File { rev, file, .. } => (rev, file),
     };
+    let commit = anchor.commit();
+    if commit.is_some_and(|c| !commits.contains(c)) {
+        return Ok(None);
+    }
     // Gone with its rev, as a commit amended away and collected: nothing to carry.
     if repo.read(rev, file)?.is_none() {
         return Ok(None);
@@ -433,7 +492,88 @@ fn locate(
             return Ok(place);
         }
     }
-    Ok(None)
+    // Changed further on: with its commit.
+    Ok(commit.map(|_| Place::Whole))
+}
+
+/// `anchor`, written on the diff of `views` as one, put on the view it is about. Views
+/// are oldest first, each its left and right revs and its commit (None for `staged` /
+/// `unstaged`). One view takes all; else lines and files go to the newest view that
+/// changes them, as they are on its right side, those on the left side (`old`) to the
+/// newest they reach unchanged, as they are on its left side. Lines no view changes
+/// are the session's.
+pub fn attribute(
+    repo: &mut dyn Source,
+    anchor: Anchor,
+    views: &[(String, String, Option<String>)],
+) -> Result<Anchor> {
+    let (rev, mut file, mut lines, old) = match anchor {
+        Anchor::Lines {
+            rev,
+            file,
+            start,
+            end,
+            old,
+            ..
+        } => (rev, file, Some((start, end)), old),
+        Anchor::File { rev, file, old, .. } => (rev, file, None, old),
+        _ => return Ok(anchor),
+    };
+    let on = |rev: &str, file: &str, lines: Option<(u32, u32)>, commit: &Option<String>| {
+        let (rev, file, commit) = (rev.to_string(), file.to_string(), commit.clone());
+        match lines {
+            Some((start, end)) => Anchor::Lines {
+                rev,
+                file,
+                start,
+                end,
+                old,
+                commit,
+            },
+            None => Anchor::File {
+                rev,
+                file,
+                old,
+                commit,
+            },
+        }
+    };
+    if let [(_, _, commit)] = views {
+        return Ok(on(&rev, &file, lines, commit));
+    }
+    // From the side they are on, view by view, carried across each.
+    let order: Vec<_> = if old {
+        views.iter().collect()
+    } else {
+        views.iter().rev().collect()
+    };
+    let mut found = None;
+    for (l, r, commit) in order {
+        let (from, to) = if old { (l, r) } else { (r, l) };
+        let (from_pin, to_pin) = (repo.pin(from)?, repo.pin(to)?);
+        let files = repo
+            .changes(&from_pin, &to_pin)?
+            .with_context(|| format!("the diff of {} is gone", short(to)))?;
+        let (changed, next) = match lines {
+            Some((start, end)) => {
+                let next = carry(files, &file, start, end);
+                (next.is_none(), next.map(|(f, s, e)| (f, Some((s, e)))))
+            }
+            None => (
+                files.iter().any(|f| f.old_path == file),
+                carry_file(files, &file).map(|f| (f, None)),
+            ),
+        };
+        if changed {
+            found = Some(on(from, &file, lines, commit));
+            if !old {
+                break;
+            }
+        }
+        let Some(next) = next else { break };
+        (file, lines) = next;
+    }
+    Ok(found.unwrap_or(Anchor::Session))
 }
 
 /// Lines `start..=end` of `path` on the old side of `files`, a diff without context, on
@@ -590,6 +730,97 @@ mod tests {
         };
         assert_eq!(carry(&[insert(3)], "a", 3, 4), Some(("a".into(), 4, 5)));
         assert_eq!(carry(&[insert(4)], "a", 3, 4), None);
+    }
+
+    /// Diffs by (from, to), none where unset; revs are pinned as they are.
+    struct Diffs(Vec<((&'static str, &'static str), Vec<FileDiff>)>);
+
+    impl Source for Diffs {
+        fn read(&mut self, _: &str, _: &str) -> Result<Option<String>> {
+            unreachable!()
+        }
+        fn pin(&mut self, rev: &str) -> Result<String> {
+            Ok(rev.to_string())
+        }
+        fn keep(&self, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn commit(&self, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        fn left(&self, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        fn commits(&mut self, _: &str, _: &str) -> Result<Vec<Commit>> {
+            unreachable!()
+        }
+        fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>> {
+            let found = self.0.iter().find(|((f, t), _)| *f == from && *t == to);
+            Ok(Some(found.map_or(&[][..], |(_, files)| files)))
+        }
+    }
+
+    #[test]
+    fn attribute_finds_the_view_that_changed_it() {
+        let hunk = |old_start, old_len, new_start, new_len| Hunk {
+            old_start,
+            old_len,
+            new_start,
+            new_len,
+            lines: Vec::new(),
+        };
+        let a = |hunk| {
+            vec![FileDiff {
+                status: 'M',
+                old_path: "a".into(),
+                new_path: "a".into(),
+                binary: false,
+                hunks: vec![hunk],
+            }]
+        };
+        // c1 changes line 2 of `a`; c2 adds a line 6.
+        let mut repo = Diffs(vec![
+            (("b", "c1"), a(hunk(2, 1, 2, 1))),
+            (("c1", "b"), a(hunk(2, 1, 2, 1))),
+            (("c1", "c2"), a(hunk(5, 0, 6, 1))),
+            (("c2", "c1"), a(hunk(6, 1, 5, 0))),
+        ]);
+        let views: [(String, String, Option<String>); 2] = [
+            ("b".into(), "c1".into(), Some("c1".into())),
+            ("c1".into(), "c2".into(), Some("c2".into())),
+        ];
+        let lines = |rev: &str, n| Anchor::Lines {
+            rev: rev.into(),
+            file: "a".into(),
+            start: n,
+            end: n,
+            old: rev == "b",
+            commit: None,
+        };
+        let mut at = |anchor, views: &[_]| {
+            let anchor = attribute(&mut repo, anchor, views).unwrap();
+            match anchor {
+                Anchor::Lines {
+                    rev, end, commit, ..
+                } => format!("{rev} {end} {}", commit.unwrap()),
+                Anchor::File { rev, commit, .. } => format!("{rev} {}", commit.unwrap()),
+                Anchor::Session => "session".into(),
+                Anchor::Commit { .. } => unreachable!(),
+            }
+        };
+        assert_eq!(at(lines("c2", 6), &views), "c2 6 c2");
+        assert_eq!(at(lines("c2", 2), &views), "c1 2 c1");
+        assert_eq!(at(lines("c2", 3), &views), "session");
+        assert_eq!(at(lines("b", 2), &views), "b 2 c1");
+        let file = Anchor::File {
+            rev: "c2".into(),
+            file: "a".into(),
+            old: false,
+            commit: None,
+        };
+        assert_eq!(at(file, &views), "c2 c2");
+        // One view takes all, changed or not.
+        assert_eq!(at(lines("c1", 3), &views[..1]), "c1 3 c1");
     }
 
     #[test]

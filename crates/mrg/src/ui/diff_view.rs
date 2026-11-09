@@ -16,7 +16,7 @@ use crate::app::{Component, Ctx, Outcome};
 use crate::doc::{Doc, Row, Side};
 use crate::highlight::Colors;
 use crate::repo::{Kind, short};
-use crate::session::Thread;
+use crate::session::{Anchor, Place, Thread};
 use crate::theme::Theme;
 use crate::ui::confirm::Confirm;
 use crate::ui::file_view::{self, FileView, Link, LinkPicker};
@@ -736,6 +736,10 @@ fn thread_lines(
     };
     let inner = width.saturating_sub(INDENT);
     let place = match ctx.review.doc.place_of(idx) {
+        // Lines and files changed further on, away from them with their commit.
+        Some(Place::Whole) if matches!(t.anchor, Anchor::Lines { .. } | Anchor::File { .. }) => {
+            ctx.review.session.location(&t.anchor)
+        }
         Some(p) if inline => p.inline(),
         _ => ctx.review.session.location(&t.anchor),
     };
