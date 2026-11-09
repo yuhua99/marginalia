@@ -54,4 +54,4 @@ A range over 5 commits: split it along feature boundaries into consecutive sub-r
    - Post replies and comments on the delta, then `review-tab` the same ID.
 
 ## Gotchas
-- History rewritten below the base → `mrg resume` fails in the review tab and nothing arrives; `mrg new` a new session.
+- A rewritten range (amend, rebase) → `mrg resume`, `comment` and `show` fail, and the review tab reports nothing; `mrg new` a new session. Fix with new commits to keep the session. A request opened from the mrg picker follows a force-push instead, dropping threads on the commits it rewrote.

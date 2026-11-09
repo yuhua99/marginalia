@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::repo::{Commit, FileDiff, short, worktree};
+use crate::repo::{Commit, FileDiff, Repo, short, tracking, worktree};
 
 /// What a session needs of the code it reviews: a git repo, or a snapshot of one.
 pub trait Source {
@@ -43,6 +43,11 @@ pub struct Session {
     pub range: String,
     pub base: String,
     pub end: String,
+    /// The commit `end` stood on when last followed; one it moved off rewrote the range.
+    pub tip: String,
+    /// The branch a request merges into, whose fork point `follow` takes as the base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     pub threads: Vec<Thread>,
 }
 
@@ -124,13 +129,16 @@ pub struct NewComment {
 }
 
 impl Session {
-    pub fn new(id: String, range: String, base: String, end: String) -> Session {
+    /// `tip`: the commit `end` stands on.
+    pub fn new(id: String, range: String, base: String, end: String, tip: String) -> Session {
         Session {
             id,
             name: None,
             range,
             base,
             end,
+            tip,
+            target: None,
             threads: Vec::new(),
         }
     }
@@ -350,6 +358,37 @@ impl Session {
             tv["location"] = self.location(&t.anchor).into();
         }
         Ok(v)
+    }
+
+    /// Takes the range as it is now, its end moved: for a request, the base where its
+    /// head now leaves the target; otherwise a rewritten range fails, for a new session.
+    /// Threads on commits that left the range go. Returns whether anything changed, to save.
+    pub fn follow(&mut self, repo: &mut Repo) -> Result<bool> {
+        // From the index, there are no commits to rewrite.
+        if self.base == "staged" {
+            return Ok(false);
+        }
+        let tip = repo.tip_of(&self.end)?;
+        if tip == self.tip {
+            return Ok(false);
+        }
+        match &self.target {
+            Some(target) => {
+                self.base = repo.merge_base(&tracking(target), &tip)?;
+                self.range = format!("{}..{}", short(&self.base), self.end);
+            }
+            None if !repo.ancestor(&self.tip, &tip)? => bail!(
+                "{} was rewritten off {}: start a new session with mrg new",
+                self.end,
+                short(&self.tip)
+            ),
+            None => {}
+        }
+        let commits = self.commits(repo)?;
+        self.threads
+            .retain(|t| t.anchor.commit().is_none_or(|c| commits.contains(c)));
+        self.tip = tip;
+        Ok(true)
     }
 
     /// Where each thread is in the diff `left..right` of `commits`: lines and files
@@ -825,7 +864,7 @@ mod tests {
 
     #[test]
     fn names() {
-        let mut s = Session::new("1".into(), "r".into(), "b".into(), "e".into());
+        let mut s = Session::new("1".into(), "r".into(), "b".into(), "e".into(), "t".into());
         s.set_name("  a b  ").unwrap();
         assert_eq!(s.name.as_deref(), Some("a b"));
         s.set_name("   ").unwrap();

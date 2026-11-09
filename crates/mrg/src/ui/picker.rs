@@ -348,7 +348,8 @@ impl Picker {
                     short(&resolved)
                 };
                 let range = format!("{from}..{}", short(&end));
-                let session = Session::new(ctx.store.new_id(), range, resolved, end);
+                let tip = ctx.repo.tip_of(&end)?;
+                let session = Session::new(ctx.store.new_id(), range, resolved, end, tip);
                 ctx.store.save(&session)?;
                 ctx.open = Some(session);
                 Ok(Outcome::Quit)
@@ -363,10 +364,14 @@ impl Picker {
 
 /// Opens session `id`, its request fetched again first.
 fn resume(id: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
-    let session = ctx.store.load(id)?;
-    if let Err(e) = forge::refresh(&ctx.repo, &session.base, &session.end, false) {
-        ctx.error = Some(format!("{e:#}"));
-        return Ok(Outcome::Consumed);
+    let mut session = ctx.store.load(id)?;
+    match forge::refresh(&mut ctx.repo, &mut session, false) {
+        Ok(true) => ctx.store.save(&session)?,
+        Ok(false) => {}
+        Err(e) => {
+            ctx.error = Some(format!("{e:#}"));
+            return Ok(Outcome::Consumed);
+        }
     }
     ctx.open = Some(session);
     Ok(Outcome::Quit)
@@ -380,14 +385,21 @@ fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     };
     let (forge, r) = (forge.clone(), requests[i].clone());
     let head = forge.head(r.number);
-    if let Some((s, _)) = ctx.sessions.iter().find(|(s, _)| s.end == head) {
+    // Of the picker, which follow the request's pushes; not one `mrg new` made.
+    if let Some((s, _)) = ctx
+        .sessions
+        .iter()
+        .find(|(s, _)| s.end == head && s.target.is_some())
+    {
         let id = s.id.clone();
         return resume(&id, ctx);
     }
     let started = forge.fetch(&ctx.repo, &r).and_then(|base| {
         let (base, end) = ctx.repo.resolve(&format!("{base}..{head}"))?;
         let range = format!("{}..{end}", short(&base));
-        let mut session = Session::new(ctx.store.new_id(), range, base, end);
+        let tip = ctx.repo.tip_of(&end)?;
+        let mut session = Session::new(ctx.store.new_id(), range, base, end, tip);
+        session.target = Some(r.target.clone());
         // A name is one line.
         let title = r.title.replace(char::is_control, " ");
         session.set_name(&format!("{} {title}", forge.sign(r.number)))?;
@@ -693,7 +705,10 @@ impl Picker {
                         .map(|(row, i)| {
                             let r = &requests[i];
                             let head = forge.head(r.number);
-                            let reviewed = ctx.sessions.iter().any(|(s, _)| s.end == head);
+                            let reviewed = ctx
+                                .sessions
+                                .iter()
+                                .any(|(s, _)| s.end == head && s.target.is_some());
                             let row_of = (forge.word(), r, reviewed, number_width);
                             Line::from(review_row(row_of, width, theme, hovers(row)))
                         })

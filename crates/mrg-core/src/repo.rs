@@ -174,17 +174,27 @@ impl Repo {
             return Ok(());
         }
         let tip = tip(end);
-        let ok = self
-            .git(&["merge-base", "--is-ancestor", base, tip])
-            .stderr(Stdio::null())
-            .status()
-            .context("run git")?
-            .success();
+        let ok = self.ancestor(base, tip)?;
         // The empty tree (a range from before the root) is no commit; nothing to check.
         if !ok && base != self.empty_tree()? {
             bail!("{base} is not an ancestor of {tip} (history rewritten?)");
         }
         Ok(())
+    }
+
+    /// Commit `a` is `b` or an ancestor of it.
+    pub fn ancestor(&self, a: &str, b: &str) -> Result<bool> {
+        Ok(self
+            .git(&["merge-base", "--is-ancestor", a, b])
+            .stderr(Stdio::null())
+            .status()
+            .context("run git")?
+            .success())
+    }
+
+    /// Full sha of the commit `end` stands on now.
+    pub fn tip_of(&self, end: &str) -> Result<String> {
+        self.commit(tip(end))
     }
 
     /// Files changed from `base` to `end`, with `context` lines around each change.
@@ -557,6 +567,11 @@ impl Source for Repo {
 /// `staged` or `unstaged`: a state of the worktree on top of HEAD, not a commit.
 pub fn worktree(rev: &str) -> bool {
     matches!(rev, "staged" | "unstaged")
+}
+
+/// The ref origin's `branch` is fetched to.
+pub fn tracking(branch: &str) -> String {
+    format!("refs/remotes/origin/{branch}")
 }
 
 /// The commit an end stands on: `staged` / `unstaged` stand on HEAD.
