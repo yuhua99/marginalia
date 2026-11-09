@@ -538,6 +538,13 @@ impl Source for Repo {
         Repo::commit(self, rev)
     }
 
+    fn left(&self, commit: &str) -> Result<String> {
+        match self.parent(commit)? {
+            Some(parent) => Ok(parent),
+            None => self.empty_tree(),
+        }
+    }
+
     fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
         Repo::commits(self, base, end)
     }

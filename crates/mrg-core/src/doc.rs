@@ -39,7 +39,8 @@ fn next_version() -> u64 {
 /// What the diff shows.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Scope {
-    /// The whole range: every thread shows, at the top when on no row.
+    /// The whole range: every thread shows, at the top when on no row; but those that go
+    /// with their commit, only under it.
     Range,
     /// A run of commits: only threads on its rows, and those on all of it.
     Run,
@@ -93,9 +94,9 @@ enum Spot {
     Top,
     /// At the top in every view: the session.
     Whole,
-    /// Under `Row::Commit`: the commit shown alone.
+    /// Under `Row::Commit`: the commit shown alone; nowhere else.
     Commit,
-    /// Nowhere: a commit not shown alone.
+    /// Nowhere: a commit not in the diff.
     Hidden,
     File(usize),
     /// File, right side, last anchored line.
@@ -349,7 +350,7 @@ impl Doc {
         let mut rest: Vec<usize> = at
             .into_iter()
             .filter(|(spot, _)| match self.scope {
-                Scope::Range => *spot != Spot::Hidden,
+                Scope::Range => !matches!(spot, Spot::Hidden | Spot::Commit),
                 Scope::Run => *spot == Spot::Whole,
             })
             .filter(|(spot, _)| {
@@ -375,13 +376,13 @@ impl Doc {
                 .position(|p| if old { p.0 == file } else { p.1 == file })
         };
         match place {
-            Some(Place::Whole) if matches!(anchor, Anchor::Commit { .. }) => Spot::Commit,
+            Some(Place::Whole) if anchor.commit().is_some() => Spot::Commit,
             Some(Place::Whole) => Spot::Whole,
             Some(Place::File { file, old }) => find(file, *old).map_or(Spot::Top, Spot::File),
             Some(Place::Lines { file, end, old, .. }) => {
                 find(file, *old).map_or(Spot::Top, |i| Spot::Line(i, !old, *end))
             }
-            None if matches!(anchor, Anchor::Commit { .. }) => Spot::Hidden,
+            None if anchor.commit().is_some() => Spot::Hidden,
             None => Spot::Top,
         }
     }
@@ -403,7 +404,8 @@ impl Doc {
                 .clone()
                 .filter_map(|c| c.2.as_ref().map(|s| s.lineno))
                 .collect();
-            let (rev, path, lines) = if right.is_empty() {
+            let old = right.is_empty();
+            let (rev, path, lines) = if old {
                 let left = code
                     .filter_map(|c| c.1.as_ref().map(|s| s.lineno))
                     .collect();
@@ -416,6 +418,8 @@ impl Doc {
                 file: path.clone(),
                 start: *lines.iter().min().unwrap(),
                 end: *lines.iter().max().unwrap(),
+                old,
+                commit: None,
             };
         }
         match rows.first() {
@@ -436,7 +440,8 @@ impl Doc {
 
     /// The anchor for `file`: on the right side, unless only the left has it.
     pub fn file_anchor(&self, file: usize) -> Anchor {
-        let (rev, path) = if self.statuses[file] == 'D' {
+        let old = self.statuses[file] == 'D';
+        let (rev, path) = if old {
             (&self.left_rev, &self.paths[file].0)
         } else {
             (&self.right_rev, &self.paths[file].1)
@@ -444,6 +449,8 @@ impl Doc {
         Anchor::File {
             rev: rev.clone(),
             file: path.clone(),
+            old,
+            commit: None,
         }
     }
 
@@ -857,6 +864,30 @@ mod tests {
     }
 
     #[test]
+    fn lines_changed_further_on_go_with_their_commit() {
+        let changed = || {
+            thread(Anchor::Lines {
+                rev: "c".into(),
+                file: "a".into(),
+                start: 9,
+                end: 9,
+                old: false,
+                commit: Some("c".into()),
+            })
+        };
+        let threads = [changed(), changed()];
+        let places = || vec![Some(Place::Whole), None];
+        // Under the commit row when shown alone: session, the commit, its thread.
+        let mut alone = doc_of(Scope::Run, Some(("c".into(), "subject".into())));
+        alone.set_threads(&threads, places());
+        assert_eq!(thread_rows(&alone), [2]);
+        // Nowhere in the whole range of more commits.
+        let mut range = doc_of(Scope::Range, None);
+        range.set_threads(&threads, places());
+        assert_eq!(thread_rows(&range), Vec::<usize>::new());
+    }
+
+    #[test]
     fn threads_follow_collapsing() {
         let mut doc = doc();
         let line2 = thread(Anchor::Lines {
@@ -864,6 +895,8 @@ mod tests {
             file: "a".into(),
             start: 2,
             end: 2,
+            old: false,
+            commit: None,
         });
         let at2 = Place::Lines {
             file: "a".into(),
@@ -902,6 +935,8 @@ mod tests {
                 file: "a".into(),
                 start: line,
                 end: line,
+                old: false,
+                commit: None,
             })
         };
         let threads = [
@@ -950,6 +985,8 @@ mod tests {
             file: "a".into(),
             start: 9,
             end: 9,
+            old: false,
+            commit: None,
         });
         doc.set_threads(&[line9], vec![past_rows]);
         let is_thread = |r: &Row| matches!(r, Row::Thread { .. });

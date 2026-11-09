@@ -15,9 +15,9 @@ Run every command from the repo root; sessions belong to the repo.
 - `mrg comment --session ID FILE` (`-` for stdin) posts a JSON array of comments. Each has `body` and, for what it is on:
   - `"reply_to": "<thread id>"` answers in that thread.
   - `"commit": REV`, a commit of the range.
-  - `"file": PATH`; add `"lines": "N"` or `"N-M"` for lines of it, numbered at the range end. Add `"old": true` for lines the range deletes, numbered at the base; a file the end has not is the base's.
+  - `"commit": REV, "file": PATH`: a file in the diff of that commit (`staged` or `unstaged` for working changes); add `"lines": "N"` or `"N-M"` for lines of it, numbered as `mrg diff REV^..REV` prints them (`..REV` for a root commit; `HEAD..staged`, `staged..unstaged`). Add `"old": true` for lines the commit deletes, numbered at its parent; a file the commit has not is its parent's. A thread shows only with its commit.
   - None of them: the session.
-- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you. A thread's `location` is where its anchor points.
+- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you. A thread's `location` is where its anchor points, e.g. `src/a.rs:3-5 @ 1a2b3c4`.
 - `mrg delete --session ID THREAD...` deletes your notes: threads the user never wrote in.
 - `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux/rex it prints a command to relay to the human.
 
@@ -25,7 +25,7 @@ Ask once if the scope is missing.
 A range over 5 commits: split it along feature boundaries into consecutive sub-ranges of at most 5 commits, one session each, and run the workflow per session, one at a time.
 
 ## Workflow
-1. Read the scope with `mrg diff RANGE`, its commit messages with `git log`, and surrounding code.
+1. Read the scope with `mrg diff RANGE`, each commit with `mrg diff REV^..REV` (the numbers comments take), its commit messages with `git log`, and surrounding code.
    Act as the change's author walking a human through the implementation, rather than conducting a separate defect review.
    Done when you can explain the old and new behavior of each meaningful changed block.
 
