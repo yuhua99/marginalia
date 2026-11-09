@@ -8,7 +8,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 
-use crate::repo::Repo;
+use crate::repo::{Repo, tracking};
+use crate::session::Session;
 use crate::settings;
 
 /// Requests listed, at most.
@@ -162,26 +163,28 @@ impl Forge {
     /// where the head left the target.
     pub fn fetch(&self, repo: &Repo, r: &Request) -> Result<String> {
         let head = self.head(r.number);
-        let target = format!("refs/remotes/origin/{}", r.target);
-        repo.fetch(
-            &[
-                format!("+{head}:{head}"),
-                format!("+refs/heads/{}:{target}", r.target),
-            ],
-            false,
-        )?;
-        repo.merge_base(&target, &head)
+        repo.fetch(&[format!("+{head}:{head}"), target(&r.target)], false)?;
+        repo.merge_base(&tracking(&r.target), &head)
     }
 }
 
-/// Readies `base..end` to open: a request's head, as `Forge::head` names it, fetched
-/// again, then the range verified. A rewritten head is taken too, for `verify` to tell.
+/// The refspec fetching origin's `branch` to `tracking(branch)`.
+fn target(branch: &str) -> String {
+    format!("+refs/heads/{branch}:{}", tracking(branch))
+}
+
+/// Readies `session` to open: a request's head, as `Forge::head` names it, and its
+/// target fetched again, a rewritten head taken too; then the range followed
+/// (`Session::follow`). Returns whether the session changed, to save.
 /// `prompt`: the terminal is free to ask for a password.
-pub fn refresh(repo: &Repo, base: &str, end: &str, prompt: bool) -> Result<()> {
+pub fn refresh(repo: &mut Repo, session: &mut Session, prompt: bool) -> Result<bool> {
+    let end = &session.end;
     if end.starts_with("refs/pull/") || end.starts_with("refs/merge-requests/") {
-        repo.fetch(&[format!("+{end}:{end}")], prompt)?;
+        let mut refspecs = vec![format!("+{end}:{end}")];
+        refspecs.extend(session.target.as_deref().map(target));
+        repo.fetch(&refspecs, prompt)?;
     }
-    repo.verify(base, end)
+    session.follow(repo)
 }
 
 /// The output of `cli args`; its error is the cli's, which says how to sign in.

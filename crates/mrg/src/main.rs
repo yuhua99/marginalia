@@ -94,7 +94,8 @@ fn main() -> Result<()> {
         }
         Some(Cmd::New { range, name }) => {
             let (base, end) = repo.resolve(&range)?;
-            let mut session = Session::new(store.new_id(), range, base, end);
+            let tip = repo.tip_of(&end)?;
+            let mut session = Session::new(store.new_id(), range, base, end, tip);
             if let Some(name) = name {
                 session.set_name(&name)?;
             }
@@ -109,6 +110,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Comment { session, file }) => {
             let mut session = store.load(&session)?;
+            session.follow(&mut repo)?;
             let mut text = String::new();
             if file.as_os_str() == "-" {
                 std::io::stdin()
@@ -134,8 +136,10 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Resume { session, on_quit }) => {
             need_terminal()?;
-            let session = store.load(&session)?;
-            forge::refresh(&repo, &session.base, &session.end, true)?;
+            let mut session = store.load(&session)?;
+            if forge::refresh(&mut repo, &mut session, true)? {
+                store.save(&session)?;
+            }
             tui(store, repo, Some(session), on_quit)
         }
         Some(Cmd::Delete { session, threads }) => {
@@ -145,6 +149,9 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Show { session, only }) => {
             let mut session = store.load(&session)?;
+            if session.follow(&mut repo)? {
+                store.save(&session)?;
+            }
             if only.is_some() {
                 session.threads.retain(|t| t.waiting_on_agent());
             }
