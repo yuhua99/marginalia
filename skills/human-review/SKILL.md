@@ -17,7 +17,7 @@ Run every command from the repo root; sessions belong to the repo.
   - `"commit": REV`, a commit of the range.
   - `"file": PATH`; add `"lines": "N"` or `"N-M"` for lines of it, numbered at the range end. Add `"old": true` for lines the range deletes, numbered at the base; a file the end has not is the base's.
   - None of them: the session.
-- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you, `--only outdated` those whose lines changed since. A thread's `location` is where its lines are now; its `anchor` keeps where they were when written.
+- `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you. A thread's `location` is where its anchor points.
 - `mrg delete --session ID THREAD...` deletes your notes: threads the user never wrote in.
 - `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux/rex it prints a command to relay to the human.
 
@@ -49,7 +49,7 @@ A range over 5 commits: split it along feature boundaries into consecutive sub-r
 4. Follow-up, once the human is back (a `waiting on agent` notice, pasted threads, or done):
    - `mrg show --only waiting`; nothing waiting ends the review.
    - For each thread, answer or fix, then reply in it with `reply_to`.
-   - After fixing, `delete` your notes (threads with no `user` message) in `mrg show --only outdated` that the fix made wrong.
+   - After fixing, `delete` your notes (threads with no `user` message) that the fix made wrong.
    - Read the new delta with `mrg diff BASE..END`. BASE is the `base` sha of `mrg show`; a relative base like `HEAD~2` moves with fix commits.
    - Post replies and comments on the delta, then `review-tab` the same ID.
 

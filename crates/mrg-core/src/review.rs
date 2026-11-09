@@ -53,9 +53,8 @@ impl Shown {
 }
 
 impl Review {
-    pub fn new(mut session: Session, mut repo: Repo, store: Store) -> Result<Review> {
+    pub fn new(session: Session, mut repo: Repo, store: Store) -> Result<Review> {
         repo.refresh();
-        session.place(&mut repo)?;
         let mut views: Vec<View> = repo
             .commits(&session.base, &session.end)?
             .into_iter()
@@ -125,7 +124,6 @@ impl Review {
     /// Saves the session and refreshes the thread rows after threads changed.
     fn threads_changed(&mut self) -> Result<()> {
         self.store.save(&self.session)?;
-        self.session.place(&mut self.repo)?;
         set_threads(&mut self.repo, &self.session, &self.span, &mut self.doc)
     }
 }
