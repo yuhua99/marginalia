@@ -832,8 +832,6 @@ mod tests {
                 from: "user".into(),
                 body: "?".into(),
             }],
-            place: None,
-            was: None,
         }
     }
 

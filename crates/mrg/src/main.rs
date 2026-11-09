@@ -75,8 +75,8 @@ enum Cmd {
     Show {
         #[arg(short, long)]
         session: String,
-        /// Only threads waiting on the agent, or those whose anchored lines changed since
-        #[arg(long, value_parser = ["waiting", "outdated"])]
+        /// Only threads waiting on the agent
+        #[arg(long, value_parser = ["waiting"])]
         only: Option<String>,
     },
     /// List sessions of the current repo as JSON
@@ -121,12 +121,10 @@ fn main() -> Result<()> {
             let comments: Vec<NewComment> =
                 serde_json::from_str(&text).context("parse comments")?;
             let touched = session.apply(comments, &mut repo)?;
-            // Placed first: saved only when the ids can be printed, so a retry adds no copies.
-            session.place(&mut repo)?;
             store.save(&session)?;
             for i in touched {
                 let t = &session.threads[i];
-                let location = session.location(t);
+                let location = session.location(&t.anchor);
                 println!(
                     "{}",
                     serde_json::json!({ "id": t.id, "location": location })
@@ -147,11 +145,8 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Show { session, only }) => {
             let mut session = store.load(&session)?;
-            session.place(&mut repo)?;
-            match only.as_deref() {
-                Some("waiting") => session.threads.retain(|t| t.waiting_on_agent()),
-                Some("outdated") => session.threads.retain(|t| t.outdated()),
-                _ => {}
+            if only.is_some() {
+                session.threads.retain(|t| t.waiting_on_agent());
             }
             println!("{}", serde_json::to_string_pretty(&session.view()?)?);
             Ok(())

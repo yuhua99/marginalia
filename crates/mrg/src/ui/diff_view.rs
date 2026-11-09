@@ -731,21 +731,17 @@ fn thread_lines(
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
     let t: &Thread = &ctx.review.session.threads[idx];
-    let outdated = t.outdated();
     let line = |spans: Vec<Span<'static>>| {
         Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
     let inner = width.saturating_sub(INDENT);
     let place = match ctx.review.doc.place_of(idx) {
         Some(p) if inline => p.inline(),
-        _ => ctx.review.session.location(t),
+        _ => ctx.review.session.location(&t.anchor),
     };
     let mut header = format!("{}  {place}", t.id);
     if t.waiting_on_agent() {
         header.push_str("  waiting on agent");
-    }
-    if outdated {
-        header.push_str("  outdated");
     }
     let header_style = Style::new().add_modifier(Modifier::BOLD);
     let mut header = vec![Span::styled(header, mark.lit(header_style))];
@@ -764,13 +760,6 @@ fn thread_lines(
         s.style = s.style.patch(mark.style);
     }
     let mut lines = vec![first];
-    if let Some(text) = &t.was {
-        let dim = Style::new().fg(theme.dim);
-        lines.push(line(vec![Span::styled("was:", dim)]));
-        for l in text.lines() {
-            lines.push(line(vec![Span::styled(format!("  {}", clean(l)), dim)]));
-        }
-    }
     let link = Style::new()
         .fg(theme.blue)
         .add_modifier(Modifier::UNDERLINED);

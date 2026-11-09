@@ -49,13 +49,6 @@ pub struct Thread {
     pub id: String,
     pub anchor: Anchor,
     pub messages: Vec<Message>,
-    /// Where the thread is in the whole range, as of `Session::place`; None when its
-    /// lines changed since, or its commit left the range.
-    #[serde(skip)]
-    pub place: Option<Place>,
-    /// The lines as written, for lines that changed since; as of `Session::place`.
-    #[serde(skip)]
-    pub was: Option<String>,
 }
 
 /// What a thread is on. A `rev` is pinned: a commit sha, or the tree mrg wrote for
@@ -213,7 +206,7 @@ impl Session {
     }
 
     /// Adds a thread on `anchor`, its revs (any a commit or the range end can be) pinned
-    /// and its commit made a sha. Call `place` after.
+    /// and its commit made a sha.
     pub fn comment(
         &mut self,
         mut anchor: Anchor,
@@ -263,8 +256,6 @@ impl Session {
                 from: from.to_string(),
                 body,
             }],
-            place: None,
-            was: None,
         });
         Ok(())
     }
@@ -313,8 +304,7 @@ impl Session {
     }
 
     /// The session as JSON, with derived fields added to each thread.
-    /// `waiting_on` is `agent` or null; `outdated` and `location` (where it is now)
-    /// are as of `place`.
+    /// `waiting_on` is `agent` or null; `location` is where its anchor points.
     pub fn view(&self) -> Result<Value> {
         let mut v = serde_json::to_value(self)?;
         for (t, tv) in self
@@ -323,32 +313,9 @@ impl Session {
             .zip(v["threads"].as_array_mut().expect("threads array"))
         {
             tv["waiting_on"] = t.waiting_on_agent().then_some("agent").into();
-            tv["outdated"] = t.outdated().into();
-            tv["location"] = self.location(t).into();
+            tv["location"] = self.location(&t.anchor).into();
         }
         Ok(v)
-    }
-
-    /// Sets each thread's `place` in the whole range, and `was` of lines that changed.
-    pub fn place(&mut self, repo: &mut dyn Source) -> Result<()> {
-        let commits = self.commits(repo)?;
-        let places = self.locate(repo, &self.base, &self.end, &commits)?;
-        for (t, place) in self.threads.iter_mut().zip(places) {
-            t.was = match (&place, &t.anchor) {
-                (
-                    None,
-                    Anchor::Lines {
-                        rev,
-                        file,
-                        start,
-                        end,
-                    },
-                ) => snippet(repo, rev, file, *start, *end)?,
-                _ => None,
-            };
-            t.place = place;
-        }
-        Ok(())
     }
 
     /// Where each thread is in the diff `left..right` of `commits`: lines and files
@@ -368,23 +335,8 @@ impl Session {
             .collect()
     }
 
-    /// Where thread `t` is, e.g. `src/a.rs:3-5`: where it is in the whole range, else
-    /// where it was written.
-    pub fn location(&self, t: &Thread) -> String {
-        match &t.place {
-            Some(Place::Lines {
-                file,
-                start,
-                end,
-                old,
-            }) => format!("{file}:{}", lines(*start, *end, *old)),
-            Some(Place::File { file, old }) => format!("{file}{}", side(*old)),
-            _ => self.anchor_location(&t.anchor),
-        }
-    }
-
     /// Where `anchor` points, e.g. `src/a.rs:3-5`; `(old)` on the base.
-    pub fn anchor_location(&self, anchor: &Anchor) -> String {
+    pub fn location(&self, anchor: &Anchor) -> String {
         match anchor {
             Anchor::Lines {
                 rev,
@@ -407,7 +359,7 @@ impl Session {
                 continue;
             }
             any = true;
-            out.push_str(&format!("\n## {} / {}\n", t.id, self.location(t)));
+            out.push_str(&format!("\n## {} / {}\n", t.id, self.location(&t.anchor)));
             for m in &t.messages {
                 out.push_str(&format!(
                     "- **{}**: {}\n",
@@ -424,11 +376,6 @@ impl Thread {
     /// The last speaker being `user` means the agent should answer.
     pub fn waiting_on_agent(&self) -> bool {
         self.messages.last().is_some_and(|m| m.from == USER)
-    }
-
-    /// Not in the whole range any more, as of `Session::place`.
-    pub fn outdated(&self) -> bool {
-        self.place.is_none()
     }
 }
 
