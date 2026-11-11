@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 
 use crate::app::{Component, Ctx, Mouse, Outcome};
 use crate::keymap::{Feed, Keymap};
@@ -308,14 +308,16 @@ impl Component for Review {
             .render(f, top, ctx, self.focus == COMMITS, pointer);
         self.files
             .render(f, left, ctx, self.focus == FILES, pointer);
+        let file = self.diff.current_file(ctx);
         let block = boxed(
             Span::styled(
-                header(ctx, self.diff.current_file(ctx)) + &self.diff.search_title(ctx),
+                header(ctx, file) + &self.diff.search_title(ctx),
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             self.focus == DIFF,
             ctx.look.theme,
-        );
+        )
+        .title_top(stat(ctx, file).right_aligned());
         let inner = block.inner(right);
         f.render_widget(block, right);
         self.diff.render(f, inner, ctx, pointer);
@@ -333,4 +335,16 @@ fn header(ctx: &Ctx, file: Option<usize>) -> String {
         None => ctx.review.session.name.as_ref(),
     };
     name.map_or(String::new(), |n| format!(" {n} "))
+}
+
+/// The lines added and deleted in `file`, if any.
+fn stat(ctx: &Ctx, file: Option<usize>) -> Line<'static> {
+    let theme = ctx.look.theme;
+    match file.map(|file| ctx.review.doc.changes(file)) {
+        Some((add, del)) if (add, del) != (0, 0) => Line::from(vec![
+            Span::styled(format!(" +{add}"), Style::new().fg(theme.green)),
+            Span::styled(format!(" -{del} "), Style::new().fg(theme.red)),
+        ]),
+        _ => Line::default(),
+    }
 }

@@ -19,6 +19,8 @@ pub struct Doc {
     statuses: Vec<char>,
     /// Per file, added or deleted: only one side has lines.
     one_sided: Vec<bool>,
+    /// Lines (added, deleted) per file.
+    changes: Vec<(usize, usize)>,
     rows: Vec<Row>,
     scope: Scope,
     /// Per collapsed file, its rows other than the header; its threads are left out.
@@ -117,8 +119,17 @@ impl Doc {
         let mut paths = Vec::new();
         let mut statuses = Vec::new();
         let mut one_sided = Vec::new();
+        let mut changes = Vec::new();
         for (file, f) in files.into_iter().enumerate() {
             one_sided.push(matches!(f.status, 'A' | 'D'));
+            let count = |kind: Kind| {
+                f.hunks
+                    .iter()
+                    .flat_map(|h| &h.lines)
+                    .filter(|l| l.kind == kind)
+                    .count()
+            };
+            changes.push((count(Kind::Add), count(Kind::Del)));
             let path = if f.old_path == f.new_path {
                 f.new_path.clone()
             } else {
@@ -221,6 +232,7 @@ impl Doc {
             paths,
             statuses,
             one_sided,
+            changes,
             rows,
             scope,
             collapsed: HashMap::new(),
@@ -254,6 +266,7 @@ impl Doc {
             paths: vec![(path.clone(), path)],
             statuses: vec![' '],
             one_sided: vec![true],
+            changes: vec![(0, 0)],
             rows: [header].into_iter().chain(lines).collect(),
             scope: Scope::Range,
             collapsed: HashMap::new(),
@@ -691,6 +704,11 @@ impl Doc {
         self.statuses[file]
     }
 
+    /// Lines (added, deleted) in `file`, collapsed or not.
+    pub fn changes(&self, file: usize) -> (usize, usize) {
+        self.changes[file]
+    }
+
     /// The file a new `anchor`, of `anchor_at`, is on in this view.
     pub fn file_of(&self, anchor: &Anchor) -> Option<usize> {
         match anchor {
@@ -1012,5 +1030,12 @@ mod tests {
         assert_eq!(doc.tally(hit), (vec![0, 0, 0, 1, 1], 2));
         doc.collapse_file(0);
         assert_eq!(doc.tally(hit), (vec![0, 0], 2));
+    }
+
+    #[test]
+    fn changes_count_into_collapsed_files() {
+        let mut doc = doc();
+        doc.collapse_file(0);
+        assert_eq!(doc.changes(0), (1, 1));
     }
 }
