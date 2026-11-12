@@ -10,7 +10,7 @@ use crate::session::Anchor;
 use crate::ui::commit_row::{Columns, mark};
 use crate::ui::query::Query;
 use crate::ui::scroll::Scroll;
-use crate::ui::{boxed, check, checked_bar, cursor_bar, lit, row_at, status_style};
+use crate::ui::{Mark, boxed, check, checked_bar, row_at, status_style};
 
 /// A box: the commits (and uncommitted changes), `☒` on those shown, where Space checks
 /// another run for Enter to show; or the files of the shown diff as a tree, `☒` on those reviewed.
@@ -189,7 +189,8 @@ impl Sidebar {
         }
     }
 
-    /// The box over `area`, the text of the row under the `pointer` underlined.
+    /// The box over `area`, the text of the cursor's row marked and of the row under the
+    /// `pointer` underlined.
     pub fn render(
         &mut self,
         f: &mut Frame,
@@ -222,7 +223,11 @@ impl Sidebar {
                 if !self.files && item.checked == Some(true) {
                     checked_rows.push(row);
                 }
-                let on = hovered == Some(top + row);
+                let on = Mark::new(
+                    ctx.look.theme,
+                    focused && cursor == top + row,
+                    hovered == Some(top + row),
+                );
                 let mut spans = vec![Span::raw(" ".repeat(item.indent))];
                 spans.extend(item.checked.map(|on| mark(on, ctx.look.theme)));
                 if let Entry::File(file) = item.entry {
@@ -239,8 +244,8 @@ impl Sidebar {
                     return Line::from(spans);
                 }
                 // A file's name or the uncommitted changes; a directory takes no click.
-                let on = on && !matches!(item.entry, Entry::Other);
-                spans.push(lit(Span::raw(item.text.clone()), on));
+                let hover = on.hover && !matches!(item.entry, Entry::Other);
+                spans.push(Mark { hover, ..on }.lit(Span::raw(item.text.clone())));
                 Line::from(spans)
             })
             .collect();
@@ -248,14 +253,11 @@ impl Sidebar {
         let title = name.to_string() + &self.filter.title();
         let block = boxed(title, focused, ctx.look.theme);
         let inner = block.inner(area);
-        f.render_widget(Paragraph::new(lines).block(block), area);
+        // Under the rows, so the cursor's mark stays over it.
         for row in checked_rows {
             checked_bar(f, inner, inner.y + row as u16, ctx.look.theme);
         }
-        if focused && cursor < items.len() && (top..top + height).contains(&cursor) {
-            let y = inner.y + (cursor - top) as u16;
-            cursor_bar(f, inner, y, ctx.look.theme);
-        }
+        f.render_widget(Paragraph::new(lines).block(block), area);
     }
 }
 

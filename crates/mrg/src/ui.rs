@@ -91,9 +91,32 @@ fn bar(f: &mut Frame, area: Rect, y: u16, style: Style) {
     f.buffer_mut().set_style(rect, style);
 }
 
-/// `span`, underlined when `on`: the text a click acts on, under the pointer.
-pub fn lit(span: Span<'_>, on: bool) -> Span<'_> {
-    if on { span.underlined() } else { span }
+/// How the text a click acts on is marked: the cursor and the pointer mark the same spans.
+#[derive(Clone, Copy, Default)]
+pub struct Mark {
+    /// The cursor's or the selection's accent block; a file view's linked lines' style.
+    pub style: Style,
+    /// Under the pointer: underlined.
+    pub hover: bool,
+}
+
+impl Mark {
+    /// The accent block when `on` the cursor or in the selection, underlined under the
+    /// pointer.
+    pub fn new(theme: &Theme, on: bool, hover: bool) -> Mark {
+        let style = if on {
+            Style::new().bg(theme.accent).fg(theme.on_accent)
+        } else {
+            Style::new()
+        };
+        Mark { style, hover }
+    }
+
+    /// `span` under the mark, its style over the span's own.
+    pub fn lit(self, span: Span<'_>) -> Span<'_> {
+        let span = span.patch_style(self.style);
+        if self.hover { span.underlined() } else { span }
+    }
 }
 
 /// A file's status letter: added green, deleted red, modified yellow, renamed blue,

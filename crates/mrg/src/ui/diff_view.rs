@@ -23,7 +23,7 @@ use crate::ui::file_view::{self, FileView, Link, LinkPicker};
 use crate::ui::input::Input;
 use crate::ui::query::{self, Query};
 use crate::ui::scroll::Scroll;
-use crate::ui::{lit, status_style};
+use crate::ui::{Mark, status_style};
 
 const TAB: &str = "    ";
 /// Threads start where code text does, after the line numbers.
@@ -316,7 +316,8 @@ impl DiffView {
         Ok(Outcome::Consumed)
     }
 
-    /// The diff in `area`, what a click acts on in the row under the `pointer` underlined.
+    /// The diff in `area`, what a click acts on marked in the selection's rows and
+    /// underlined in the row under the `pointer`.
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, pointer: Option<Position>) {
         let doc = &ctx.review.doc;
         self.scroll.clamp(doc.len());
@@ -324,15 +325,7 @@ impl DiffView {
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
         let (search, cursor) = (&self.search.text, self.scroll.cursor());
         let marked = |i: usize, hover: bool| {
-            let accent = Style::new()
-                .fg(ctx.look.theme.on_accent)
-                .bg(ctx.look.theme.accent);
-            let style = if selection.contains(&i) {
-                accent
-            } else {
-                Style::new()
-            };
-            let mark = Mark { style, hover };
+            let mark = Mark::new(ctx.look.theme, selection.contains(&i), hover);
             let hit = query::hit_style(ctx.look.theme, i == cursor);
             draw_row(ctx, doc, i, area.width, mark, editing, (search, hit))
         };
@@ -466,28 +459,7 @@ pub fn drawn_at(rows: &[(usize, Range<u16>)], y: u16) -> Option<usize> {
         .map(|(i, _)| *i)
 }
 
-/// How a row is marked.
-#[derive(Clone, Copy, Default)]
-pub struct Mark {
-    /// The gutter's style, for the selection or a file view's linked lines; threads take
-    /// it across their header line, file and session rows whole.
-    pub style: Style,
-    /// Under the pointer: what a click acts on is underlined, a line number or a header's
-    /// text.
-    pub hover: bool,
-}
-
-impl Mark {
-    /// `style`, underlined under the pointer.
-    fn lit(self, style: Style) -> Style {
-        if self.hover {
-            style.add_modifier(Modifier::UNDERLINED)
-        } else {
-            style
-        }
-    }
-}
-
+/// `mark`: on what a click acts on, a line number or a header's text.
 /// `editing`: the thread whose last message the draft replaces.
 /// `search`: the text whose matches to mark, and their style.
 pub fn draw_row(
@@ -500,14 +472,11 @@ pub fn draw_row(
     search: (&str, Style),
 ) -> Drawn {
     let theme = ctx.look.theme;
-    let header = Style::new()
-        .fg(theme.blue)
-        .add_modifier(Modifier::BOLD)
-        .patch(mark.style);
+    let header = Style::new().fg(theme.blue).add_modifier(Modifier::BOLD);
     let text = match &doc.window(i, 1)[0] {
         Row::Session => "# session".to_string(),
         Row::Commit { sha, message } => {
-            let title = Span::styled(format!("# commit {}", short(sha)), mark.lit(Style::new()));
+            let title = mark.lit(Span::raw(format!("# commit {}", short(sha))));
             let mut lines = vec![Line::from(title).style(header)];
             let options = textwrap::Options::new((width as usize).saturating_sub(INDENT).max(10))
                 .word_separator(textwrap::WordSeparator::AsciiSpace)
@@ -520,7 +489,7 @@ pub fn draw_row(
                     lines.push(Line::from(spans));
                 }
             }
-            return Drawn::Full(lines, mark.style);
+            return Drawn::Full(lines, Style::new());
         }
         Row::File {
             file,
@@ -541,13 +510,9 @@ pub fn draw_row(
                 Span::raw(" "),
             ];
             let path = query::mark(vec![Span::raw(path.clone())], search.0, search.1);
-            spans.extend(path.into_iter().map(|s| lit(s, mark.hover)));
+            // The mark goes over the search colors.
+            spans.extend(path.into_iter().map(|s| mark.lit(s)));
             spans.push(Span::raw(rest));
-            // The mark goes over the status and search colors.
-            let spans: Vec<_> = spans
-                .into_iter()
-                .map(|s| s.patch_style(mark.style))
-                .collect();
             return Drawn::Full(vec![Line::from(spans)], header);
         }
         Row::Fold { hidden, .. } => {
@@ -556,10 +521,9 @@ pub fn draw_row(
                 None => "more lines".to_string(),
             };
             let line = Line::from(vec![
-                Span::styled(" ".repeat(INDENT - 4), mark.style),
-                Span::styled("...", mark.lit(mark.style)),
-                Span::styled(" ", mark.style),
-                Span::raw(text),
+                Span::raw(" ".repeat(INDENT - 4)),
+                mark.lit(Span::raw("...")),
+                Span::raw(format!(" {text}")),
             ]);
             return Drawn::Full(vec![line], Style::new().fg(theme.dim));
         }
@@ -623,11 +587,10 @@ pub fn draw_row(
             ]);
         }
     };
-    let text = Span::styled(text, mark.lit(Style::new()));
-    Drawn::Full(vec![Line::from(text)], header)
+    Drawn::Full(vec![Line::from(mark.lit(Span::raw(text)))], header)
 }
 
-/// One side of a code row, wrapped by grapheme to `width`; `mark` styles the gutter,
+/// One side of a code row, wrapped by grapheme to `width`; `mark` on the line number,
 /// and the matches of `search`'s text take its style.
 fn code_lines(
     side: Option<&Side>,
@@ -648,7 +611,7 @@ fn code_lines(
         Kind::Del => (theme.red, theme.del_bg, theme.del_emph),
         Kind::Add => (theme.green, theme.add_bg, theme.add_emph),
     };
-    let gutter = Style::new().fg(color).patch(mark.style);
+    let gutter = Style::new().fg(color);
     let number = format!("{:>1$} ", s.lineno, INDENT - 1);
     let gutter_width = number.len();
     let digits = number.trim();
@@ -660,10 +623,10 @@ fn code_lines(
     let (mut run_end, mut fg) = (0, None);
 
     let mut lines = Vec::new();
-    // Only the number underlined, not its padding nor a wrapped line's.
+    // Only the number marked, not its padding nor a wrapped line's.
     let mut spans = vec![
         Span::styled(" ".repeat(gutter_width - digits.len() - 1), gutter),
-        Span::styled(digits.to_string(), mark.lit(gutter)),
+        mark.lit(Span::styled(digits.to_string(), gutter)),
         Span::styled(" ", gutter),
     ];
     let (mut chunk, mut chunk_style, mut col) = (String::new(), Style::new(), 0);
@@ -719,7 +682,7 @@ fn code_lines(
 
 /// A thread as a card: header, then each message wrapped to `width`.
 /// `inline` threads sit under what they anchor to, so their header leaves out the path.
-/// `mark` bars the header.
+/// `mark` on the header's text.
 fn thread_lines(
     ctx: &Ctx,
     idx: usize,
@@ -748,7 +711,7 @@ fn thread_lines(
         header.push_str("  waiting on agent");
     }
     let header_style = Style::new().add_modifier(Modifier::BOLD);
-    let mut header = vec![Span::styled(header, mark.lit(header_style))];
+    let mut header = vec![mark.lit(Span::styled(header, header_style))];
     let links = file_view::thread_links(t, &ctx.files).len();
     if links > 0 {
         let s = if links == 1 { "" } else { "s" };
@@ -757,13 +720,7 @@ fn thread_lines(
             header_style.fg(theme.blue),
         ));
     }
-    let mut first = line(header);
-    let pad = width.saturating_sub(first.width());
-    first.spans.push(Span::raw(" ".repeat(pad)));
-    for s in &mut first.spans {
-        s.style = s.style.patch(mark.style);
-    }
-    let mut lines = vec![first];
+    let mut lines = vec![line(header)];
     let link = Style::new()
         .fg(theme.blue)
         .add_modifier(Modifier::UNDERLINED);

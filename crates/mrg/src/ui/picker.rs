@@ -24,7 +24,7 @@ use crate::ui::help::{self, Entry, Help};
 use crate::ui::query::Query;
 use crate::ui::scroll::Scroll;
 use crate::ui::settings::SettingsPopup;
-use crate::ui::{Panes, boxed, check, checked_bar, clear, cursor_bar, dialog, lit, row_at};
+use crate::ui::{Mark, Panes, boxed, check, checked_bar, clear, dialog, row_at};
 
 /// Commits offered for a new range.
 const COMMITS: usize = 500;
@@ -622,7 +622,7 @@ impl Component<Pick> for Picker {
             let name = Span::raw(format!("{}{count}", TITLES[p]));
             let title = Line::from(vec![
                 Span::raw(" "),
-                lit(name, hovered == Some((p, None))),
+                Mark::new(theme, false, hovered == Some((p, None))).lit(name),
                 Span::raw(format!(" {}", self.filter[p].title())),
             ]);
             if p == pane {
@@ -643,8 +643,8 @@ impl Component<Pick> for Picker {
 }
 
 impl Picker {
-    /// The `shown` rows of the focused block in `inner`, the cursor's marked and the
-    /// `hover`ed one's text underlined.
+    /// The `shown` rows of the focused block in `inner`, the cursor's text marked and
+    /// the `hover`ed one's underlined.
     fn render_rows(
         &self,
         f: &mut Frame,
@@ -658,10 +658,9 @@ impl Picker {
         let (height, width) = (inner.height as usize, inner.width as usize);
         let cursor = self.scroll[pane].cursor();
         let skip = self.skip(pane);
-        let rows = shown.len();
         let shown = shown.iter().copied().skip(skip).take(height);
         let mut checked_rows = Vec::new();
-        let hovers = |row: usize| hover == Some(skip + row);
+        let marks = |row: usize| Mark::new(theme, cursor == skip + row, hover == Some(skip + row));
         let lines: Vec<Line> = match pane {
             SESSIONS => {
                 let name_width = name_width(&ctx.sessions);
@@ -669,7 +668,7 @@ impl Picker {
                     .enumerate()
                     .map(|(row, i)| {
                         let s = &ctx.sessions[i].0;
-                        Line::from(session_row(s, name_width, width, theme, hovers(row)))
+                        Line::from(session_row(s, name_width, width, theme, marks(row)))
                     })
                     .collect()
             }
@@ -685,12 +684,12 @@ impl Picker {
                         let mut spans = vec![mark(checked, theme)];
                         // After the mark.
                         let width = width.saturating_sub(2);
-                        let on = hovers(row);
+                        let on = marks(row);
                         match i.checked_sub(self.uncommitted.len()) {
                             Some(c) => {
                                 spans.extend(columns.row(&self.commits[c], width, theme, on))
                             }
-                            None => spans.push(lit(Span::raw(self.uncommitted[i]), on)),
+                            None => spans.push(on.lit(Span::raw(self.uncommitted[i]))),
                         }
                         Line::from(spans)
                     })
@@ -710,7 +709,7 @@ impl Picker {
                                 .iter()
                                 .any(|(s, _)| s.end == head && s.target.is_some());
                             let row_of = (forge.word(), r, reviewed, number_width);
-                            Line::from(review_row(row_of, width, theme, hovers(row)))
+                            Line::from(review_row(row_of, width, theme, marks(row)))
                         })
                         .collect()
                 }
@@ -721,26 +720,24 @@ impl Picker {
                 }
             },
         };
-        f.render_widget(Paragraph::new(lines), inner);
+        // Under the rows, so the cursor's mark stays over it.
         for row in checked_rows {
             checked_bar(f, inner, inner.y + row as u16, theme);
         }
-        if cursor < rows && (skip..skip + height).contains(&cursor) {
-            cursor_bar(f, inner, inner.y + (cursor - skip) as u16, theme);
-        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 }
 
 /// `● pull 12  title  author → target` in `width` columns, the author and target
-/// right-aligned and left out first when narrow; ● when a session reviews it. Under the
-/// pointer (`hover`), the number and title underlined.
+/// right-aligned and left out first when narrow; ● when a session reviews it; `mark` on
+/// the number and title.
 fn review_row<'a>(
     (word, r, reviewed, number_width): (&str, &'a Request, bool, usize),
     width: usize,
     theme: &Theme,
-    hover: bool,
+    mark: Mark,
 ) -> Vec<Span<'a>> {
-    let mark = if reviewed { "● " } else { "  " };
+    let dot = if reviewed { "● " } else { "  " };
     let id = format!("{word} {:<number_width$}  ", r.number);
     let mut meta = format!("{} → {}", r.author, r.target);
     // After the mark and the id, the spaces before the meta.
@@ -752,9 +749,9 @@ fn review_row<'a>(
     let title = fit(&r.title, room);
     let pad = " ".repeat(room - title.width() + 2);
     vec![
-        Span::styled(mark, Style::new().fg(theme.accent)),
-        lit(Span::styled(id, Style::new().fg(theme.dim)), hover),
-        lit(Span::raw(title), hover),
+        Span::styled(dot, Style::new().fg(theme.accent)),
+        mark.lit(Span::styled(id, Style::new().fg(theme.dim))),
+        mark.lit(Span::raw(title)),
         Span::raw(pad),
         Span::styled(meta, Style::new().fg(theme.dim)),
     ]
@@ -781,29 +778,26 @@ fn name_column(s: &Session, name_width: Option<usize>) -> String {
 }
 
 /// `id  name  range` in `width` columns, the range right-aligned; the name column
-/// only when some session has a name, narrowed so the range fits. Under the pointer
-/// (`hover`), the id and name underlined.
+/// only when some session has a name, narrowed so the range fits; `mark` on the id and
+/// name.
 fn session_row<'a>(
     s: &'a Session,
     name_width: Option<usize>,
     width: usize,
     theme: &Theme,
-    hover: bool,
+    mark: Mark,
 ) -> Vec<Span<'a>> {
     // Width left for the name after the id, the range and the spaces around the name.
     let room = width.saturating_sub(s.id.width() + s.range.width() + 4);
     // No room: the name column goes, so the range fits.
     let name = name_column(s, name_width.map(|w| w.min(room)).filter(|&w| w > 0));
     let used = s.id.width() + name.width() + s.range.width();
-    // The name's padding joins the pad, out of the name's underline.
+    // The name's padding joins the pad, out of the name's mark.
     let text = name.trim_end();
     let pad = " ".repeat(name.len() - text.len() + width.saturating_sub(used).max(2));
     vec![
-        lit(
-            Span::styled(s.id.as_str(), Style::new().fg(theme.dim)),
-            hover,
-        ),
-        lit(Span::raw(text.to_string()), hover),
+        mark.lit(Span::styled(s.id.as_str(), Style::new().fg(theme.dim))),
+        mark.lit(Span::raw(text.to_string())),
         Span::raw(pad),
         Span::styled(s.range.as_str(), Style::new().fg(theme.dim)),
     ]
