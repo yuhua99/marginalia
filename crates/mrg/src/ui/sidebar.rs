@@ -190,7 +190,7 @@ impl Sidebar {
     }
 
     /// The box over `area`, the text of the cursor's row marked and of the row under the
-    /// `pointer` underlined.
+    /// `pointer` underlined; the surface background on the `current` file, the diff's.
     pub fn render(
         &mut self,
         f: &mut Frame,
@@ -198,6 +198,7 @@ impl Sidebar {
         ctx: &Ctx,
         focused: bool,
         pointer: Option<Position>,
+        current: Option<usize>,
     ) {
         let items = self.items(ctx);
         self.len = items.len();
@@ -220,7 +221,9 @@ impl Sidebar {
             .take(height)
             .enumerate()
             .map(|(row, item)| {
-                if !self.files && item.checked == Some(true) {
+                if (!self.files && item.checked == Some(true))
+                    || matches!(item.entry, Entry::File(file) if Some(file) == current)
+                {
                     checked_rows.push(row);
                 }
                 let on = Mark::new(

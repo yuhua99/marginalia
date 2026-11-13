@@ -78,9 +78,11 @@ impl DiffView {
         }
     }
 
-    /// The file the cursor is in.
+    /// The file the cursor is in; the top row's, once the wheel has turned the screen
+    /// off the cursor.
     pub fn current_file(&self, ctx: &Ctx) -> Option<usize> {
-        ctx.review.doc.file_at(self.scroll.cursor())
+        let row = self.scroll.shown().unwrap_or(self.scroll.top().0);
+        ctx.review.doc.file_at(row)
     }
 
     /// Starts writing `input` under `row`.

@@ -305,10 +305,13 @@ impl Component for Review {
             Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(bottom);
         self.panes = [top, left, right];
         self.commits
-            .render(f, top, ctx, self.focus == COMMITS, pointer);
-        self.files
-            .render(f, left, ctx, self.focus == FILES, pointer);
+            .render(f, top, ctx, self.focus == COMMITS, pointer, None);
+        // The diff first: it places the screen, whose file its title and the files box show.
+        self.diff
+            .render(f, right.inner(Margin::new(1, 1)), ctx, pointer);
         let file = self.diff.current_file(ctx);
+        self.files
+            .render(f, left, ctx, self.focus == FILES, pointer, file);
         let block = boxed(
             Span::styled(
                 header(ctx, file) + &self.diff.search_title(ctx),
@@ -318,9 +321,7 @@ impl Component for Review {
             ctx.look.theme,
         )
         .title_top(stat(ctx, file).right_aligned());
-        let inner = block.inner(right);
         f.render_widget(block, right);
-        self.diff.render(f, inner, ctx, pointer);
     }
 
     fn hints(&self) -> Option<&str> {

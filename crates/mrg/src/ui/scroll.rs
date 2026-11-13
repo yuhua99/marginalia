@@ -70,6 +70,15 @@ impl Scroll {
         self.cursor
     }
 
+    /// The cursor row while it is on screen, as of the last `place`; None once the wheel
+    /// has turned the screen off it.
+    pub fn shown(&self) -> Option<usize> {
+        match (self.wheeled, self.last) {
+            (Some(_), Some(last)) if !(self.top..=last).contains(&self.cursor) => None,
+            _ => Some(self.cursor),
+        }
+    }
+
     /// Keeps the cursor within `len` rows.
     pub fn clamp(&mut self, len: usize) {
         self.cursor = self.cursor.min(len.saturating_sub(1));
@@ -341,6 +350,26 @@ mod tests {
         assert_eq!(s.cursor, 8);
         s.place(3, rows.len(), |i| rows[i], false);
         assert_eq!(s.top(), (7, 0));
+    }
+
+    #[test]
+    fn shows_the_cursor_until_the_wheel_leaves_it() {
+        let rows = [1; 10];
+        let mut s = Scroll::at(4);
+        s.place(5, rows.len(), |i| rows[i], false);
+        assert_eq!(s.shown(), Some(4));
+        // A turn up: still on screen.
+        s.wheel(false);
+        s.place(5, rows.len(), |i| rows[i], false);
+        assert_eq!((s.top(), s.shown()), ((1, 0), Some(4)));
+        // Two down: the screen is past it.
+        s.wheel(true);
+        s.wheel(true);
+        s.place(5, rows.len(), |i| rows[i], false);
+        assert_eq!((s.top(), s.shown()), ((5, 0), None));
+        // A move brings it onto the screen.
+        s.act("down", rows.len());
+        assert_eq!(s.shown(), Some(6));
     }
 
     #[test]
