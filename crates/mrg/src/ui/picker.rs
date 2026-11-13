@@ -350,7 +350,6 @@ impl Picker {
                 let range = format!("{from}..{}", short(&end));
                 let tip = ctx.repo.tip_of(&end)?;
                 let session = Session::new(ctx.store.new_id(), range, resolved, end, tip);
-                ctx.store.save(&session)?;
                 ctx.open = Some(session);
                 Ok(Outcome::Quit)
             }
@@ -407,7 +406,6 @@ fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     });
     match started {
         Ok(session) => {
-            ctx.store.save(&session)?;
             ctx.open = Some(session);
             Ok(Outcome::Quit)
         }
