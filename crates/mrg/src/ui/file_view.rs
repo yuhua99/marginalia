@@ -179,7 +179,7 @@ impl Component for FileView {
                 hover: false,
             };
             let hit = query::hit_style(ctx.look.theme, i == cursor);
-            draw_row(ctx, doc, i, inner.width, mark, None, (search, hit))
+            draw_row(ctx, doc, i, inner.width, mark, (None, None), (search, hit))
         };
         self.scroll.place(
             inner.height as usize,

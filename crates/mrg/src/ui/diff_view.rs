@@ -319,17 +319,19 @@ impl DiffView {
     }
 
     /// The diff in `area`, what a click acts on marked in the selection's rows and
-    /// underlined in the row under the `pointer`.
+    /// underlined in the row under the `pointer`; the lines of the thread at the cursor
+    /// take the surface color under their numbers.
     pub fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, pointer: Option<Position>) {
         let doc = &ctx.review.doc;
         self.scroll.clamp(doc.len());
         let selection = self.selection();
         let editing = self.draft.as_ref().and_then(|(_, input)| input.editing());
         let (search, cursor) = (&self.search.text, self.scroll.cursor());
-        let marked = |i: usize, hover: bool| {
+        let marked = |i: usize, hover: bool, thread: Option<&Place>| {
             let mark = Mark::new(ctx.look.theme, selection.contains(&i), hover);
             let hit = query::hit_style(ctx.look.theme, i == cursor);
-            draw_row(ctx, doc, i, area.width, mark, editing, (search, hit))
+            let threads = (editing, thread);
+            draw_row(ctx, doc, i, area.width, mark, threads, (search, hit))
         };
         let draft_at = self.draft.as_ref().map(|(row, _)| *row);
         let draft_height = self
@@ -342,12 +344,18 @@ impl DiffView {
         let heights = RefCell::new(HashMap::new());
         let height = |i: usize| {
             *heights.borrow_mut().entry(i).or_insert_with(|| {
-                marked(i, false).height() + if draft_at == Some(i) { draft_height } else { 0 }
+                marked(i, false, None).height() + if draft_at == Some(i) { draft_height } else { 0 }
             })
         };
         let from_end = draft_at == Some(self.scroll.cursor());
         self.scroll
             .place(area.height as usize, doc.len(), height, from_end);
+        // Where the thread at the cursor is, unless the wheel turned the screen off it.
+        let thread = self
+            .scroll
+            .shown()
+            .and(self.thread_at_cursor(ctx))
+            .and_then(|idx| doc.place_of(idx));
         let pointer = pointer.filter(|&p| area.contains(p)).map(|p| p.y);
         let draft = &mut self.draft;
         self.rows = draw_rows(
@@ -356,7 +364,7 @@ impl DiffView {
             &self.scroll,
             doc,
             pointer,
-            marked,
+            |i, hover| marked(i, hover, thread),
             |f, i, rest| match draft {
                 Some((row, input)) if *row == i => {
                     let shown = draft_height.min(rest.height as usize);
@@ -463,6 +471,8 @@ pub fn drawn_at(rows: &[(usize, Range<u16>)], y: u16) -> Option<usize> {
 
 /// `mark`: on what a click acts on, a line number or a header's text.
 /// `editing`: the thread whose last message the draft replaces.
+/// `thread`: where the thread at the cursor is; its lines take the surface color under
+/// their numbers.
 /// `search`: the text whose matches to mark, and their style.
 pub fn draw_row(
     ctx: &Ctx,
@@ -470,7 +480,7 @@ pub fn draw_row(
     i: usize,
     width: u16,
     mark: Mark,
-    editing: Option<usize>,
+    (editing, thread): (Option<usize>, Option<&Place>),
     search: (&str, Style),
 ) -> Drawn {
     let theme = ctx.look.theme;
@@ -549,17 +559,26 @@ pub fn draw_row(
             let colors = |side: &Option<Side>, rev, path| {
                 side.as_ref().and_then(|_| ctx.highlighter.get(rev, path))
             };
+            // A line of the thread at the cursor, on the side it is on.
+            let on = |side: &Option<Side>, old: bool| {
+                let path = if old { old_path } else { new_path };
+                matches!(
+                    (side, thread),
+                    (Some(s), Some(Place::Lines { file, start, end, old: o }))
+                        if *o == old && file == path && (*start..=*end).contains(&s.lineno)
+                )
+            };
             // Added and deleted files, and the file view, take the full width.
             if doc.one_sided(*file) {
-                let (side, colors) = match right {
-                    Some(_) => (right, colors(right, right_rev, new_path)),
-                    None => (left, colors(left, left_rev, old_path)),
+                let (side, colors, old) = match right {
+                    Some(_) => (right, colors(right, right_rev, new_path), false),
+                    None => (left, colors(left, left_rev, old_path), true),
                 };
                 let (lines, style) = code_lines(
                     side.as_ref(),
                     colors,
                     width as usize,
-                    mark,
+                    (mark, on(side, old)),
                     theme,
                     ctx.look.wrap,
                     search,
@@ -572,7 +591,7 @@ pub fn draw_row(
                     left.as_ref(),
                     colors(left, left_rev, old_path),
                     half as usize,
-                    mark,
+                    (mark, on(left, true)),
                     theme,
                     ctx.look.wrap,
                     search,
@@ -581,7 +600,7 @@ pub fn draw_row(
                     right.as_ref(),
                     colors(right, right_rev, new_path),
                     (width - half) as usize,
-                    mark,
+                    (mark, on(right, false)),
                     theme,
                     ctx.look.wrap,
                     search,
@@ -593,12 +612,13 @@ pub fn draw_row(
 }
 
 /// One side of a code row, wrapped by grapheme to `width`; `mark` on the line number,
+/// the surface color under the number column of a line of the `thread` at the cursor,
 /// and the matches of `search`'s text take its style.
 fn code_lines(
     side: Option<&Side>,
     colors: Option<&Colors>,
     width: usize,
-    mark: Mark,
+    (mark, thread): (Mark, bool),
     theme: &Theme,
     wrap: bool,
     search: (&str, Style),
@@ -613,7 +633,10 @@ fn code_lines(
         Kind::Del => (theme.red, theme.del_bg, theme.del_emph),
         Kind::Add => (theme.green, theme.add_bg, theme.add_emph),
     };
-    let gutter = Style::new().fg(color);
+    let mut gutter = Style::new().fg(color);
+    if thread {
+        gutter = gutter.bg(theme.surface);
+    }
     let number = format!("{:>1$} ", s.lineno, INDENT - 1);
     let gutter_width = number.len();
     let digits = number.trim();
