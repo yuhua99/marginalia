@@ -12,6 +12,9 @@ pub const MIN_SUBJECT: usize = 20;
 /// The widest author column.
 const MAX_AUTHOR: usize = 16;
 
+/// The most columns of a commit's ref names.
+const MAX_REFS: usize = 24;
+
 /// `☒ ` or `☐ ` before a checkable row.
 pub fn mark(checked: bool, theme: &Theme) -> Span<'static> {
     let mark = if checked { "☒ " } else { "☐ " };
@@ -34,8 +37,8 @@ impl Columns {
         })
     }
 
-    /// `sha subject  author  date` in `width` columns, the author and date
-    /// right-aligned; `mark` on the sha and subject.
+    /// `sha subject (refs)  author  date` in `width` columns, the author and date
+    /// right-aligned; `mark` on the sha, subject and refs.
     pub fn row<'a>(
         &self,
         commit: &'a Commit,
@@ -57,11 +60,20 @@ impl Columns {
             meta.clear();
         }
         let room = width - meta.width();
-        let subject = fit(&commit.subject, room);
-        let pad = " ".repeat(room - subject.width() + 2);
+        // The refs are in the subject's room: too narrow for both, they go.
+        let mut refs = fit(&commit.refs, MAX_REFS);
+        if !refs.is_empty() {
+            refs = format!(" ({refs})");
+        }
+        if room < refs.width() + MIN_SUBJECT {
+            refs.clear();
+        }
+        let subject = fit(&commit.subject, room - refs.width());
+        let pad = " ".repeat(room - refs.width() - subject.width() + 2);
         vec![
             mark.lit(Span::styled(&commit.sha[..7], Style::new().fg(theme.dim))),
             mark.lit(Span::raw(format!(" {subject}"))),
+            mark.lit(Span::styled(refs, Style::new().fg(theme.yellow))),
             Span::raw(pad),
             Span::styled(meta, Style::new().fg(theme.dim)),
         ]

@@ -36,6 +36,23 @@ pub struct Commit {
     pub author: String,
     /// Relative author date, as "3 days ago".
     pub when: String,
+    /// The refs on it, as `git log --decorate` names them: "HEAD -> main, tag: v1".
+    pub refs: String,
+}
+
+impl Commit {
+    /// A line of `log`'s format.
+    fn parse(line: &str) -> Commit {
+        let mut fields = line.splitn(5, '\x1f').map(str::to_string);
+        let mut next = || fields.next().unwrap_or_default();
+        Commit {
+            sha: next(),
+            author: next(),
+            when: next(),
+            refs: next(),
+            subject: next(),
+        }
+    }
 }
 
 /// A `git cat-file --batch`; it ends when its input closes, with the repo.
@@ -422,21 +439,16 @@ impl Repo {
 
     /// First-parent `git log`.
     fn log(&self, args: &[&str]) -> Result<Vec<Commit>> {
-        let mut log = vec!["log", "--first-parent", "--format=%H%x1f%an%x1f%ar%x1f%s"];
+        let mut log = vec![
+            "log",
+            "--first-parent",
+            "--format=%H%x1f%an%x1f%ar%x1f%D%x1f%s",
+        ];
         log.extend(args);
         let out = run(&mut self.git(&log))?;
         Ok(String::from_utf8_lossy(&out)
             .lines()
-            .map(|l| {
-                let mut fields = l.splitn(4, '\x1f').map(str::to_string);
-                let mut next = || fields.next().unwrap_or_default();
-                Commit {
-                    sha: next(),
-                    author: next(),
-                    when: next(),
-                    subject: next(),
-                }
-            })
+            .map(Commit::parse)
             .collect())
     }
 
@@ -644,6 +656,20 @@ pub fn numbered(files: &[FileDiff]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_lines() {
+        let c = Commit::parse("abc\x1fAnn\x1f2 days ago\x1fHEAD -> main, tag: v1\x1ffix a\x1fb");
+        assert_eq!(c.sha, "abc");
+        assert_eq!(c.author, "Ann");
+        assert_eq!(c.when, "2 days ago");
+        assert_eq!(c.refs, "HEAD -> main, tag: v1");
+        // The subject is the rest of the line.
+        assert_eq!(c.subject, "fix a\x1fb");
+        let c = Commit::parse("abc\x1fAnn\x1f2 days ago\x1f\x1ffix");
+        assert_eq!(c.refs, "");
+        assert_eq!(c.subject, "fix");
+    }
 
     #[test]
     fn numbered_lines() {

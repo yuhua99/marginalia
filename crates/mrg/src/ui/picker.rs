@@ -262,10 +262,10 @@ impl Picker {
     fn all(&self, pane: usize, ctx: &Pick) -> Vec<(String, String)> {
         match pane {
             RANGE => {
-                let commits = self
-                    .commits
-                    .iter()
-                    .map(|c| (format!("{} {}", &c.sha[..7], c.subject), c.sha.clone()));
+                let commits = self.commits.iter().map(|c| {
+                    let text = format!("{} {} {}", &c.sha[..7], c.subject, c.refs);
+                    (text, c.sha.clone())
+                });
                 self.uncommitted
                     .iter()
                     .map(|s| (s.to_string(), s.to_string()))
