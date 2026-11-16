@@ -134,7 +134,7 @@ pub fn status_style(status: char, theme: &Theme) -> Style {
 }
 
 /// Where movement `action` takes a cursor over `len` rows on a screen of `height` rows,
-/// a half page being half of it; None for other actions.
+/// a page being all of it and a half page half; None for other actions.
 pub fn step(cursor: usize, action: &str, len: usize, height: usize) -> Option<usize> {
     let half = (height / 2).max(1);
     let last = len.saturating_sub(1);
@@ -143,6 +143,8 @@ pub fn step(cursor: usize, action: &str, len: usize, height: usize) -> Option<us
         "up" => cursor.saturating_sub(1),
         "half_page_down" => cursor + half,
         "half_page_up" => cursor.saturating_sub(half),
+        "page_down" => cursor + height.max(1),
+        "page_up" => cursor.saturating_sub(height.max(1)),
         "top" => 0,
         "bottom" => last,
         _ => return None,
@@ -232,6 +234,9 @@ mod tests {
         assert_eq!(step(7, "half_page_up", 20, 10), Some(2));
         // At least one row on a tiny screen.
         assert_eq!(step(0, "half_page_down", 5, 1), Some(1));
+        assert_eq!(step(0, "page_down", 30, 10), Some(10));
+        assert_eq!(step(12, "page_up", 30, 10), Some(2));
+        assert_eq!(step(0, "page_down", 5, 0), Some(1));
         assert_eq!(step(0, "bottom", 0, 10), Some(0));
         assert_eq!(step(2, "open", 5, 10), None);
     }

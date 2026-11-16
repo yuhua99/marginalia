@@ -15,8 +15,15 @@ pub struct Scroll {
     height: usize,
     /// Lines of the cursor row below the screen, as of the last `place`.
     overflow: usize,
+    /// Rows above and below the cursor that fit on a screen with it, as of the last
+    /// `place`: a page up and down.
+    page: (usize, usize),
+    /// Those within half a screen of lines, no more than a page: a half page up and down.
+    half: (usize, usize),
     /// The next `place` puts the cursor row mid-screen.
     center: bool,
+    /// The next `place` shows a cursor row taller than the screen from its end.
+    from_end: bool,
     /// The cursor as of the last wheel turn: the screen stays where the wheel left it
     /// until the cursor moves or acts.
     wheeled: Option<usize>,
@@ -115,14 +122,28 @@ impl Scroll {
     /// from the screen, as `settle` brings it there.
     pub fn act(&mut self, action: &str, len: usize) -> bool {
         let half = (self.height / 2).max(1);
+        let last = len.saturating_sub(1);
         let wheeled = self.wheeled.is_some();
         self.settle();
         let scrolled = !wheeled && self.top == self.cursor && self.off > 0;
         match action {
             "down" if self.overflow > 0 => self.off += 1,
             "half_page_down" if self.overflow > 0 => self.off += half.min(self.overflow),
+            "page_down" if self.overflow > 0 => self.off += self.height.min(self.overflow),
             "up" if scrolled => self.off -= 1,
             "half_page_up" if scrolled => self.off = self.off.saturating_sub(half),
+            "page_up" if scrolled => self.off = self.off.saturating_sub(self.height),
+            "page_down" => self.cursor = (self.cursor + self.page.1.max(1)).min(last),
+            "page_up" => self.cursor = self.cursor.saturating_sub(self.page.0.max(1)),
+            "half_page_down" => self.cursor = (self.cursor + self.half.1.max(1)).min(last),
+            "half_page_up" => self.cursor = self.cursor.saturating_sub(self.half.0.max(1)),
+            "view_center" => self.center = true,
+            "view_top" => (self.top, self.off) = (self.cursor, 0),
+            // From the top, the cursor row is below the screen: `place` brings it to the bottom.
+            "view_bottom" => {
+                (self.top, self.off) = (0, 0);
+                self.from_end = true;
+            }
             _ => match step(self.cursor, action, len, self.height) {
                 Some(cursor) => self.cursor = cursor,
                 None => return false,
@@ -140,10 +161,17 @@ impl Scroll {
         if self.wheeled == Some(self.cursor) && self.top < len {
             self.roll(lines, h, len, &height);
             self.overflow = 0;
+            // Pages from where `settle` brings the cursor.
+            let at = self
+                .last
+                .map_or(self.cursor, |l| self.cursor.clamp(self.top, l))
+                .min(len - 1);
+            self.reach(at, h, len, &height);
             return;
         }
         self.wheeled = None;
         self.last = None;
+        let from_end = std::mem::take(&mut self.from_end) || from_end;
         let cursor = self.cursor;
         let hc = height(cursor);
         let tall = hc > h;
@@ -197,6 +225,30 @@ impl Scroll {
         }
         let end = (self.top..cursor).map(&height).sum::<usize>() + hc;
         self.overflow = (end - self.off).saturating_sub(h);
+        self.reach(cursor, h, len, &height);
+    }
+
+    /// Sets how many rows a page and a half page are above and below `row`, on a screen of
+    /// `h` lines over `len` rows of `height(i)` lines.
+    fn reach(&mut self, row: usize, h: usize, len: usize, height: impl Fn(usize) -> usize) {
+        // Rows above and below `row` of no more than `lines` lines together.
+        let within = |lines: usize| {
+            let (mut up, mut used) = (0, 0);
+            while up < row && used + height(row - up - 1) <= lines {
+                up += 1;
+                used += height(row - up);
+            }
+            let (mut down, mut used) = (0, 0);
+            while row + down + 1 < len && used + height(row + down + 1) <= lines {
+                down += 1;
+                used += height(row + down);
+            }
+            (up, down)
+        };
+        // A page keeps `row` on screen.
+        let page = h.saturating_sub(height(row));
+        self.page = within(page);
+        self.half = within((h / 2).max(1).min(page));
     }
 
     /// Moves the screen of `h` lines `lines` down (up when negative) over `len` rows of
@@ -278,6 +330,80 @@ mod tests {
         // Up the same way back.
         run(&mut s, &rows, &["up", "up"]);
         assert_eq!((s.cursor, s.top()), (2, (2, 2)));
+    }
+
+    #[test]
+    fn pages_through_a_tall_row() {
+        let rows = [1, 1, 5, 1];
+        let mut s = Scroll::default();
+        run(&mut s, &rows, &["down", "down", "page_down"]);
+        assert_eq!((s.cursor, s.top()), (2, (2, 1)));
+        run(&mut s, &rows, &["page_up"]);
+        assert_eq!((s.cursor, s.top()), (2, (2, 0)));
+    }
+
+    #[test]
+    fn pages_by_the_lines_of_rows() {
+        let mut s = Scroll::default();
+        let place = |s: &mut Scroll| s.place(4, 10, |_| 2, false);
+        place(&mut s);
+        // Two rows fill the screen: a page is one row on, not four.
+        s.act("page_down", 10);
+        place(&mut s);
+        assert_eq!((s.cursor, s.top()), (1, (0, 0)));
+        s.act("page_down", 10);
+        place(&mut s);
+        assert_eq!((s.cursor, s.top()), (2, (1, 0)));
+        s.act("page_up", 10);
+        place(&mut s);
+        assert_eq!((s.cursor, s.top()), (1, (1, 0)));
+    }
+
+    #[test]
+    fn half_pages_by_the_lines_of_rows() {
+        let mut s = Scroll::default();
+        let place = |s: &mut Scroll| s.place(8, 10, |_| 2, false);
+        place(&mut s);
+        // Half the screen is two rows of two lines, not four rows.
+        s.act("half_page_down", 10);
+        place(&mut s);
+        assert_eq!(s.cursor, 2);
+        s.act("half_page_up", 10);
+        assert_eq!(s.cursor, 0);
+        // No further than a page: one row fits with a row of three lines on four.
+        let mut s = Scroll::default();
+        s.place(4, 3, |i| [3, 1, 1][i], false);
+        s.act("half_page_down", 3);
+        assert_eq!(s.cursor, 1);
+    }
+
+    #[test]
+    fn aligns_the_screen_to_the_cursor_row() {
+        let rows = [1; 10];
+        let mut s = Scroll::at(5);
+        run(&mut s, &rows, &["view_bottom"]);
+        assert_eq!((s.cursor, s.top()), (5, (3, 0)));
+        run(&mut s, &rows, &["view_center"]);
+        assert_eq!((s.cursor, s.top()), (5, (4, 0)));
+        run(&mut s, &rows, &["view_top"]);
+        assert_eq!((s.cursor, s.top()), (5, (5, 0)));
+        // A row taller than the screen: its end at the bottom.
+        let mut s = Scroll::at(2);
+        run(&mut s, &[1, 1, 5], &["view_bottom"]);
+        assert_eq!(s.top(), (2, 2));
+    }
+
+    #[test]
+    fn pages_from_the_screen_after_the_wheel() {
+        let rows = [1, 1, 1, 2, 2, 2, 1];
+        let mut s = Scroll::default();
+        run(&mut s, &rows, &[]);
+        s.wheel(true);
+        s.place(3, rows.len(), |i| rows[i], false);
+        assert_eq!(s.top(), (3, 0));
+        // From row 3, which no row under it fits with: one row on.
+        run(&mut s, &rows, &["page_down"]);
+        assert_eq!(s.cursor, 4);
     }
 
     #[test]

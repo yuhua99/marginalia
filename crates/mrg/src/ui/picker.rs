@@ -43,7 +43,12 @@ const HINTS: &[Entry] = &[
 const HELP: &[Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
+    (&["page_down", "page_up"], "page down / up"),
     (&["top", "bottom"], "top / bottom"),
+    (
+        &["view_center", "view_top", "view_bottom"],
+        "cursor row to the middle / top / bottom of the screen",
+    ),
     (&["focus_left", "focus_right"], "previous / next block"),
     (&["check"], "check commits of a new range"),
     (

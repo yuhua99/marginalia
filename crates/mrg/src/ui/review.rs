@@ -20,7 +20,12 @@ use crate::ui::{Panes, boxed};
 const HELP: &[help::Entry] = &[
     (&["down", "up"], "move"),
     (&["half_page_down", "half_page_up"], "half page down / up"),
+    (&["page_down", "page_up"], "page down / up"),
     (&["top", "bottom"], "top / bottom"),
+    (
+        &["view_center", "view_top", "view_bottom"],
+        "cursor row to the middle / top / bottom of the screen",
+    ),
     (
         &["next_thread", "prev_thread"],
         "next / previous thread, or search match while searching",

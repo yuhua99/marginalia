@@ -31,8 +31,17 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("Up", "up"),
     ("C-d", "half_page_down"),
     ("C-u", "half_page_up"),
+    ("C-f", "page_down"),
+    ("PageDown", "page_down"),
+    ("C-b", "page_up"),
+    ("PageUp", "page_up"),
     ("g g", "top"),
+    ("Home", "top"),
     ("G", "bottom"),
+    ("End", "bottom"),
+    ("z z", "view_center"),
+    ("z t", "view_top"),
+    ("z b", "view_bottom"),
     ("n", "next_thread"),
     ("N", "prev_thread"),
     ("h", "focus_left"),
@@ -220,7 +229,8 @@ fn parse_seq(keys: &str) -> Result<Vec<Key>> {
     Ok(seq)
 }
 
-/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab`, `S-Tab`, `Up`, `Down`, `Left` or `Right`.
+/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab`, `S-Tab`, `Up`, `Down`, `Left`, `Right`,
+/// `PageUp`, `PageDown`, `Home` or `End`.
 fn parse(key: &str) -> Result<Key> {
     let none = KeyModifiers::NONE;
     Ok(match key {
@@ -233,6 +243,10 @@ fn parse(key: &str) -> Result<Key> {
         "Down" => (KeyCode::Down, none),
         "Left" => (KeyCode::Left, none),
         "Right" => (KeyCode::Right, none),
+        "PageUp" => (KeyCode::PageUp, none),
+        "PageDown" => (KeyCode::PageDown, none),
+        "Home" => (KeyCode::Home, none),
+        "End" => (KeyCode::End, none),
         _ => {
             let (k, modifiers) = match key.strip_prefix("C-") {
                 Some(k) => (k, KeyModifiers::CONTROL),
