@@ -214,11 +214,7 @@ impl Picker {
             columns: Columns::new(&commits),
             commits,
             uncommitted: pick.repo.uncommitted()?,
-            focused: if pick.sessions.is_empty() {
-                RANGE
-            } else {
-                SESSIONS
-            },
+            focused: RANGE,
             hints: help::hints(HINTS, &keymap),
             keymap,
             ..Picker::default()
