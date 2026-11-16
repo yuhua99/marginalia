@@ -805,7 +805,7 @@ fn session_row<'a>(
 /// Columns the rename box shows; a longer name scrolls in it.
 const RENAME_WIDTH: u16 = 80;
 
-/// `e`: the name being typed for session `id`; Enter saves it, Esc cancels.
+/// `r`: the name being typed for session `id`; Enter saves it, Esc cancels.
 struct Rename {
     id: String,
     text: TextArea<'static>,

@@ -68,7 +68,10 @@ const DEFAULTS: &[(&str, &str)] = &[
 /// Bindings over the defaults in each context; the user's `global` binds in all of them.
 const CONTEXTS: &[(&str, &[(&str, &str)])] = &[
     ("global", &[]),
-    ("picker", &[]),
+    (
+        "picker",
+        &[("r", "edit"), ("x", "delete"), ("e", "none"), ("d", "none")],
+    ),
     (
         "review",
         &[
