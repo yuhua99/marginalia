@@ -78,7 +78,7 @@ impl Store {
             };
             out.push((session, updated));
         }
-        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out.sort_by_key(|s| std::cmp::Reverse(s.1));
         Ok(out)
     }
 
