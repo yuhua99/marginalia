@@ -223,8 +223,12 @@ impl DiffView {
             "next_thread" | "prev_thread" if !self.search.text.is_empty() => {
                 self.find(ctx, action == "next_thread")
             }
-            "next_thread" | "prev_thread" => {
-                if let Some(i) = ctx.review.doc.next_thread(cursor, action == "next_thread") {
+            "next_thread" | "prev_thread" | "next_discussion" | "prev_discussion" => {
+                let all = action.ends_with("thread");
+                let threads = &ctx.review.session.threads;
+                let hit = |idx: usize| all || threads[idx].discussed();
+                let forward = action.starts_with("next");
+                if let Some(i) = ctx.review.doc.next_thread(cursor, forward, hit) {
                     self.scroll.center(i);
                 }
             }

@@ -536,9 +536,18 @@ impl Doc {
             .count()
     }
 
-    /// The next (or previous) thread row.
-    pub fn next_thread(&self, from: usize, forward: bool) -> Option<usize> {
-        self.find(from, forward, |r| matches!(r, Row::Thread { .. }))
+    /// The next (or previous) row of a thread `hit` is true of the index of.
+    pub fn next_thread(
+        &self,
+        from: usize,
+        forward: bool,
+        hit: impl Fn(usize) -> bool,
+    ) -> Option<usize> {
+        self.find(
+            from,
+            forward,
+            |r| matches!(r, Row::Thread { idx } if hit(*idx)),
+        )
     }
 
     /// The next (or previous) row `hit` is true of, going around from `from` and back to

@@ -31,6 +31,10 @@ const HELP: &[help::Entry] = &[
         "next / previous thread, or search match while searching",
     ),
     (
+        &["next_discussion", "prev_discussion"],
+        "next / previous thread more than one author wrote in",
+    ),
+    (
         &["prev_file", "next_file"],
         "previous / next file in the diff",
     ),

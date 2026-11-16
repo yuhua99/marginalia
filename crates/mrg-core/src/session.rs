@@ -460,6 +460,13 @@ impl Thread {
     pub fn waiting_on_agent(&self) -> bool {
         self.messages.last().is_some_and(|m| m.from == USER)
     }
+
+    /// More than one author wrote in it.
+    pub fn discussed(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|m| m.from != self.messages[0].from)
+    }
 }
 
 impl Anchor {
@@ -707,6 +714,23 @@ fn snippet(
 mod tests {
     use super::*;
     use crate::repo::{Hunk, Kind, Line};
+
+    #[test]
+    fn discussed_takes_two_authors() {
+        let thread = |from: &[&str]| Thread {
+            id: "t".into(),
+            anchor: Anchor::Session,
+            messages: from
+                .iter()
+                .map(|f| Message {
+                    from: f.to_string(),
+                    body: String::new(),
+                })
+                .collect(),
+        };
+        assert!(!thread(&["user", "user"]).discussed());
+        assert!(thread(&["user", "agent"]).discussed());
+    }
 
     #[test]
     fn carry_shifts_kept_lines() {
