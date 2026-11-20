@@ -53,7 +53,8 @@ impl AsMut<Look> for Ctx {
 impl Ctx {
     pub fn new(session: Session, repo: Repo, store: Store, look: Look) -> Result<Ctx> {
         let mut review = review::Review::new(session, repo, store)?;
-        let files = Files::new(review.repo.files(&review.session.end)?);
+        let end = review.session().end.clone();
+        let files = Files::new(review.repo.files(&end)?);
         Ok(Ctx {
             review,
             copy: false,

@@ -248,7 +248,7 @@ fn tui(
         let Some(ctx) = ctx else {
             return Ok(());
         };
-        let s = &ctx.review.session;
+        let s = ctx.review.session();
         if ctx.copy
             && let Some(md) = s.markdown(&ctx.review.doc.thread_order())
         {

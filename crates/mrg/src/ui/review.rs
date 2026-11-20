@@ -125,7 +125,7 @@ impl Review {
     /// Shows the checked commits, unless shown already.
     fn show_checked(&mut self, ctx: &mut Ctx) -> Result<()> {
         if let Some(run) = self.commits.checked()
-            && run != ctx.review.shown.bounds(ctx.review.views.len())
+            && run != ctx.review.shown().bounds(ctx.review.views().len())
         {
             self.show(run, ctx)?;
         }
@@ -134,7 +134,7 @@ impl Review {
 
     /// Shows the views `run`, the diff from its top.
     fn show(&mut self, run: (usize, usize), ctx: &mut Ctx) -> Result<()> {
-        ctx.review.show(Shown::of(run, ctx.review.views.len()))?;
+        ctx.review.show(Shown::of(run, ctx.review.views().len()))?;
         self.diff = DiffView::default();
         Ok(())
     }
@@ -154,7 +154,7 @@ impl Panes<Ctx> for Review {
             "quit" | "back" => {
                 ctx.back = action == "back";
                 let order = ctx.review.doc.thread_order();
-                if ctx.on_quit.is_none() && ctx.review.session.markdown(&order).is_some() {
+                if ctx.on_quit.is_none() && ctx.review.session().markdown(&order).is_some() {
                     return Ok(Outcome::Push(Box::new(
                         Confirm::new(
                             "Quit",
@@ -199,7 +199,7 @@ impl Panes<Ctx> for Review {
                                 _ => 0,
                             };
                             self.diff
-                                .start(row, Input::comment(anchor, &ctx.review.session));
+                                .start(row, Input::comment(anchor, ctx.review.session()));
                             self.focus = DIFF;
                         }
                     }
@@ -307,7 +307,7 @@ impl Component for Review {
         // Typing leaves the mouse alone.
         let pointer = pointer.filter(|_| !self.busy());
         // Commits as tall as their rows, up to 4.
-        let rows = ctx.review.views.len().min(4) as u16;
+        let rows = ctx.review.views().len().min(4) as u16;
         let [top, bottom] =
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
         let [left, right] =
@@ -342,7 +342,7 @@ impl Component for Review {
 fn header(ctx: &Ctx, file: Option<usize>) -> String {
     let name = match file {
         Some(file) => Some(&ctx.review.doc.paths()[file].1),
-        None => ctx.review.session.name.as_ref(),
+        None => ctx.review.session().name.as_ref(),
     };
     name.map_or(String::new(), |n| format!(" {n} "))
 }

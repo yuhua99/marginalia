@@ -69,10 +69,11 @@ pub struct FileView {
 impl FileView {
     /// The file of `link` at the range end, from its first linked line; None when absent.
     pub fn open(ctx: &mut Ctx, link: &Link) -> Result<Option<FileView>> {
-        let Some(text) = ctx.review.repo.read(&ctx.review.session.end, &link.path)? else {
+        let rev = ctx.review.session().end.clone();
+        let Some(text) = ctx.review.repo.read(&rev, &link.path)? else {
             return Ok(None);
         };
-        let doc = Doc::file(ctx.review.session.end.clone(), link.path.clone(), &text);
+        let doc = Doc::file(rev, link.path.clone(), &text);
         let (start, end) = (doc.line_row(link.start), doc.line_row(link.end));
         let keymap = Keymap::new("file");
         Ok(Some(FileView {

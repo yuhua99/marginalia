@@ -97,19 +97,15 @@ impl DiffView {
         self.search.search_title(
             &ctx.review.doc,
             self.scroll.cursor(),
-            &ctx.review.session.threads,
+            &ctx.review.session().threads,
         )
     }
 
     /// Moves to the next (or previous) search match.
     fn find(&mut self, ctx: &mut Ctx, forward: bool) {
         let (cursor, len) = (self.scroll.settle(), ctx.review.doc.len());
-        if let Some(row) = self.search.find(
-            &mut ctx.review.doc,
-            cursor,
-            forward,
-            &ctx.review.session.threads,
-        ) {
+        let (doc, threads) = ctx.review.doc_with_threads();
+        if let Some(row) = self.search.find(doc, cursor, forward, threads) {
             self.scroll.center(row);
             // Expanding a file shifts the rows under it.
             if ctx.review.doc.len() != len {
@@ -225,7 +221,7 @@ impl DiffView {
             }
             "next_thread" | "prev_thread" | "next_discussion" | "prev_discussion" => {
                 let all = action.ends_with("thread");
-                let threads = &ctx.review.session.threads;
+                let threads = &ctx.review.session().threads;
                 let hit = |idx: usize| all || threads[idx].discussed();
                 let forward = action.starts_with("next");
                 if let Some(i) = ctx.review.doc.next_thread(cursor, forward, hit) {
@@ -241,7 +237,7 @@ impl DiffView {
                 // On a thread: follow its link to a file view, or list its links.
                 if let Some(idx) = self.thread_at_cursor(ctx) {
                     let mut links =
-                        file_view::thread_links(&ctx.review.session.threads[idx], &ctx.files);
+                        file_view::thread_links(&ctx.review.session().threads[idx], &ctx.files);
                     if links.len() > 1 {
                         self.links = Some(LinkPicker::new(links));
                     } else if let Some(link) = links.pop() {
@@ -279,18 +275,18 @@ impl DiffView {
                     {
                         row = ctx.review.doc.expand_file(file);
                     }
-                    self.start(row, Input::comment(anchor, &ctx.review.session));
+                    self.start(row, Input::comment(anchor, ctx.review.session()));
                 }
             }
             // Only the user's last message, before the agent answers it.
             "edit" | "delete" => {
                 if let Some(idx) = self.thread_at_cursor(ctx)
-                    && ctx.review.session.threads[idx].waiting_on_agent()
+                    && ctx.review.session().threads[idx].waiting_on_agent()
                 {
                     if action == "edit" {
-                        self.start(cursor, Input::edit(idx, &ctx.review.session));
+                        self.start(cursor, Input::edit(idx, ctx.review.session()));
                     } else {
-                        let t = &ctx.review.session.threads[idx];
+                        let t = &ctx.review.session().threads[idx];
                         let question = if t.messages.len() == 1 {
                             format!("delete thread {}?", t.id)
                         } else {
@@ -722,7 +718,7 @@ fn thread_lines(
     search: (&str, Style),
 ) -> Vec<Line<'static>> {
     let theme = ctx.look.theme;
-    let t: &Thread = &ctx.review.session.threads[idx];
+    let t: &Thread = &ctx.review.session().threads[idx];
     let line = |spans: Vec<Span<'static>>| {
         Line::from([vec![Span::raw(" ".repeat(INDENT))], spans].concat())
     };
@@ -730,10 +726,10 @@ fn thread_lines(
     let place = match ctx.review.doc.place_of(idx) {
         // Lines and files changed further on, away from them with their commit.
         Some(Place::Whole) if matches!(t.anchor, Anchor::Lines { .. } | Anchor::File { .. }) => {
-            ctx.review.session.location(&t.anchor)
+            ctx.review.session().location(&t.anchor)
         }
         Some(p) if inline => p.inline(),
-        _ => ctx.review.session.location(&t.anchor),
+        _ => ctx.review.session().location(&t.anchor),
     };
     let mut header = format!("{}  {place}", t.id);
     if t.waiting_on_agent() {

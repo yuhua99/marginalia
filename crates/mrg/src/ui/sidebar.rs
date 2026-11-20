@@ -41,7 +41,7 @@ impl Entry {
     /// The anchor for a `c` here: commit, file, or the session for the other views.
     pub fn anchor(self, ctx: &Ctx) -> Option<Anchor> {
         match self {
-            Entry::View(v) => Some(match &ctx.review.views[v] {
+            Entry::View(v) => Some(match &ctx.review.views()[v] {
                 View::Commit(c) => Anchor::Commit {
                     commit: c.sha.clone(),
                 },
@@ -90,7 +90,7 @@ impl Sidebar {
 
     /// Entering the commits box checks the views shown; leaving it drops the checks.
     pub fn focus(&mut self, ctx: &Ctx, focused: bool) {
-        let shown = ctx.review.shown.bounds(ctx.review.views.len());
+        let shown = ctx.review.shown().bounds(ctx.review.views().len());
         self.checked = focused.then_some(Some(shown));
     }
 
@@ -208,7 +208,7 @@ impl Sidebar {
         let hovered = pointer
             .filter(|&p| area.contains(p))
             .and_then(|p| self.row_at(area, p.y));
-        let columns = Columns::new(ctx.review.views.iter().filter_map(|v| match v {
+        let columns = Columns::new(ctx.review.views().iter().filter_map(|v| match v {
             View::Commit(c) => Some(c),
             _ => None,
         }));
@@ -241,7 +241,7 @@ impl Sidebar {
                     ));
                 }
                 if let Entry::View(v) = item.entry
-                    && let View::Commit(c) = &ctx.review.views[v]
+                    && let View::Commit(c) = &ctx.review.views()[v]
                 {
                     spans.extend(columns.row(c, width, ctx.look.theme, on));
                     return Line::from(spans);
@@ -266,9 +266,9 @@ impl Sidebar {
 
 fn views(ctx: &Ctx, checked: Option<Option<(usize, usize)>>) -> Vec<Item> {
     let within = |range: (usize, usize), v| (range.0..=range.1).contains(&v);
-    let shown = ctx.review.shown.bounds(ctx.review.views.len());
+    let shown = ctx.review.shown().bounds(ctx.review.views().len());
     ctx.review
-        .views
+        .views()
         .iter()
         .enumerate()
         .map(|(v, view)| {

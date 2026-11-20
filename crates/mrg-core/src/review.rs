@@ -2,18 +2,18 @@ use anyhow::Result;
 
 use crate::doc::{Doc, Scope};
 use crate::repo::{Commit, Repo};
-use crate::session::{self, Anchor, Session, Source};
+use crate::session::{self, Anchor, Session, Source, Thread};
 use crate::store::Store;
 
 /// A session open for review: its diff, and the threads placed in it.
 pub struct Review {
-    pub session: Session,
+    session: Session,
     pub repo: Repo,
     pub store: Store,
     pub doc: Doc,
     /// What the diff can show: each commit, then uncommitted changes.
-    pub views: Vec<View>,
-    pub shown: Shown,
+    views: Vec<View>,
+    shown: Shown,
     /// What `doc` covers, as of when it was loaded: HEAD may move since.
     span: Span,
 }
@@ -82,6 +82,22 @@ impl Review {
             shown: Shown::All,
             span,
         })
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    pub fn views(&self) -> &[View] {
+        &self.views
+    }
+
+    pub fn shown(&self) -> Shown {
+        self.shown
+    }
+
+    pub fn doc_with_threads(&mut self) -> (&mut Doc, &[Thread]) {
+        (&mut self.doc, &self.session.threads)
     }
 
     /// Switches the diff to `shown`.
