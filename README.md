@@ -1,6 +1,20 @@
 <h1 align="center">marginalia</h1>
 
-<p align="center"><em>Review code changes in the terminal and discuss them with agents.</em></p>
+<p align="center"><em>Review agent-written code, right where it changed.</em></p>
+
+<img src="docs/assets/hero.png" width="100%" alt="Marginalia reviewing an offline photo-feed change: two commits, a file tree, and a line-anchored conversation between the agent and reviewer." />
+
+## Code review, as a conversation
+
+**Discuss a change in context.**<br>
+Ask the agent about the exact lines you’re reviewing.
+
+<img src="docs/assets/discuss.webp" width="100%" alt="A reviewer replies to the agent’s explanation of an offline cache fallback; the thread stays beside the changed lines and switches to waiting on agent." />
+
+**Review just the commits that belong together.**<br>
+Select related commits and review their changes as one diff.
+
+<img src="docs/assets/picker.png" width="100%" alt="Marginalia’s commit picker with the offline-feed implementation and test commits selected, leaving the unrelated contributor-guide commit unselected." />
 
 ## Install
 
