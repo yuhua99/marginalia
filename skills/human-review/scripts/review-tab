@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
-# review-tab SESSION: open an mrg session in a multiplexer tab beside this agent.
-# On quit, the hook (review-tab --notify PANE) tells the agent pane how the review ended.
-# Outside every supported multiplexer, print the command for the human to run instead.
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
-# Each multiplexer M in MUXES implements:
-#   M_active                 succeeds when running inside M
-#   M_pane                   prints the current pane id
-#   M_open CMD NAME PANE     runs CMD in a new focused tab NAME in $PWD, right of PANE's tab where
-#                            M can; when CMD exits, focuses PANE's tab and closes the new one
-#   M_send PANE TEXT         submits TEXT to PANE
 MUXES=(herdr tmux rex)
 
 herdr_active() { [ "${HERDR_ENV:-}" = 1 ]; }
@@ -19,15 +10,12 @@ herdr_pane() { echo "${HERDR_PANE_ID:?HERDR_PANE_ID unset}"; }
 herdr_open() {
     local tab back new
     back="$(herdr pane get "$3" | jq -er '.result.pane.tab_id')"
-    tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label "$2" --cwd "$PWD" --focus)"
+    tab="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label "$2" --cwd "$PWD" --no-focus)"
     new="$(jq -r '.result.tab.tab_id' <<<"$tab")"
-    # tab create appends at the end; a failed move leaves the tab there.
     herdr_move_beside "$new" "$back" 2>/dev/null || true
     herdr pane run "$(jq -r '.result.root_pane.pane_id' <<<"$tab")" \
         "$1; herdr tab focus $back; herdr tab close $new" >/dev/null
 }
-# Moves TAB right of ANCHOR through the socket's tab.move, which the CLI lacks. insert_index counts
-# the tabs before TAB leaves its place, so ANCHOR's index + 1 is right of it.
 herdr_move_beside() {
     local at
     at="$(herdr tab list --workspace "$HERDR_WORKSPACE_ID" |
@@ -42,12 +30,11 @@ s.sendall((json.dumps(req) + "\n").encode())
 s.recv(65536)
 EOF
 }
-# Typed only when the agent cannot take a prompt (e.g. blocked), so the text is not lost.
 herdr_send() { herdr agent prompt "$1" "$2" >/dev/null 2>&1 || herdr pane send-text "$1" "$2" >/dev/null; }
 
 tmux_active() { [ -n "${TMUX:-}" ]; }
 tmux_pane() { echo "${TMUX_PANE:?TMUX_PANE unset}"; }
-tmux_open() { tmux new-window -a -n "$2" -c "$PWD" "$1; tmux select-window -t $3"; }
+tmux_open() { tmux new-window -a -d -n "$2" -c "$PWD" "$1; tmux select-window -t $3"; }
 tmux_send() { tmux send-keys -t "$1" -l "$2"; tmux send-keys -t "$1" Enter; }
 
 rex_active() { [ -n "${REX_SESSION:-}" ]; }
@@ -62,11 +49,8 @@ for m in "${MUXES[@]}"; do
     break
 done
 
-# Runs CMD in review tab review-ID, back to the agent pane on exit; after Enter if CMD failed so its
-# error stays readable.
 mux_open() { "${mux}_open" "$1 || { echo 'mrg failed; Enter closes'; read -r _; }" "review-$2" "$3"; }
 
-# Nothing waiting on the agent sends nothing.
 notify() {
     local waiting
     if ! read -r waiting < <(mrg list | jq -r --arg id "$MRG_SESSION" '.[] | select(.id == $id) | .waiting_on_agent'); then
@@ -82,7 +66,6 @@ case "${1:-}" in
     --notify) notify "$2" ;;
     "" | -*) die "usage: review-tab SESSION" ;;
     *)
-        # A bad id fails here, where the agent sees it.
         mrg show --session "$1" >/dev/null
         if [ -z "$mux" ]; then
             printf 'Not in %s. Ask the human to run this in another terminal:\n  cd %q && mrg resume --session %q\nand to come back when done, pasting the threads if saved to the clipboard on quit.\n' "${MUXES[*]}" "$PWD" "$1"
