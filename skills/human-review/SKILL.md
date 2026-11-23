@@ -18,7 +18,7 @@ Run every command from the repo root; sessions belong to the repo.
   - `"commit": REV, "file": PATH`: a file in the diff of that commit (`staged` or `unstaged` for working changes); add `"lines": "N"` or `"N-M"` for lines of it, numbered as `mrg diff REV^..REV` prints them (`..REV` for a root commit; `HEAD..staged`, `staged..unstaged`). Add `"old": true` for lines the commit deletes, numbered at its parent; a file the commit has not is its parent's. A thread shows only with its commit.
   - None of them: the session.
 - `mrg show --session ID` prints the session as JSON; `--only waiting` keeps the threads waiting on you. A thread's `location` is where its anchor points, e.g. `src/a.rs:3-5 @ 1a2b3c4`.
-- `mrg delete --session ID THREAD...` deletes your notes: threads the user never wrote in.
+- `mrg delete --session ID THREAD...` deletes threads.
 - `{baseDir}/scripts/review-tab ID` opens the session in a review tab and reports back here when the human quits; outside herdr/tmux/rex it prints a command to relay to the human.
 
 Ask once if the scope is missing.

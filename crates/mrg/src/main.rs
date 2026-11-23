@@ -64,7 +64,7 @@ enum Cmd {
         #[arg(long)]
         on_quit: Option<String>,
     },
-    /// Delete notes: threads only the agent wrote in
+    /// Delete threads
     Delete {
         #[arg(short, long)]
         session: String,
@@ -144,7 +144,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Delete { session, threads }) => {
             let mut session = store.load(&session)?;
-            session.delete_notes(&threads)?;
+            session.delete_threads(&threads)?;
             store.save(&session)
         }
         Some(Cmd::Show { session, only }) => {

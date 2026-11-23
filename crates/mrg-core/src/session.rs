@@ -232,15 +232,11 @@ impl Session {
         Ok(touched)
     }
 
-    /// Deletes notes, threads only the agent wrote in, such as outdated explanations.
-    pub fn delete_notes(&mut self, ids: &[String]) -> Result<()> {
+    pub fn delete_threads(&mut self, ids: &[String]) -> Result<()> {
         for id in ids {
             let Some(i) = self.threads.iter().position(|t| t.id == *id) else {
                 bail!("no thread {id}");
             };
-            if self.threads[i].messages.iter().any(|m| m.from == USER) {
-                bail!("{id} has a message from the user");
-            }
             self.threads.remove(i);
         }
         Ok(())
