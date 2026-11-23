@@ -9,7 +9,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 WORK = ROOT / "target/readme-demo"
 REPO = WORK / "fieldnotes"
-MRG = ROOT / "target/debug/mrg"
+TARGET = Path(json.loads(subprocess.check_output(
+    ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+    cwd=ROOT, text=True,
+))["target_directory"])
+MRG = TARGET / "debug/mrg"
 ENV = dict(os.environ, XDG_CONFIG_HOME=str(WORK / "config"),
            GIT_AUTHOR_NAME="Maya Chen", GIT_AUTHOR_EMAIL="maya@example.com",
            GIT_COMMITTER_NAME="Maya Chen", GIT_COMMITTER_EMAIL="maya@example.com",
