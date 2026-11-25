@@ -28,6 +28,14 @@ Works best inside herdr/rex/tmux: the review opens in a new tab and the agent pi
 
 Run `mrg` to pick an open pull / merge request to review; needs [`gh`](https://cli.github.com) or [`glab`](https://gitlab.com/gitlab-org/cli).
 
+## Development
+
+Run clippy before each commit:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Acknowledgements
 
 Inspired by [tuicr](https://github.com/agavra/tuicr).
