@@ -1,6 +1,3 @@
-//! Pull requests of GitHub and merge requests of GitLab on origin, listed through gh /
-//! glab and fetched with git.
-
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::process::{Command, Stdio};
@@ -13,7 +10,6 @@ use crate::session::Session;
 use crate::settings;
 use crate::store::Store;
 
-/// Requests listed, at most.
 const LIMIT: &str = "100";
 
 #[derive(Clone, Copy)]
@@ -22,28 +18,22 @@ enum Kind {
     Gitlab,
 }
 
-/// Origin's project on its forge.
 #[derive(Clone)]
 pub struct Forge {
     kind: Kind,
     host: String,
-    /// `owner/repo`, or `group/subgroup/project`.
     path: String,
 }
 
-/// An open pull or merge request.
 #[derive(Clone)]
 pub struct Request {
     pub number: u64,
     pub title: String,
     pub author: String,
-    /// The branch it merges into.
     pub target: String,
 }
 
 impl Forge {
-    /// Origin's forge: github.com and gitlab.com, other hosts as `[forges]` of the
-    /// settings says. The error tells the user what to do.
     pub fn of(repo: &Repo, forges: &BTreeMap<String, String>) -> Result<Forge> {
         let url = repo.origin()?;
         let Some((host, path)) = parse_url(&url) else {
@@ -70,7 +60,6 @@ impl Forge {
         Ok(Forge { kind, host, path })
     }
 
-    /// The open requests, newest first.
     pub fn requests(&self) -> Result<Vec<Request>> {
         match self.kind {
             Kind::Github => {
@@ -136,7 +125,6 @@ impl Forge {
         }
     }
 
-    /// `pull` or `merge`, before a request's number in a list.
     pub fn word(&self) -> &'static str {
         match self.kind {
             Kind::Github => "pull",
@@ -144,7 +132,6 @@ impl Forge {
         }
     }
 
-    /// Request `number` as the forge writes it: `#12` or `!12`.
     pub fn sign(&self, number: u64) -> String {
         match self.kind {
             Kind::Github => format!("#{number}"),
@@ -152,7 +139,6 @@ impl Forge {
         }
     }
 
-    /// The ref of request `number`'s head, the same on origin and here.
     pub fn head(&self, number: u64) -> String {
         match self.kind {
             Kind::Github => format!("refs/pull/{number}/head"),
@@ -160,8 +146,6 @@ impl Forge {
         }
     }
 
-    /// Fetches `r`'s head to `head` and its target to origin's branch; returns the base,
-    /// where the head left the target.
     pub fn fetch(&self, repo: &Repo, r: &Request) -> Result<String> {
         let head = self.head(r.number);
         repo.fetch(&[format!("+{head}:{head}"), target(&r.target)], false)?;
@@ -169,15 +153,10 @@ impl Forge {
     }
 }
 
-/// The refspec fetching origin's `branch` to `tracking(branch)`.
 fn target(branch: &str) -> String {
     format!("+refs/heads/{branch}:{}", tracking(branch))
 }
 
-/// Readies `session` to open: a request's head, as `Forge::head` names it, and its
-/// target fetched again, a rewritten head taken too; then the range followed
-/// (`Session::follow`). Returns whether the session changed, to save.
-/// `prompt`: the terminal is free to ask for a password.
 fn refresh(repo: &mut Repo, session: &mut Session, prompt: bool) -> Result<bool> {
     let end = &session.end;
     if end.starts_with("refs/pull/") || end.starts_with("refs/merge-requests/") {
@@ -188,7 +167,6 @@ fn refresh(repo: &mut Repo, session: &mut Session, prompt: bool) -> Result<bool>
     session.follow(repo)
 }
 
-/// Session `id`, readied to open (`refresh`) and saved when that changed it.
 pub fn resume(repo: &mut Repo, store: &Store, id: &str, prompt: bool) -> Result<Session> {
     let mut session = store.load(id)?;
     if refresh(repo, &mut session, prompt)? {
@@ -197,7 +175,6 @@ pub fn resume(repo: &mut Repo, store: &Store, id: &str, prompt: bool) -> Result<
     Ok(session)
 }
 
-/// The output of `cli args`; its error is the cli's, which says how to sign in.
 #[expect(clippy::disallowed_methods, reason = "gh / glab")]
 fn tool(cli: &str, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new(cli)
@@ -214,8 +191,6 @@ fn tool(cli: &str, args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-/// Host and path of a remote URL, `scheme://[user@]host[:port]/path` or
-/// `[user@]host:path`, the path without `.git`; None for a local path.
 fn parse_url(url: &str) -> Option<(String, String)> {
     let (host, path) = match url.split_once("://") {
         Some((_, rest)) => {

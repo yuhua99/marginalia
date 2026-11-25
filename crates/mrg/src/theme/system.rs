@@ -1,6 +1,3 @@
-//! The `system` theme: the terminal's own colors, asked with OSC 10 / 11 / 12 / 4, made a
-//! palette as the RGB themes are.
-
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
@@ -9,10 +6,8 @@ use ratatui::crossterm::terminal;
 
 use super::{Palette, Rgb, Theme, palette};
 
-/// The ANSI colors asked for: red, green, yellow, blue, magenta, cyan, bright black.
 const ANSI: [u8; 7] = [1, 2, 3, 4, 5, 6, 8];
 
-/// The theme from the terminal's colors, or None when it doesn't report them.
 pub fn query() -> Option<Theme> {
     // Replies come on the terminal; with stdin elsewhere they would land in the TUI.
     if !std::io::stdin().is_terminal() {
@@ -28,13 +23,10 @@ pub fn query() -> Option<Theme> {
         .map(|n| colors.get(format!("4;{n}").as_str()).copied())
         .collect::<Option<_>>()?;
     let fg = *colors.get("10")?;
-    // Many themes leave the cursor at the text color; that makes no accent.
     let cursor = colors.get("12").copied().filter(|&c| c != fg);
     Some(build(fg, *colors.get("11")?, cursor, &ansi))
 }
 
-/// Sends the queries and reads the replies, up to the reply to DA1, which every
-/// terminal answers, or half a second.
 fn ask() -> std::io::Result<String> {
     let mut query = String::from("\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
     for n in ANSI {
@@ -69,7 +61,6 @@ fn ask() -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&reply).into_owned())
 }
 
-/// Whether `reply` holds the DA1 reply, `ESC [ ? ... c`.
 fn answered(reply: &[u8]) -> bool {
     reply
         .windows(3)
@@ -77,7 +68,6 @@ fn answered(reply: &[u8]) -> bool {
         .is_some_and(|i| reply[i..].contains(&b'c'))
 }
 
-/// `ESC ] key ; rgb:RR/GG/BB` replies (1 to 4 hex digits a channel), by key: `10`, `11`, `12`, `4;N`.
 fn parse(reply: &str) -> HashMap<&str, Rgb> {
     reply
         .split("\x1b]")
@@ -99,7 +89,6 @@ fn parse(reply: &str) -> HashMap<&str, Rgb> {
         .collect()
 }
 
-/// The accent is the cursor color, or cyan without one.
 fn build(fg: Rgb, bg: Rgb, cursor: Option<Rgb>, ansi: &[Rgb]) -> Theme {
     let [red, green, yellow, blue, magenta, cyan, gray] = ansi.try_into().expect("7 colors");
     palette(

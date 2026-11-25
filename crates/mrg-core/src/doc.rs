@@ -8,51 +8,38 @@ use similar::{ChangeTag, TextDiff};
 use crate::repo::{FileDiff, Kind};
 use crate::session::{Anchor, Place, Thread};
 
-/// The logical rows of a side-by-side diff, with threads placed under what they anchor to.
 pub struct Doc {
-    /// Rev of the left (old) and right (new) side.
     left_rev: String,
     right_rev: String,
-    /// (old_path, new_path) per file.
     paths: Vec<(String, String)>,
-    /// Status letter per file, as in `FileDiff::status`.
     statuses: Vec<char>,
-    /// Per file, added or deleted: only one side has lines.
     one_sided: Vec<bool>,
-    /// Lines (added, deleted) per file.
     changes: Vec<(usize, usize)>,
     rows: Vec<Row>,
     scope: Scope,
-    /// Per collapsed file, its rows other than the header; its threads are left out.
     collapsed: HashMap<usize, Vec<Row>>,
-    /// Where each of the session threads is here, and so goes, as of `set_threads`.
     places: Vec<Option<Place>>,
     spots: Vec<Spot>,
-    /// Changes with the rows, and is no other doc's.
     version: u64,
 }
 
-/// The next `Doc::version`.
 fn next_version() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// What the diff shows.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Scope {
-    /// The whole range: every thread shows, at the top when on no row; but those that go
-    /// with their commit, only under it.
     Range,
-    /// A run of commits: only threads on its rows, and those on all of it.
     Run,
 }
 
 pub enum Row {
-    /// The whole session; always the first row.
     Session,
-    /// The commit shown, when it is the only one: its sha and full message.
-    Commit { sha: String, message: String },
+    Commit {
+        sha: String,
+        message: String,
+    },
     File {
         file: usize,
         status: char,
@@ -64,49 +51,37 @@ pub enum Row {
         left: Option<Side>,
         right: Option<Side>,
     },
-    /// Unchanged lines starting at `old` / `new`; `hidden: None` after the last
-    /// hunk, where the file may or may not go on.
     Fold {
         file: usize,
         old: u32,
         new: u32,
         hidden: Option<u32>,
     },
-    /// Index into the session threads. Threads on lines in a fold come after the fold;
-    /// those on the commit come after `Commit`; those that have no row in the diff
-    /// (session, lines of other revs) come right after `Session`; those of collapsed
-    /// files have none.
-    Thread { idx: usize },
+    Thread {
+        idx: usize,
+    },
 }
 
 pub struct Side {
     pub lineno: u32,
     pub kind: Kind,
     pub text: String,
-    /// Byte ranges of `text` that differ from the paired line on the other side.
     pub emph: Ranges,
 }
 
 type Ranges = Vec<Range<usize>>;
 
-/// Where a thread row goes.
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 enum Spot {
-    /// At the top of the whole range only: on no side here.
     Top,
-    /// At the top in every view: the session.
     Whole,
-    /// Under `Row::Commit`: the commit shown alone; nowhere else.
     Commit,
-    /// Nowhere: a commit not in the diff.
     Hidden,
     File(usize),
-    /// File, right side, last anchored line.
     Line(usize, bool, u32),
 }
 
 impl Doc {
-    /// `commit`: (sha, full message) of the commit shown, when it is the only one.
     pub fn new(
         left_rev: String,
         right_rev: String,
@@ -145,7 +120,6 @@ impl Doc {
             paths.push((f.old_path, f.new_path));
             statuses.push(f.status);
             let (mut next_old, mut next_new) = (1, 1);
-            // The file may go on after a hunk ending in full (-U3) context.
             let mut more = false;
             for h in f.hunks {
                 let (mut old, mut new) = h.firsts();
@@ -166,7 +140,6 @@ impl Doc {
                     .take_while(|l| l.kind == Kind::Ctx)
                     .count()
                     >= 3;
-                // Consecutive deletions followed by additions are paired up row by row.
                 let (mut dels, mut adds) = (Vec::new(), Vec::new());
                 for line in h.lines {
                     match line.kind {
@@ -242,7 +215,6 @@ impl Doc {
         }
     }
 
-    /// `path` at `rev` with content `text`, every line as a right side.
     pub fn file(rev: String, path: String, text: &str) -> Doc {
         let header = Row::File {
             file: 0,
@@ -280,7 +252,6 @@ impl Doc {
         self.one_sided[file]
     }
 
-    /// The row of right-side line `line`, or the last row.
     pub fn line_row(&self, line: u32) -> usize {
         self.rows
             .iter()
@@ -288,8 +259,6 @@ impl Doc {
             .unwrap_or(self.rows.len() - 1)
     }
 
-    /// Replaces the thread rows with those of `threads`, the session's after they changed,
-    /// at `places`, where `Session::locate` finds them in this diff.
     pub fn set_threads(&mut self, threads: &[Thread], places: Vec<Option<Place>>) {
         self.spots = threads
             .iter()
@@ -300,12 +269,10 @@ impl Doc {
         self.place();
     }
 
-    /// Where thread `idx` is in this diff.
     pub fn place_of(&self, idx: usize) -> Option<&Place> {
         self.places.get(idx)?.as_ref()
     }
 
-    /// Puts the thread rows where `spots` say, for the rows there are now.
     fn place(&mut self) {
         let mut at: HashMap<Spot, Vec<usize>> = HashMap::new();
         for (idx, spot) in self.spots.iter().enumerate() {
@@ -339,7 +306,6 @@ impl Doc {
             for spot in spots.into_iter().flatten() {
                 rows.extend(at.remove(&spot).into_iter().flatten().map(thread_row));
             }
-            // Threads on lines the fold hides go under it; a run shows only its rows'.
             if let Some((file, old, new, hidden)) = fold
                 && self.scope == Scope::Range
             {
@@ -358,8 +324,6 @@ impl Doc {
                 rows.extend(idx.into_iter().map(thread_row));
             }
         }
-        // Left over are `Whole` ones, `Top` ones, lines past the file's rows (or in its
-        // folds, in a run), and those of collapsed files, which stay out.
         let mut rest: Vec<usize> = at
             .into_iter()
             .filter(|(spot, _)| match self.scope {
@@ -377,7 +341,6 @@ impl Doc {
         self.version = next_version();
     }
 
-    /// Changes with the rows, and is no other doc's.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -400,8 +363,6 @@ impl Doc {
         }
     }
 
-    /// The anchor for a `c` on these rows: their code lines, preferring the right
-    /// (new) side; otherwise the file or commit of the first row, or the session.
     pub fn anchor_at(&self, rows: RangeInclusive<usize>) -> Anchor {
         let rows = &self.rows[rows];
         let code: Vec<_> = rows
@@ -444,14 +405,12 @@ impl Doc {
         }
     }
 
-    /// The row of `commit`, when it is the commit shown.
     pub fn commit_row(&self, commit: &str) -> Option<usize> {
         self.rows
             .iter()
             .position(|r| matches!(r, Row::Commit { sha, .. } if sha == commit))
     }
 
-    /// The anchor for `file`: on the right side, unless only the left has it.
     pub fn file_anchor(&self, file: usize) -> Anchor {
         let old = self.statuses[file] == 'D';
         let (rev, path) = if old {
@@ -467,9 +426,6 @@ impl Doc {
         }
     }
 
-    /// Shows up to 20 lines of the fold at `row` (the ten at each end of a longer fold),
-    /// reading the file with `read(rev, path)`. Returns the row the fold was at, which
-    /// shifts when threads on lines past the file's end move from under it to the top group.
     pub fn expand(
         &mut self,
         row: usize,
@@ -523,12 +479,10 @@ impl Doc {
         Ok(row + (self.top_threads() - top))
     }
 
-    /// Whether `row` is in the top thread group, away from what it anchors to.
     pub fn at_top(&self, row: usize) -> bool {
         row <= self.top_threads()
     }
 
-    /// Number of thread rows in the top group.
     fn top_threads(&self) -> usize {
         self.rows[1..]
             .iter()
@@ -536,7 +490,6 @@ impl Doc {
             .count()
     }
 
-    /// The next (or previous) row of a thread `hit` is true of the index of.
     pub fn next_thread(
         &self,
         from: usize,
@@ -550,8 +503,6 @@ impl Doc {
         )
     }
 
-    /// The next (or previous) row `hit` is true of, going around from `from` and back to
-    /// it, the rows of a collapsed file included: that file is expanded.
     pub fn search(
         &mut self,
         from: usize,
@@ -565,7 +516,6 @@ impl Doc {
             (0..from).rev().chain((from..len).rev()).collect()
         };
         for i in order {
-            // A collapsed file's rows come after its header.
             let on_row = i != from && hit(&self.rows[i]);
             if forward && on_row {
                 return Some(i);
@@ -575,7 +525,6 @@ impl Doc {
             {
                 let header = self.expand_file(file);
                 let end = self.next_file(header, true).unwrap_or(self.rows.len());
-                // A thread of the file whose line has no row goes to the top group instead.
                 let rows = 0..self.rows.len();
                 let hit_at = |&r: &usize| hit(&self.rows[r]);
                 return if forward {
@@ -593,17 +542,14 @@ impl Doc {
         hit(&self.rows[from]).then_some(from)
     }
 
-    /// Whether `hit` is true of a row collapsed `file` hides, its threads included.
     fn hides(&self, file: usize, hit: impl Fn(&Row) -> bool) -> bool {
         self.hidden(file, hit) > 0
     }
 
-    /// How many rows collapsed `file` hides that `hit` is true of, its threads included.
     fn hidden(&self, file: usize, hit: impl Fn(&Row) -> bool) -> usize {
         let Some(rows) = self.collapsed.get(&file) else {
             return 0;
         };
-        // As `place` puts them once expanded: a run shows only threads on its code rows.
         let on_row = |right: bool, line: u32| {
             rows.iter().any(|row| match row {
                 Row::Code {
@@ -625,8 +571,6 @@ impl Doc {
                 .count()
     }
 
-    /// Per row, how many rows before it `hit` is true of, and how many in all; those of a
-    /// collapsed file come right under its header.
     pub fn tally(&self, hit: impl Fn(&Row) -> bool) -> (Vec<usize>, usize) {
         let mut before = Vec::with_capacity(self.rows.len());
         let mut total = 0;
@@ -644,7 +588,6 @@ impl Doc {
         self.collapsed.contains_key(&file)
     }
 
-    /// Collapses `file` to its header. Returns the header row.
     pub fn collapse_file(&mut self, file: usize) -> usize {
         let row = self.file_row(file);
         let end = self.next_file(row, true).unwrap_or(self.rows.len());
@@ -658,7 +601,6 @@ impl Doc {
         self.file_row(file)
     }
 
-    /// Expands `file` if collapsed. Returns the header row.
     pub fn expand_file(&mut self, file: usize) -> usize {
         let row = self.file_row(file);
         if let Some(rows) = self.collapsed.remove(&file) {
@@ -668,7 +610,6 @@ impl Doc {
         self.file_row(file)
     }
 
-    /// The next (or previous) file header row.
     pub fn next_file(&self, from: usize, forward: bool) -> Option<usize> {
         self.find(from, forward, |r| matches!(r, Row::File { .. }))
     }
@@ -682,7 +623,6 @@ impl Doc {
         }
     }
 
-    /// The file `row` is in: the nearest file header at or above it.
     pub fn file_at(&self, row: usize) -> Option<usize> {
         self.rows.iter().take(row + 1).rev().find_map(|r| match r {
             Row::File { file, .. } => Some(*file),
@@ -690,7 +630,6 @@ impl Doc {
         })
     }
 
-    /// The header row of `file`.
     pub fn file_row(&self, file: usize) -> usize {
         self.rows
             .iter()
@@ -698,27 +637,22 @@ impl Doc {
             .expect("a file's header row")
     }
 
-    /// Revs of the left and right side.
     pub fn revs(&self) -> (&str, &str) {
         (&self.left_rev, &self.right_rev)
     }
 
-    /// (old_path, new_path) per file.
     pub fn paths(&self) -> &[(String, String)] {
         &self.paths
     }
 
-    /// Status letter of `file`: A, D, M, R, T, or ' ' for `Doc::file`.
     pub fn status(&self, file: usize) -> char {
         self.statuses[file]
     }
 
-    /// Lines (added, deleted) in `file`, collapsed or not.
     pub fn changes(&self, file: usize) -> (usize, usize) {
         self.changes[file]
     }
 
-    /// The file a new `anchor`, of `anchor_at`, is on in this view.
     pub fn file_of(&self, anchor: &Anchor) -> Option<usize> {
         match anchor {
             Anchor::Lines { file, .. } | Anchor::File { file, .. } => {
@@ -728,8 +662,6 @@ impl Doc {
         }
     }
 
-    /// Thread indices in row order, those of a collapsed file at its header,
-    /// then those hidden in this view.
     pub fn thread_order(&self) -> Vec<usize> {
         let n = self.spots.len();
         let mut order: Vec<usize> = Vec::new();
@@ -755,7 +687,6 @@ impl Doc {
         self.rows.is_empty()
     }
 
-    /// Up to `n` rows starting at `start`.
     pub fn window(&self, start: usize, n: usize) -> &[Row] {
         let start = start.min(self.rows.len());
         &self.rows[start..(start + n).min(self.rows.len())]
@@ -789,8 +720,6 @@ fn pair(rows: &mut Vec<Row>, file: usize, dels: &mut Vec<Side>, adds: &mut Vec<S
     }
 }
 
-/// Changed word ranges of a paired old and new line; None when the lines are long
-/// or mostly different, where highlighting words would only add noise.
 fn word_diff(old: &str, new: &str) -> Option<(Ranges, Ranges)> {
     if old.len() > 1000 || new.len() > 1000 {
         return None;
@@ -827,7 +756,6 @@ mod tests {
     use crate::repo::{Hunk, Line};
     use crate::session::Message;
 
-    /// `a` changing line 2 of `x` to `y`, with a line of context on each side.
     fn doc() -> Doc {
         doc_of(Scope::Range, None)
     }
@@ -883,7 +811,6 @@ mod tests {
             thread(Anchor::Session),
         ];
         doc.set_threads(&threads, vec![Some(Place::Whole), Some(Place::Whole)]);
-        // Session, its thread, the commit, its thread, the file.
         assert_eq!(thread_rows(&doc), [1, 3]);
         assert_eq!(doc.thread_order(), [1, 0]);
         assert_eq!(doc.commit_row("c"), Some(2));
@@ -904,11 +831,9 @@ mod tests {
         };
         let threads = [changed(), changed()];
         let places = || vec![Some(Place::Whole), None];
-        // Under the commit row when shown alone: session, the commit, its thread.
         let mut alone = doc_of(Scope::Run, Some(("c".into(), "subject".into())));
         alone.set_threads(&threads, places());
         assert_eq!(thread_rows(&alone), [2]);
-        // Nowhere in the whole range of more commits.
         let mut range = doc_of(Scope::Range, None);
         range.set_threads(&threads, places());
         assert_eq!(thread_rows(&range), Vec::<usize>::new());
@@ -935,10 +860,8 @@ mod tests {
             &[thread(Anchor::Session), line2],
             vec![Some(Place::Whole), Some(at2)],
         );
-        // Session, its thread, the file, line 1, the changed line 2, its thread, line 3.
         assert_eq!(thread_rows(&doc), [1, 5]);
         assert_eq!(doc.thread_order(), [0, 1]);
-        // A collapsed file keeps its threads out of the rows but in the order.
         doc.collapse_file(0);
         assert_eq!(thread_rows(&doc), [1]);
         assert_eq!(doc.thread_order(), [0, 1]);
@@ -975,7 +898,6 @@ mod tests {
             }),
         ];
         let places = || vec![Some(Place::Whole), at(2), at(9), None];
-        // Session, the file, line 1, the changed line 2, line 3; threads after.
         let mut range = doc_of(Scope::Range, None);
         range.set_threads(&threads, places());
         assert_eq!(thread_rows(&range), [1, 2, 6]);
@@ -989,7 +911,6 @@ mod tests {
     #[test]
     fn search_goes_around_and_into_collapsed_files() {
         let mut doc = doc();
-        // Session, the file, line 1, the changed line 2, line 3.
         let y = |r: &Row| matches!(r, Row::Code { right: Some(s), .. } if s.text == "y");
         assert_eq!(doc.search(4, true, y), Some(3));
         assert_eq!(doc.search(3, true, y), Some(3));
@@ -1027,8 +948,6 @@ mod tests {
     #[test]
     fn tally_counts_into_collapsed_files() {
         let mut doc = doc();
-        // Session, the file, line 1, the changed line 2, line 3: "1" and "3" on both sides,
-        // one row each.
         let hit = |r: &Row| match r {
             Row::Code { left, right, .. } => [left, right]
                 .into_iter()

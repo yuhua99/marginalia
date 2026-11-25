@@ -4,48 +4,31 @@ use serde_json::Value;
 
 use crate::repo::{Commit, FileDiff, Repo, short, tracking, worktree};
 
-/// What a session needs of the code it reviews: a git repo, or a snapshot of one.
 pub trait Source {
-    /// Content of `path` at `rev`; None if absent.
     fn read(&mut self, rev: &str, path: &str) -> Result<Option<String>>;
-    /// An id for `rev` that does not move.
     fn pin(&mut self, rev: &str) -> Result<String>;
-    /// Keeps `tree`, pinned of `staged` / `unstaged`, while session `id` lasts.
     fn keep(&self, id: &str, tree: &str) -> Result<()>;
-    /// Full sha of commit `rev`.
     fn commit(&self, rev: &str) -> Result<String>;
-    /// Where the diff of `commit` starts: its first parent, or the empty tree.
     fn left(&self, commit: &str) -> Result<String>;
-    /// Commits in `base..end`, oldest first.
     fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>>;
-    /// The diff without context of pinned revs `from` to `to`; None when what it
-    /// needs is gone.
     fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>>;
 }
 
-/// Who the human in the TUI is; agents are anyone else.
 const USER: &str = "user";
 
-/// Who writes through `mrg comment`.
 const AGENT: &str = "agent";
 
-/// A review of `base..end`, saved as `<id>.json`. Files with fields this one has not,
-/// like the `id` of older ones, do not load.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
-    /// The file name, not saved in the file.
     #[serde(skip)]
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The range as given by the user, for display.
     pub range: String,
     pub base: String,
     pub end: String,
-    /// The commit `end` stood on when last followed; one it moved off rewrote the range.
     pub tip: String,
-    /// The branch a request merges into, whose fork point `follow` takes as the base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub threads: Vec<Thread>,
@@ -58,11 +41,6 @@ pub struct Thread {
     pub messages: Vec<Message>,
 }
 
-/// What a thread is on. A `rev` is pinned: a commit sha, or the tree mrg wrote for
-/// `staged` / `unstaged`; lines are numbered there. Lines and files of a commit's
-/// diff have that `commit`, `rev` being it or where its diff starts; those of
-/// `staged` / `unstaged` have none. `old`: `rev` is the left side of the diff
-/// written on, for lines or a file it deletes.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Anchor {
@@ -90,14 +68,13 @@ pub enum Anchor {
     Session,
 }
 
-/// Where a thread is in a diff.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Place {
-    /// Above the files: the session, or a commit of the diff with what of it changed
-    /// further on.
     Whole,
-    /// On the old (left) side, or the new.
-    File { file: String, old: bool },
+    File {
+        file: String,
+        old: bool,
+    },
     Lines {
         file: String,
         start: u32,
@@ -112,24 +89,19 @@ pub struct Message {
     pub body: String,
 }
 
-/// A comment of `mrg comment`: a reply, or a thread on a commit, a file of a commit (or
-/// of `staged` / `unstaged`), lines of it, or, with none of those, the session.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewComment {
     reply_to: Option<String>,
     commit: Option<String>,
     file: Option<String>,
-    /// `3` or `3-5`, of `file` in `commit`.
     lines: Option<String>,
-    /// `file` is numbered where the diff of `commit` starts: lines it deletes.
     #[serde(default)]
     old: bool,
     body: String,
 }
 
 impl Session {
-    /// A new session of `base..end`, on the commit `end` stands on now.
     pub fn start(
         repo: &Repo,
         id: String,
@@ -154,7 +126,6 @@ impl Session {
         }
     }
 
-    /// Sets the name, trimmed; a blank one clears it.
     pub fn set_name(&mut self, name: &str) -> Result<()> {
         let name = name.trim();
         if name.chars().any(char::is_control) {
@@ -164,7 +135,6 @@ impl Session {
         Ok(())
     }
 
-    /// Adds the agent's comments; returns the index of the thread each one went to.
     pub fn apply(
         &mut self,
         comments: Vec<NewComment>,
@@ -193,7 +163,6 @@ impl Session {
                 }
                 (None, Some(commit), None, None, false) => Anchor::Commit { commit },
                 (None, Some(commit), Some(file), lines, old) => {
-                    // The sides of the diff of `commit`.
                     let (left, right, commit) = match commit.as_str() {
                         "staged" if !worktree(&self.end) || self.base == "staged" => {
                             bail!("staged is not in the range")
@@ -208,7 +177,6 @@ impl Session {
                             (repo.left(&commit)?, commit.clone(), Some(commit))
                         }
                     };
-                    // A file the right side has not is the left's.
                     let old = old || repo.read(&right, &file)?.is_none();
                     let rev = if old { left } else { right };
                     match lines {
@@ -253,8 +221,6 @@ impl Session {
         Ok(())
     }
 
-    /// Adds a thread on `anchor`, its revs (any a commit or the range end can be) pinned
-    /// and its commit made a sha.
     pub fn comment(
         &mut self,
         mut anchor: Anchor,
@@ -285,7 +251,6 @@ impl Session {
             Anchor::Commit { commit } => *commit = repo.commit(commit)?,
             Anchor::Session => {}
         }
-        // One of a commit out of the range would show nowhere.
         if let Some(commit) = anchor.commit()
             && !self.commits(repo)?.contains(commit)
         {
@@ -309,7 +274,6 @@ impl Session {
         Ok(())
     }
 
-    /// Shas of the range commits, oldest first.
     fn commits(&self, repo: &mut dyn Source) -> Result<Vec<String>> {
         Ok(repo
             .commits(&self.base, &self.end)?
@@ -329,7 +293,6 @@ impl Session {
         Ok(())
     }
 
-    /// Rewrites the last message of thread `idx`.
     pub fn edit(&mut self, idx: usize, body: String) {
         self.threads[idx]
             .messages
@@ -338,7 +301,6 @@ impl Session {
             .body = body;
     }
 
-    /// Removes the last message of thread `idx`, or the thread when it is the only one.
     pub fn delete(&mut self, idx: usize) {
         let t = &mut self.threads[idx];
         if t.messages.len() > 1 {
@@ -352,8 +314,6 @@ impl Session {
         self.threads.iter().filter(|t| t.waiting_on_agent()).count()
     }
 
-    /// The session as JSON, with derived fields added to each thread.
-    /// `waiting_on` is `agent` or null; `location` is where its anchor points.
     pub fn view(&self) -> Result<Value> {
         let mut v = serde_json::to_value(self)?;
         for (t, tv) in self
@@ -367,11 +327,7 @@ impl Session {
         Ok(v)
     }
 
-    /// Takes the range as it is now, its end moved: for a request, the base where its
-    /// head now leaves the target; otherwise a rewritten range fails, for a new session.
-    /// Threads on commits that left the range go. Returns whether anything changed, to save.
     pub fn follow(&mut self, repo: &mut Repo) -> Result<bool> {
-        // From the index, there are no commits to rewrite.
         if self.base == "staged" {
             return Ok(false);
         }
@@ -398,10 +354,6 @@ impl Session {
         Ok(true)
     }
 
-    /// Where each thread is in the diff `left..right` of `commits`: lines and files
-    /// where they are, unchanged, on the right side, else on the left; the session and
-    /// those commits above the files. Lines and files of those commits that changed
-    /// further on go with their commit; of other commits, nowhere. None for the rest.
     pub fn locate(
         &self,
         repo: &mut dyn Source,
@@ -416,7 +368,6 @@ impl Session {
             .collect()
     }
 
-    /// Where `anchor` points, e.g. `src/a.rs:3-5 @ 1a2b3c4`; `(old)` on the left side.
     pub fn location(&self, anchor: &Anchor) -> String {
         let at = |commit: &Option<String>| {
             commit
@@ -440,7 +391,6 @@ impl Session {
         }
     }
 
-    /// Threads waiting on the agent, in `order`, as markdown; None if there are none.
     pub fn markdown(&self, order: &[usize]) -> Option<String> {
         let mut out = format!("# mrg review {} / {}\n", self.id, self.range);
         let mut any = false;
@@ -463,12 +413,10 @@ impl Session {
 }
 
 impl Thread {
-    /// The last speaker being `user` means the agent should answer.
     pub fn waiting_on_agent(&self) -> bool {
         self.messages.last().is_some_and(|m| m.from == USER)
     }
 
-    /// More than one author wrote in it.
     pub fn discussed(&self) -> bool {
         self.messages
             .iter()
@@ -477,7 +425,6 @@ impl Thread {
 }
 
 impl Anchor {
-    /// The commit it goes with; None for the session and `staged` / `unstaged`.
     pub fn commit(&self) -> Option<&String> {
         match self {
             Anchor::Lines { commit, .. } | Anchor::File { commit, .. } => commit.as_ref(),
@@ -488,7 +435,6 @@ impl Anchor {
 }
 
 impl Place {
-    /// As shown under what it is on: lines as `L3-5`, a file as `file`.
     pub fn inline(&self) -> String {
         match self {
             Place::Lines {
@@ -500,7 +446,6 @@ impl Place {
     }
 }
 
-/// Where `anchor` is on `sides`, (pinned rev, old) tried in turn; see `Session::locate`.
 fn locate(
     repo: &mut dyn Source,
     anchor: &Anchor,
@@ -516,7 +461,6 @@ fn locate(
     if commit.is_some_and(|c| !commits.contains(c)) {
         return Ok(None);
     }
-    // Gone with its rev, as a commit amended away and collected: nothing to carry.
     if repo.read(rev, file)?.is_none() {
         return Ok(None);
     }
@@ -526,7 +470,6 @@ fn locate(
         } else {
             match repo.changes(rev, side)? {
                 Some(files) => files,
-                // What it needs to be carried is gone too.
                 None => return Ok(None),
             }
         };
@@ -545,16 +488,9 @@ fn locate(
             return Ok(place);
         }
     }
-    // Changed further on: with its commit.
     Ok(commit.map(|_| Place::Whole))
 }
 
-/// `anchor`, written on the diff of `views` as one, put on the view it is about. Views
-/// are oldest first, each its left and right revs and its commit (None for `staged` /
-/// `unstaged`). One view takes all; else lines and files go to the newest view that
-/// changes them, as they are on its right side, those on the left side (`old`) to the
-/// newest they reach unchanged, as they are on its left side. Lines no view changes
-/// are the session's.
 pub fn attribute(
     repo: &mut dyn Source,
     anchor: Anchor,
@@ -594,7 +530,6 @@ pub fn attribute(
     if let [(_, _, commit)] = views {
         return Ok(on(&rev, &file, lines, commit));
     }
-    // From the side they are on, view by view, carried across each.
     let order: Vec<_> = if old {
         views.iter().collect()
     } else {
@@ -629,24 +564,19 @@ pub fn attribute(
     Ok(found.unwrap_or(Anchor::Session))
 }
 
-/// Lines `start..=end` of `path` on the old side of `files`, a diff without context, on
-/// their new side; None when they change, delete or insert any line among them.
 fn carry(files: &[FileDiff], path: &str, start: u32, end: u32) -> Option<(String, u32, u32)> {
     let Some(f) = files.iter().find(|f| f.old_path == path) else {
         return Some((path.to_string(), start, end));
     };
-    // A binary change has no hunks to tell what it kept.
     if f.status == 'D' || f.binary {
         return None;
     }
-    // Where the last hunk before `start` ends, old and new.
     let (mut old_end, mut new_end) = (1, 1);
     for h in &f.hunks {
         let (old, new) = h.firsts();
         if end < old {
             break;
         }
-        // Overlaps them, or inserts right before one past `start`.
         if start < old + h.old_len {
             return None;
         }
@@ -656,7 +586,6 @@ fn carry(files: &[FileDiff], path: &str, start: u32, end: u32) -> Option<(String
     Some((f.new_path.clone(), at(start), at(end)))
 }
 
-/// `path` on the old side of `files`, a diff, on their new side; None when deleted.
 fn carry_file(files: &[FileDiff], path: &str) -> Option<String> {
     match files.iter().find(|f| f.old_path == path) {
         Some(f) if f.status == 'D' => None,
@@ -665,7 +594,6 @@ fn carry_file(files: &[FileDiff], path: &str) -> Option<String> {
     }
 }
 
-/// `3` or `3-5` as (start, end).
 fn parse_lines(lines: &str) -> Result<(u32, u32)> {
     let (start, end) = lines.split_once('-').unwrap_or((lines, lines));
     let n = |s: &str| {
@@ -676,7 +604,6 @@ fn parse_lines(lines: &str) -> Result<(u32, u32)> {
     Ok((n(start)?, n(end)?))
 }
 
-/// Lines `3` or `3-5`, plus `(old)` on the old side.
 fn lines(start: u32, end: u32, old: bool) -> String {
     let lines = if start == end {
         start.to_string()
@@ -690,8 +617,6 @@ fn side(old: bool) -> &'static str {
     if old { " (old)" } else { "" }
 }
 
-/// `rev` pinned for a thread of session `id`: the tree of `staged` / `unstaged` is
-/// kept, as nothing else keeps it from git gc.
 fn pin(repo: &mut dyn Source, id: &str, rev: &str) -> Result<String> {
     let pinned = repo.pin(rev)?;
     if worktree(rev) {
@@ -700,7 +625,6 @@ fn pin(repo: &mut dyn Source, id: &str, rev: &str) -> Result<String> {
     Ok(pinned)
 }
 
-/// Lines `start..=end` of `file` at `rev`; None if the file or lines are absent.
 fn snippet(
     repo: &mut dyn Source,
     rev: &str,
@@ -745,7 +669,6 @@ mod tests {
             kind,
             text: text.into(),
         };
-        // Renamed `a` -> `b`, line 2 changed to two lines, then line 9 deleted.
         let files = [FileDiff {
             status: 'R',
             old_path: "a".into(),
@@ -780,11 +703,9 @@ mod tests {
         assert_eq!(at("a", 9), None);
         assert_eq!(at("a", 10), Some(("b".into(), 10)));
         assert_eq!(at("c", 7), Some(("c".into(), 7)));
-        // A run of lines moves whole, and none of it may change.
         assert_eq!(carry(&files, "a", 3, 8), Some(("b".into(), 4, 9)));
         assert_eq!(carry(&files, "a", 1, 3), None);
         assert_eq!(carry(&files, "a", 8, 10), None);
-        // Lines added right before the run move it; lines added inside it change it.
         let insert = |at| FileDiff {
             status: 'M',
             old_path: "a".into(),
@@ -802,7 +723,6 @@ mod tests {
         assert_eq!(carry(&[insert(4)], "a", 3, 4), None);
     }
 
-    /// Diffs by (from, to), none where unset; revs are pinned as they are.
     struct Diffs(Vec<((&'static str, &'static str), Vec<FileDiff>)>);
 
     impl Source for Diffs {
@@ -848,7 +768,6 @@ mod tests {
                 hunks: vec![hunk],
             }]
         };
-        // c1 changes line 2 of `a`; c2 adds a line 6.
         let mut repo = Diffs(vec![
             (("b", "c1"), a(hunk(2, 1, 2, 1))),
             (("c1", "b"), a(hunk(2, 1, 2, 1))),
@@ -889,7 +808,6 @@ mod tests {
             commit: None,
         };
         assert_eq!(at(file, &views), "c2 c2");
-        // One view takes all, changed or not.
         assert_eq!(at(lines("c1", 3), &views[..1]), "c1 3 c1");
     }
 

@@ -17,24 +17,18 @@ use crate::ui;
 use crate::ui::file_view::Files;
 use crate::ui::review::Review;
 
-/// State the review's layers share; layers keep only their own UI state.
 pub struct Ctx {
     pub review: review::Review,
-    /// Copy the threads waiting on the agent to the clipboard after quitting.
     pub copy: bool,
-    /// Quitting goes back to the picker.
     pub back: bool,
-    /// Run on quitting; given to `mrg resume` for this run only.
     pub on_quit: Option<String>,
     pub highlighter: Highlighter,
     pub look: Look,
     pub files: Files,
 }
 
-/// What the settings change; the picker and the review share it.
 pub struct Look {
     pub theme: &'static Theme,
-    /// Wrap long code lines.
     pub wrap: bool,
 }
 
@@ -70,61 +64,39 @@ impl Ctx {
 
 pub enum Outcome<C = Ctx> {
     Consumed,
-    /// Nothing on screen changed: no draw.
     Unchanged,
     Push(Box<dyn Component<C>>),
     Close,
     Quit,
 }
 
-/// A wheel turn or the left button, over a cell.
 #[derive(Clone, Copy)]
 pub enum Mouse {
-    Wheel {
-        down: bool,
-    },
+    Wheel { down: bool },
     Press,
-    /// The button, held since a press on the cell `from`, moved.
-    Drag {
-        from: Position,
-    },
-    /// The button let go after a press on the cell `from`.
-    Release {
-        from: Position,
-    },
+    Drag { from: Position },
+    Release { from: Position },
 }
 
-/// A layer of the screen over the state `C` the layers share: the review's `Ctx`, or
-/// the picker's. Layers render bottom-up; keys and the mouse go to the top layer only.
 pub trait Component<C = Ctx> {
-    /// `pointer`: the cell under the mouse, for the top layer only.
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &C, pointer: Option<Position>);
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut C) -> Result<Outcome<C>>;
-    /// Pasted text; only text being typed takes it.
     fn paste(&mut self, _text: &str) {}
-    /// The mouse event `m` over the cell `at`.
     fn mouse(&mut self, _m: Mouse, _at: Position, _ctx: &mut C) -> Result<Outcome<C>> {
         Ok(Outcome::Unchanged)
     }
-    /// What a click on the cell `at` acts on, as of the last render: a box and its row
-    /// there. A pointer move that changes it draws, for `render` to underline it.
     fn target(&self, _at: Position) -> Option<(usize, Option<usize>)> {
         None
     }
-    /// Footer hints; None leaves the footer to the layers below.
     fn hints(&self) -> Option<&str> {
         None
     }
 }
 
-/// The layers of a screen, the bottom one first; it never closes.
 pub struct Layers<C> {
     layers: Vec<Box<dyn Component<C>>>,
-    /// The cell under the mouse.
     pointer: Option<Position>,
-    /// The cell the left button was pressed on, until it is let go.
     press: Option<Position>,
-    /// An event read after mouse events that changed the screen, held for after the draw.
     pending: Option<Event>,
 }
 
@@ -138,7 +110,6 @@ impl<C: AsRef<Look>> Layers<C> {
         }
     }
 
-    /// Renders the layers over the body and the top hints in the footer; returns the footer.
     pub fn render(&mut self, f: &mut Frame, ctx: &C) -> Rect {
         let theme = ctx.as_ref().theme;
         ui::clear(f, f.area(), theme);
@@ -163,8 +134,6 @@ impl<C: AsRef<Look>> Layers<C> {
         foot
     }
 
-    /// Gives events from `read` to the layers until the screen needs a draw; true when they
-    /// quit. `read` gives None to draw without an event.
     pub fn wait(
         &mut self,
         ctx: &mut C,
@@ -198,8 +167,6 @@ impl<C: AsRef<Look>> Layers<C> {
         Ok(false)
     }
 
-    /// Gives a key press, pasted text or a mouse event to the top layer, and pushes or
-    /// pops the layer it asks for; a pointer move draws only when it changes the target.
     fn event(&mut self, event: Event, ctx: &mut C) -> Result<Outcome<C>> {
         let top = self.layers.last_mut().expect("the bottom layer");
         let outcome = match event {
@@ -236,7 +203,6 @@ impl<C: AsRef<Look>> Layers<C> {
                     _ => Outcome::Unchanged,
                 }
             }
-            // A resize, among others.
             _ => Outcome::Consumed,
         };
         match outcome {
@@ -259,7 +225,6 @@ pub fn run(terminal: &mut DefaultTerminal, ctx: &mut Ctx) -> Result<()> {
         })?;
         ctx.highlighter.flush(&mut ctx.review.repo);
         let quit = layers.wait(ctx, |ctx| {
-            // Wait for an event, redrawing as colors arrive.
             while ctx.highlighter.busy() && !event::poll(Duration::from_millis(30))? {
                 if ctx.highlighter.receive() {
                     return Ok(None);

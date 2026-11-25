@@ -5,36 +5,28 @@ use crate::repo::{Commit, Repo};
 use crate::session::{self, Anchor, Session, Source, Thread};
 use crate::store::Store;
 
-/// A session open for review: its diff, and the threads placed in it.
 pub struct Review {
     session: Session,
     pub repo: Repo,
     pub store: Store,
     pub doc: Doc,
-    /// What the diff can show: each commit, then uncommitted changes.
     views: Vec<View>,
     shown: Shown,
-    /// What `doc` covers, as of when it was loaded: HEAD may move since.
     span: Span,
 }
 
 pub enum View {
-    /// `C^ C`.
     Commit(Commit),
-    /// `staged` (`HEAD staged`) or `unstaged` (`staged unstaged`).
     Uncommitted(&'static str),
 }
 
-/// The views the diff shows: the whole range (`base end`), or a run of them as one diff.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Shown {
     All,
-    /// First and last of the `views` (oldest to newest), not all of them.
     Run(usize, usize),
 }
 
 impl Shown {
-    /// The run `first..=last` of `n` views; every one of them is the whole range.
     pub fn of((first, last): (usize, usize), n: usize) -> Shown {
         if first == 0 && last + 1 >= n {
             Shown::All
@@ -43,7 +35,6 @@ impl Shown {
         }
     }
 
-    /// First and last of the `n` views shown.
     pub fn bounds(self, n: usize) -> (usize, usize) {
         match self {
             Shown::All => (0, n.saturating_sub(1)),
@@ -62,7 +53,6 @@ impl Review {
             .collect();
         let staged = match session.end.as_str() {
             "staged" => true,
-            // Left out from the index, and when nothing is staged.
             "unstaged" => session.base != "staged" && repo.uncommitted()?.contains(&"staged"),
             _ => false,
         };
@@ -100,16 +90,12 @@ impl Review {
         (&mut self.doc, &self.session.threads)
     }
 
-    /// Switches the diff to `shown`.
     pub fn show(&mut self, shown: Shown) -> Result<()> {
         (self.doc, self.span) = load(&mut self.repo, &self.session, &self.views, shown)?;
         self.shown = shown;
         Ok(())
     }
 
-    /// The user's comment on `anchor`, of the diff shown, put on the view it is about
-    /// (`session::attribute`). The inner error is the session turning it down, the outer
-    /// one git or saving failing; so for `reply`.
     pub fn comment(&mut self, anchor: Anchor, body: String) -> Result<Result<()>> {
         let (first, last) = self.shown.bounds(self.views.len());
         let views = self
@@ -126,7 +112,6 @@ impl Review {
         self.threads_changed().map(Ok)
     }
 
-    /// The user's reply to thread `idx`.
     pub fn reply(&mut self, idx: usize, body: String) -> Result<Result<()>> {
         let id = self.session.threads[idx].id.clone();
         if let Err(e) = self.session.reply(&id, "user", body) {
@@ -135,27 +120,22 @@ impl Review {
         self.threads_changed().map(Ok)
     }
 
-    /// Rewrites the last message of thread `idx`.
     pub fn edit(&mut self, idx: usize, body: String) -> Result<()> {
         self.session.edit(idx, body);
         self.threads_changed()
     }
 
-    /// Removes the last message of thread `idx`, or the thread when it is the only one.
     pub fn delete(&mut self, idx: usize) -> Result<()> {
         self.session.delete(idx);
         self.threads_changed()
     }
 
-    /// Saves the session and refreshes the thread rows after threads changed.
     fn threads_changed(&mut self) -> Result<()> {
         self.store.save(&self.session)?;
         set_threads(&mut self.repo, &self.session, &self.span, &mut self.doc)
     }
 }
 
-/// What the diff of `shown` covers: its sides, the commits of its views, and the
-/// commit when it is the only one, which the diff shows with its threads.
 struct Span {
     left: String,
     right: String,
@@ -186,8 +166,6 @@ fn span(repo: &Repo, session: &Session, views: &[View], shown: Shown) -> Result<
     })
 }
 
-/// The diff of `shown`, from the left side of its first view to the right side of the
-/// last, and what it covers.
 fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Result<(Doc, Span)> {
     let span = span(repo, session, views, shown)?;
     let files = repo.diff(&span.left, &span.right, 3)?;
@@ -206,14 +184,12 @@ fn load(repo: &mut Repo, session: &Session, views: &[View], shown: Shown) -> Res
     Ok((doc, span))
 }
 
-/// Puts the session's threads where they are in `doc`, the diff of `span`.
 fn set_threads(repo: &mut Repo, session: &Session, span: &Span, doc: &mut Doc) -> Result<()> {
     let places = session.locate(repo, &span.left, &span.right, &span.commits)?;
     doc.set_threads(&session.threads, places);
     Ok(())
 }
 
-/// The left side of `view`.
 fn parent(repo: &Repo, view: &View) -> Result<String> {
     match view {
         View::Commit(c) => repo.left(&c.sha),
@@ -222,7 +198,6 @@ fn parent(repo: &Repo, view: &View) -> Result<String> {
     }
 }
 
-/// The right side of `view`.
 fn rev(view: &View) -> String {
     match view {
         View::Commit(c) => c.sha.clone(),
@@ -230,7 +205,6 @@ fn rev(view: &View) -> String {
     }
 }
 
-/// The commit of `view`; None for uncommitted changes.
 fn commit(view: &View) -> Option<String> {
     match view {
         View::Commit(c) => Some(c.sha.clone()),

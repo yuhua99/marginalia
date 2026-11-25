@@ -13,26 +13,18 @@ use unicode_width::UnicodeWidthStr;
 
 const WHO: &str = "user: ";
 
-/// A draft message for a new comment, a reply or an edit, drawn by the diff as the next
-/// `user:` line of a thread card. `Enter` sends, `Shift-Enter` or `Ctrl-j` breaks the
-/// line, `Esc` cancels.
 pub struct Input {
     target: Target,
-    /// A new comment's card header; replies and edits sit in their thread's card.
     header: Option<String>,
     text: TextArea<'static>,
-    /// The text the box opened with; `Esc` discards at once while it is unchanged.
     original: String,
-    /// `Esc` was pressed once with text in the box.
     discarding: bool,
-    /// Why the last send failed; the text stays for a retry.
     error: Option<String>,
 }
 
 enum Target {
     Comment(Anchor),
     Reply(usize),
-    /// The user's last message of a thread.
     Edit(usize),
 }
 
@@ -70,7 +62,6 @@ impl Input {
         }
     }
 
-    /// The thread whose last message this replaces.
     pub fn editing(&self) -> Option<usize> {
         match self.target {
             Target::Edit(idx) => Some(idx),
@@ -78,14 +69,12 @@ impl Input {
         }
     }
 
-    /// Rows the card takes at `width`: header, text, hint.
     pub fn height(&self, width: usize) -> usize {
         let w = width.saturating_sub(INDENT + WHO.len()).max(1);
         let text: usize = self
             .text
             .lines()
             .iter()
-            // Word wrapping, or by glyph with room for the cursor, whichever is taller.
             .map(|l| textwrap::wrap(l, w).len().max(l.width() / w + 1))
             .sum();
         self.header.is_some() as usize + text + 1
@@ -94,7 +83,6 @@ impl Input {
 
 impl Component for Input {
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut Ctx) -> Result<Outcome> {
-        // Shift-Enter needs a terminal reporting it apart from Enter; Ctrl-j works anywhere.
         let newline = (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT))
             || (key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL));
         match key.code {
@@ -158,7 +146,6 @@ impl Component for Input {
             f.render_widget(Paragraph::new(header.as_str()).style(bold), row(y, 1));
             y += 1;
         }
-        // A clipped card drops the hint first.
         let hint = area.bottom() > y + 1;
         let text = row(y, area.bottom().saturating_sub(y + hint as u16));
         f.render_widget(Paragraph::new(WHO).style(Style::new().fg(theme.teal)), text);

@@ -7,10 +7,8 @@ use crate::app::{Component, Look, Outcome};
 use crate::keymap::{Feed, Keymap};
 use crate::ui::popup::Popup;
 
-/// Actions shown on one help row, and what they do there.
 pub type Entry = (&'static [&'static str], &'static str);
 
-/// The keys of `actions` in `keymap`, joined with `/`.
 fn keys(actions: &[&str], keymap: &Keymap) -> String {
     let keys: Vec<_> = actions
         .iter()
@@ -20,14 +18,12 @@ fn keys(actions: &[&str], keymap: &Keymap) -> String {
     keys.join("/")
 }
 
-/// The entries with a key bound to any of their actions.
 fn bound<'a>(entries: &'a [Entry], keymap: &'a Keymap) -> impl Iterator<Item = &'a Entry> {
     entries
         .iter()
         .filter(|(actions, _)| !keys(actions, keymap).is_empty())
 }
 
-/// The keys of `entries` as a popup.
 fn popup(entries: &[Entry], keymap: &Keymap) -> Popup {
     let rows = bound(entries, keymap)
         .map(|(actions, text)| (keys(actions, keymap), text.to_string()))
@@ -35,8 +31,6 @@ fn popup(entries: &[Entry], keymap: &Keymap) -> Popup {
     Popup::new("Keys", rows)
 }
 
-/// The first key of each action of `entries` on one footer line, sequences such as
-/// `g g` written `gg`.
 pub fn hints(entries: &[Entry], keymap: &Keymap) -> String {
     let hints: Vec<_> = bound(entries, keymap)
         .map(|(actions, text)| {
@@ -47,14 +41,12 @@ pub fn hints(entries: &[Entry], keymap: &Keymap) -> String {
     format!(" {}", hints.join("  "))
 }
 
-/// `?`: the keys of the layer below; `?`, `q`, `Esc`, `h` or `Left` close it.
 pub struct Help {
     popup: Popup,
     keymap: Keymap,
 }
 
 impl Help {
-    /// The keys of `entries` as `keymap` binds them.
     pub fn new(entries: &[Entry], keymap: &Keymap) -> Help {
         Help {
             popup: popup(entries, keymap),

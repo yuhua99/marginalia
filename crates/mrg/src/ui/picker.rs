@@ -29,7 +29,6 @@ use crate::ui::scroll::Scroll;
 use crate::ui::settings::SettingsPopup;
 use crate::ui::{Mark, Panes, boxed, check, checked_bar, clear, dialog, row_at};
 
-/// Commits offered for a new range.
 const COMMITS: usize = 500;
 
 const HINTS: &[Entry] = &[
@@ -67,34 +66,26 @@ const HELP: &[Entry] = &[
     (&["quit"], "quit"),
 ];
 
-/// The blocks, top to bottom.
 const SESSIONS: usize = 0;
 const RANGE: usize = 1;
 const REVIEWS: usize = 2;
 const TITLES: [&str; 3] = ["Sessions", "Commits", "Reviews"];
 
-/// State the picker's layers share.
 pub struct Pick {
     pub store: Store,
     pub repo: Repo,
     pub look: Look,
     sessions: Vec<(Session, u64)>,
-    /// Shown in the footer until the next key, click or wheel turn.
     error: Option<String>,
-    /// The session to open after the picker quits; None quits mrg.
     pub open: Option<Session>,
-    /// `[forges]` of the settings.
     forges: BTreeMap<String, String>,
-    /// Open requests of origin's forge, listed the first time their block is focused.
     reviews: Reviews,
 }
 
 enum Reviews {
     Unlisted,
-    /// gh / glab listing them on a thread.
     Listing(Receiver<Result<(Forge, Vec<Request>)>>),
     Listed(Forge, Vec<Request>),
-    /// Why there is no list, for the user to act on.
     Failed(String),
 }
 
@@ -130,9 +121,6 @@ impl AsMut<Look> for Pick {
     }
 }
 
-/// What `mrg` shows first: blocks of sessions to resume, commits for a new range (rows
-/// checked with Space, or the cursor row) and the forge's open requests. Ends with the
-/// session to open in `pick.open`, or None to quit.
 pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
     let mut layers = Layers::new(Picker::new(pick)?);
     loop {
@@ -149,11 +137,9 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
         })?;
         let shown = pick.error.is_some();
         let quit = layers.wait(pick, |pick| {
-            // An error cleared by an event that changed nothing else: draw its going.
             if shown && pick.error.is_none() {
                 return Ok(None);
             }
-            // Wait for an event, drawing the requests once listed.
             while let Reviews::Listing(rx) = &pick.reviews
                 && !event::poll(Duration::from_millis(30))?
             {
@@ -169,8 +155,6 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
                 return Ok(None);
             }
             let event = event::read()?;
-            // Not on a button's drag or release, which follow the click that made the error,
-            // nor on the pointer's moves.
             if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press)
                 || matches!(&event, Event::Mouse(m) if matches!(
                     m.kind,
@@ -187,31 +171,20 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
     }
 }
 
-/// The bottom layer: the blocks, the focused one open, the others a title line.
 #[derive(Default)]
 struct Picker {
     commits: Vec<Commit>,
-    /// `commits` reach the root commit.
     exhausted: bool,
-    /// The rows of the range block above the commits: `unstaged` / `staged` when not empty.
     uncommitted: Vec<&'static str>,
-    /// `SESSIONS`, `RANGE` or `REVIEWS`.
     focused: usize,
-    /// Per block, its cursor into its shown rows and the screen over them.
     scroll: [Scroll; 3],
     filter: [Query; 3],
-    /// Checked rows of the range block, top..=bottom into all its rows.
     checked: Option<(usize, usize)>,
-    /// The range row a press began on, until letting go opens the rows dragged over.
     anchor: Option<usize>,
-    /// Rows the focused block shows, as of the last render.
     len: usize,
     keymap: Keymap,
-    /// The footer, from `HINTS`.
     hints: String,
-    /// The blocks, as of the last render.
     panes: [Rect; 3],
-    /// Column widths of `commits`.
     columns: Columns,
 }
 
@@ -231,12 +204,10 @@ impl Picker {
         })
     }
 
-    /// Appends the next `COMMITS` commits below the last one.
     fn more(&mut self, repo: &Repo) -> Result<()> {
         let Some(last) = self.commits.last() else {
             return Ok(());
         };
-        // One more to skip `last` itself, so a root commit needs no parent lookup.
         let page = repo.recent(&last.sha, COMMITS + 1)?;
         self.exhausted = page.len() <= COMMITS;
         self.commits.extend(page.into_iter().skip(1));
@@ -248,7 +219,6 @@ impl Picker {
         self.focused
     }
 
-    /// Loads older commits into the unfiltered range block.
     fn load_more(&mut self, ctx: &mut Pick) {
         if !self.exhausted
             && self.filter[RANGE].text.is_empty()
@@ -258,13 +228,10 @@ impl Picker {
         }
     }
 
-    /// The first row `pane` shows.
     fn skip(&self, pane: usize) -> usize {
         self.scroll[pane].top().0
     }
 
-    /// (text, value) of every row of a block: session ids; unstaged, staged and commit
-    /// shas; or request numbers.
     fn all(&self, pane: usize, ctx: &Pick) -> Vec<(String, String)> {
         match pane {
             RANGE => {
@@ -303,7 +270,6 @@ impl Picker {
         }
     }
 
-    /// Rows of `all(pane)`, without making them.
     fn count(&self, pane: usize, ctx: &Pick) -> usize {
         match pane {
             RANGE => self.uncommitted.len() + self.commits.len(),
@@ -315,10 +281,8 @@ impl Picker {
         }
     }
 
-    /// Indices into `all(pane)` that pass the filter.
     fn shown(&self, pane: usize, ctx: &Pick) -> Vec<usize> {
         let filter = self.filter[pane].text.to_lowercase();
-        // No filter passes every row, with no text to make for them.
         if filter.is_empty() {
             return (0..self.count(pane, ctx)).collect();
         }
@@ -330,9 +294,6 @@ impl Picker {
             .collect()
     }
 
-    /// Enter on row `i`: resumes that session, reviews request `i`, or makes a session of
-    /// the checked rows (or row `i` alone): from the parent of the bottom commit (or
-    /// before the root) to the top row.
     fn open(&self, i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         match self.focused {
             SESSIONS => {
@@ -348,7 +309,6 @@ impl Picker {
         let base = match bottom.as_str() {
             "unstaged" => "staged".to_string(),
             "staged" => "HEAD".to_string(),
-            // Left out for the root commit: the range starts before it.
             _ => ctx.repo.parent(bottom)?.unwrap_or_default(),
         };
         match ctx.repo.resolve(&format!("{base}..{end}")) {
@@ -371,7 +331,6 @@ impl Picker {
     }
 }
 
-/// Starts listing the open requests of origin's forge on a thread.
 fn list(repo: &Repo, forges: &BTreeMap<String, String>) -> Reviews {
     let forge = match Forge::of(repo, forges) {
         Ok(forge) => forge,
@@ -384,7 +343,6 @@ fn list(repo: &Repo, forges: &BTreeMap<String, String>) -> Reviews {
     Reviews::Listing(rx)
 }
 
-/// Opens session `id`, its request fetched again first.
 fn resume(id: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     match forge::resume(&mut ctx.repo, &ctx.store, id, false) {
         Ok(session) => {
@@ -398,15 +356,12 @@ fn resume(id: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     }
 }
 
-/// Enter on request `i`: resumes its newest session, or fetches it and starts one from
-/// where it left its target.
 fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     let Reviews::Listed(forge, requests) = &ctx.reviews else {
         return Ok(Outcome::Consumed);
     };
     let (forge, r) = (forge.clone(), requests[i].clone());
     let head = forge.head(r.number);
-    // Of the picker, which follow the request's pushes; not one `mrg new` made.
     if let Some((s, _)) = ctx
         .sessions
         .iter()
@@ -420,7 +375,6 @@ fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let range = format!("{}..{end}", short(&base));
         let mut session = Session::start(&ctx.repo, ctx.store.new_id(), range, base, end)?;
         session.target = Some(r.target.clone());
-        // A name is one line.
         let title = r.title.replace(char::is_control, " ");
         session.set_name(&format!("{} {title}", forge.sign(r.number)))?;
         Ok(session)
@@ -441,7 +395,6 @@ impl Panes<Pick> for Picker {
     fn act(&mut self, action: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         let pane = self.pane();
         let cursor = self.scroll[pane].settle();
-        // Down on the last row of the range block loads older commits.
         if pane == RANGE && action == "down" && cursor + 1 == self.count(RANGE, ctx) {
             self.load_more(ctx);
         }
@@ -501,9 +454,7 @@ impl Panes<Pick> for Picker {
         &self.panes
     }
 
-    /// Focusing the requests lists them the first time, and again after a failure.
     fn focus(&mut self, pane: usize, ctx: &mut Pick) {
-        // A wheel turn or click focuses too: only entering lists again.
         let entering = self.focused != pane;
         self.focused = pane;
         let failed = matches!(ctx.reviews, Reviews::Failed(_));
@@ -515,7 +466,6 @@ impl Panes<Pick> for Picker {
     fn scroll_focused(&mut self, down: bool, ctx: &mut Pick) {
         let pane = self.pane();
         self.scroll[pane].wheel(down);
-        // The wheel down with the last row of the range block on screen loads older commits.
         let rows = self.panes[pane].height.saturating_sub(2) as usize;
         if pane == RANGE && down && self.skip(RANGE) + rows >= self.count(RANGE, ctx) {
             self.load_more(ctx);
@@ -526,8 +476,6 @@ impl Panes<Pick> for Picker {
         self.filter[self.pane()].typing
     }
 
-    /// A session or a request opens as Enter does; a range row checks alone, the start
-    /// of a drag over the rows to open.
     fn press(&mut self, pane: usize, y: u16, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         self.anchor = None;
         let shown = self.shown(pane, ctx);
@@ -543,7 +491,6 @@ impl Panes<Pick> for Picker {
         Ok(Outcome::Consumed)
     }
 
-    /// After a press on a range row, checks the rows from it to the one at line `y`.
     fn drag(&mut self, _pane: usize, y: u16, ctx: &mut Pick) {
         let Some(anchor) = self.anchor else {
             return;
@@ -556,8 +503,6 @@ impl Panes<Pick> for Picker {
         }
     }
 
-    /// Letting go after a press on a range row opens the rows checked, unless the focus
-    /// left the range block meanwhile.
     fn release(&mut self, _pane: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
         if self.anchor.take().is_none() || self.focused != RANGE {
             return Ok(Outcome::Consumed);
@@ -584,7 +529,6 @@ impl Component<Pick> for Picker {
         self.mouse_at(m, at, ctx)
     }
 
-    /// The block under `at` and, in the focused one, its row.
     fn target(&self, at: Position) -> Option<(usize, Option<usize>)> {
         let pane = self.pane_at(at)?;
         if pane != self.focused {
@@ -608,7 +552,6 @@ impl Component<Pick> for Picker {
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Pick, pointer: Option<Position>) {
         let theme = ctx.look.theme;
-        // The focused block takes the height the others leave, a title line each.
         let heights = (0..TITLES.len()).map(|pane| {
             if pane == self.focused {
                 Constraint::Fill(1)
@@ -619,8 +562,6 @@ impl Component<Pick> for Picker {
         self.panes = Layout::vertical(heights).areas(area);
         let pane = self.pane();
         let area = self.panes[pane];
-        // Sessions change under the layers above: deleted, or renamed out of the filter;
-        // placing keeps the cursor within them.
         let shown = self.shown(pane, ctx);
         self.len = shown.len();
         self.scroll[pane].place(
@@ -636,7 +577,6 @@ impl Component<Pick> for Picker {
                 (REVIEWS, Reviews::Listed(_, requests)) => format!(" ({})", requests.len()),
                 _ => String::new(),
             };
-            // A folded block's name, which a click opens.
             let name = Span::raw(format!("{}{count}", TITLES[p]));
             let title = Line::from(vec![
                 Span::raw(" "),
@@ -661,8 +601,6 @@ impl Component<Pick> for Picker {
 }
 
 impl Picker {
-    /// The `shown` rows of the focused block in `inner`, the cursor's text marked and
-    /// the `hover`ed one's underlined.
     fn render_rows(
         &self,
         f: &mut Frame,
@@ -700,7 +638,6 @@ impl Picker {
                             checked_rows.push(row);
                         }
                         let mut spans = vec![mark(checked, theme)];
-                        // After the mark.
                         let width = width.saturating_sub(2);
                         let on = marks(row);
                         match i.checked_sub(self.uncommitted.len()) {
@@ -738,7 +675,6 @@ impl Picker {
                 }
             },
         };
-        // Under the rows, so the cursor's mark stays over it.
         for row in checked_rows {
             checked_bar(f, inner, inner.y + row as u16, theme);
         }
@@ -746,9 +682,6 @@ impl Picker {
     }
 }
 
-/// `● pull 12  title  author → target` in `width` columns, the author and target
-/// right-aligned and left out first when narrow; ● when a session reviews it; `mark` on
-/// the number and title.
 fn review_row<'a>(
     (word, r, reviewed, number_width): (&str, &'a Request, bool, usize),
     width: usize,
@@ -758,7 +691,6 @@ fn review_row<'a>(
     let dot = if reviewed { "● " } else { "  " };
     let id = format!("{word} {:<number_width$}  ", r.number);
     let mut meta = format!("{} → {}", r.author, r.target);
-    // After the mark and the id, the spaces before the meta.
     let width = width.saturating_sub(2 + id.width() + 2);
     if width < meta.width() + MIN_SUBJECT {
         meta.clear();
@@ -775,7 +707,6 @@ fn review_row<'a>(
     ]
 }
 
-/// The widest session name; None when no session has a name.
 fn name_width(sessions: &[(Session, u64)]) -> Option<usize> {
     sessions
         .iter()
@@ -783,8 +714,6 @@ fn name_width(sessions: &[(Session, u64)]) -> Option<usize> {
         .max()
 }
 
-/// `  name` padded to `name_width`, a longer name cut to `nam…`; empty when no
-/// session has a name.
 fn name_column(s: &Session, name_width: Option<usize>) -> String {
     name_width.map_or(String::new(), |w| {
         let mut n = s.name.clone().unwrap_or_default();
@@ -795,9 +724,6 @@ fn name_column(s: &Session, name_width: Option<usize>) -> String {
     })
 }
 
-/// `id  name  range` in `width` columns, the range right-aligned; the name column
-/// only when some session has a name, narrowed so the range fits; `mark` on the id and
-/// name.
 fn session_row<'a>(
     s: &'a Session,
     name_width: Option<usize>,
@@ -805,12 +731,9 @@ fn session_row<'a>(
     theme: &Theme,
     mark: Mark,
 ) -> Vec<Span<'a>> {
-    // Width left for the name after the id, the range and the spaces around the name.
     let room = width.saturating_sub(s.id.width() + s.range.width() + 4);
-    // No room: the name column goes, so the range fits.
     let name = name_column(s, name_width.map(|w| w.min(room)).filter(|&w| w > 0));
     let used = s.id.width() + name.width() + s.range.width();
-    // The name's padding joins the pad, out of the name's mark.
     let text = name.trim_end();
     let pad = " ".repeat(name.len() - text.len() + width.saturating_sub(used).max(2));
     vec![
@@ -821,10 +744,8 @@ fn session_row<'a>(
     ]
 }
 
-/// Columns the rename box shows; a longer name scrolls in it.
 const RENAME_WIDTH: u16 = 80;
 
-/// `r`: the name being typed for session `id`; Enter saves it, Esc cancels.
 struct Rename {
     id: String,
     text: TextArea<'static>,
@@ -861,7 +782,6 @@ impl Component<Pick> for Rename {
                 return Ok(Outcome::Close);
             }
             KeyCode::Esc => return Ok(Outcome::Close),
-            // Kept to one line.
             _ => {
                 let before = text.clone();
                 if text.input(key) && text.lines().len() > 1 {
@@ -873,7 +793,6 @@ impl Component<Pick> for Rename {
     }
 
     fn paste(&mut self, text: &str) {
-        // Its first line.
         let line: String = text
             .lines()
             .next()
@@ -890,7 +809,6 @@ impl Component<Pick> for Rename {
             area,
             "Rename session",
             &self.text,
-            // And the cursor after the name.
             RENAME_WIDTH + 1,
             "Enter save  Esc cancel  blank clears",
             ctx.look.theme,

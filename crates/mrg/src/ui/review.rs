@@ -81,19 +81,13 @@ const HINTS: &[help::Entry] = &[
     (&["quit"], "quit"),
 ];
 
-/// The bottom layer: commits across the top, files and the diff below.
-/// `Tab` / `S-Tab` cycle the focus along commits, files, diff; `h` / `l` or `Left` /
-/// `Right` move by file.
 pub struct Review {
     commits: Sidebar,
     files: Sidebar,
     diff: DiffView,
-    /// 0 commits, 1 files, 2 diff.
     focus: usize,
     keymap: Keymap,
-    /// The footer, from `HINTS`.
     hints: String,
-    /// The commits, files and diff boxes, as of the last render.
     panes: [Rect; 3],
 }
 
@@ -115,14 +109,12 @@ impl Review {
         }
     }
 
-    /// Entering or leaving the commits box, from `focus`, checks or drops its views.
     fn refocus(&mut self, focus: usize, ctx: &Ctx) {
         if (focus == COMMITS) != (self.focus == COMMITS) {
             self.commits.focus(ctx, self.focus == COMMITS);
         }
     }
 
-    /// Shows the checked commits, unless shown already.
     fn show_checked(&mut self, ctx: &mut Ctx) -> Result<()> {
         if let Some(run) = self.commits.checked()
             && run != ctx.review.shown().bounds(ctx.review.views().len())
@@ -132,7 +124,6 @@ impl Review {
         Ok(())
     }
 
-    /// Shows the views `run`, the diff from its top.
     fn show(&mut self, run: (usize, usize), ctx: &mut Ctx) -> Result<()> {
         ctx.review.show(Shown::of(run, ctx.review.views().len()))?;
         self.diff = DiffView::default();
@@ -150,7 +141,6 @@ impl Panes<Ctx> for Review {
             "settings" => {
                 return Ok(Outcome::Push(Box::new(SettingsPopup::new(&ctx.look))));
             }
-            // Leaving for the picker ends the session like quitting does.
             "quit" | "back" => {
                 ctx.back = action == "back";
                 let order = ctx.review.doc.thread_order();
@@ -189,8 +179,6 @@ impl Panes<Ctx> for Review {
                     }
                     ("comment", entry) => {
                         if let Some(anchor) = entry.anchor(ctx) {
-                            // Under the file's header, the commit's when shown alone,
-                            // else the session's.
                             let row = match (entry, &anchor) {
                                 (Entry::File(file), _) => ctx.review.doc.expand_file(file),
                                 (_, Anchor::Commit { commit }) => {
@@ -234,9 +222,6 @@ impl Panes<Ctx> for Review {
         self.diff.busy() || self.files.typing()
     }
 
-    /// A commit checks alone, the start of a drag over the commits to show; a file opens
-    /// as Enter does; a diff row takes the cursor, the start of a drag over the lines to
-    /// select.
     fn press(&mut self, pane: usize, y: u16, ctx: &mut Ctx) -> Result<Outcome> {
         match pane {
             COMMITS => self.commits.press(self.panes[COMMITS], y, ctx),
@@ -247,7 +232,6 @@ impl Panes<Ctx> for Review {
         Ok(Outcome::Consumed)
     }
 
-    /// Over the commits, checks those dragged over; over the diff, selects the lines.
     fn drag(&mut self, pane: usize, y: u16, ctx: &mut Ctx) {
         match pane {
             COMMITS => self.commits.drag(self.panes[COMMITS], y, ctx),
@@ -256,7 +240,6 @@ impl Panes<Ctx> for Review {
         }
     }
 
-    /// Letting go over the commits shows those checked.
     fn release(&mut self, pane: usize, ctx: &mut Ctx) -> Result<Outcome> {
         match pane {
             COMMITS if self.commits.release() => self.show_checked(ctx)?,
@@ -285,13 +268,11 @@ impl Component for Review {
         self.mouse_at(m, at, ctx)
     }
 
-    /// The box under `at` and its row there.
     fn target(&self, at: Position) -> Option<(usize, Option<usize>)> {
         let pane = self.pane_at(at)?;
         let row = match pane {
             COMMITS => self.commits.row_at(self.panes[COMMITS], at.y),
             FILES => self.files.row_at(self.panes[FILES], at.y),
-            // Inside the borders, where the diff underlines.
             _ if self.panes[DIFF].inner(Margin::new(1, 1)).contains(at) => self.diff.row_at(at.y),
             _ => None,
         }?;
@@ -304,9 +285,7 @@ impl Component for Review {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, ctx: &Ctx, pointer: Option<Position>) {
-        // Typing leaves the mouse alone.
         let pointer = pointer.filter(|_| !self.busy());
-        // Commits as tall as their rows, up to 4.
         let rows = ctx.review.views().len().min(4) as u16;
         let [top, bottom] =
             Layout::vertical([Constraint::Length(rows + 2), Constraint::Fill(1)]).areas(area);
@@ -315,7 +294,6 @@ impl Component for Review {
         self.panes = [top, left, right];
         self.commits
             .render(f, top, ctx, self.focus == COMMITS, pointer, None);
-        // The diff first: it places the screen, whose file its title and the files box show.
         self.diff
             .render(f, right.inner(Margin::new(1, 1)), ctx, pointer);
         let file = self.diff.current_file(ctx);
@@ -338,7 +316,6 @@ impl Component for Review {
     }
 }
 
-/// The path of `file`, else the session name, if any.
 fn header(ctx: &Ctx, file: Option<usize>) -> String {
     let name = match file {
         Some(file) => Some(&ctx.review.doc.paths()[file].1),
@@ -347,7 +324,6 @@ fn header(ctx: &Ctx, file: Option<usize>) -> String {
     name.map_or(String::new(), |n| format!(" {n} "))
 }
 
-/// The lines added and deleted in `file`, if any.
 fn stat(ctx: &Ctx, file: Option<usize>) -> Line<'static> {
     let theme = ctx.look.theme;
     match file.map(|file| ctx.review.doc.changes(file)) {

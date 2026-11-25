@@ -48,26 +48,18 @@ const HINTS: &[Entry] = &[
     (&["quit", "cancel"], "back"),
 ];
 
-/// A whole file at the range end, opened from a link, read only and without threads;
-/// the linked lines are marked in the gutter. `q` / `Esc` go back.
 pub struct FileView {
     doc: Doc,
-    /// The link it was opened from, as `path:line`.
     label: String,
-    /// The rows of the linked lines.
     linked: RangeInclusive<usize>,
     scroll: Scroll,
-    /// The `/` search; while typing, it takes all keys.
     search: Query,
     keymap: Keymap,
-    /// The footer, from `HINTS`.
     hints: String,
-    /// The rows drawn and their screen lines, as of the last render.
     rows: Vec<(usize, Range<u16>)>,
 }
 
 impl FileView {
-    /// The file of `link` at the range end, from its first linked line; None when absent.
     pub fn open(ctx: &mut Ctx, link: &Link) -> Result<Option<FileView>> {
         let rev = ctx.review.session().end.clone();
         let Some(text) = ctx.review.repo.read(&rev, &link.path)? else {
@@ -90,10 +82,8 @@ impl FileView {
 }
 
 impl FileView {
-    /// Moves to the next (or previous) search match.
     fn find(&mut self, forward: bool) {
         let cursor = self.scroll.settle();
-        // `Doc::file` has no thread rows.
         if let Some(row) = self.search.find(&mut self.doc, cursor, forward, &[]) {
             self.scroll.center(row);
         }
@@ -135,7 +125,6 @@ impl Component for FileView {
         }
     }
 
-    /// The wheel scrolls; a press moves the cursor to the row there.
     fn mouse(&mut self, m: Mouse, at: Position, _ctx: &mut Ctx) -> Result<Outcome> {
         if self.search.typing {
             return Ok(Outcome::Unchanged);
@@ -167,8 +156,6 @@ impl Component for FileView {
         let (doc, linked, cursor) = (&self.doc, &self.linked, self.scroll.cursor());
         let search = &self.search.text;
         let draw = |i: usize, _hover: bool| {
-            // The cursor as an accent block; linked lines as bold blue numbers, apart from
-            // it in themes whose accent is blue.
             let style = if i == cursor {
                 Style::new()
                     .fg(ctx.look.theme.on_accent)
@@ -197,7 +184,6 @@ impl Component for FileView {
     }
 }
 
-/// A `path:line` or `path:start-end` in a thread, to a file at the range end.
 #[derive(Clone, PartialEq)]
 pub struct Link {
     pub path: String,
@@ -215,9 +201,7 @@ impl Link {
     }
 }
 
-/// Paths of the files at the range end, which links in threads may open.
 pub struct Files {
-    /// The paths by their file name.
     by_name: HashMap<String, Vec<String>>,
 }
 
@@ -231,7 +215,6 @@ impl Files {
         Files { by_name }
     }
 
-    /// The path that is `path`, or else the only one ending in `/path`.
     pub fn find(&self, path: &str) -> Option<&str> {
         let name = path.rsplit_once('/').map_or(path, |(_, n)| n);
         let paths = self.by_name.get(name)?;
@@ -248,7 +231,6 @@ impl Files {
     }
 }
 
-/// The links in `text` to paths in `files`, with their byte ranges in `text`.
 pub fn links(text: &str, files: &Files) -> Vec<(Range<usize>, Link)> {
     text.split(|c: char| !(c.is_alphanumeric() || "_./-:".contains(c)))
         .filter_map(|token| {
@@ -275,7 +257,6 @@ pub fn links(text: &str, files: &Files) -> Vec<(Range<usize>, Link)> {
         .collect()
 }
 
-/// The links in thread `t`, each once, in order.
 pub fn thread_links(t: &Thread, files: &Files) -> Vec<Link> {
     let mut out: Vec<Link> = Vec::new();
     for (_, link) in t.messages.iter().flat_map(|m| links(&m.body, files)) {
@@ -286,7 +267,6 @@ pub fn thread_links(t: &Thread, files: &Files) -> Vec<Link> {
     out
 }
 
-/// Enter on a thread with several links: a list of them to pick one.
 pub struct LinkPicker {
     popup: Popup,
     links: Vec<Link>,
@@ -303,7 +283,6 @@ impl LinkPicker {
         }
     }
 
-    /// None while the list stays open; then the picked link, or None when cancelled.
     pub fn key(&mut self, key: KeyEvent) -> Option<Option<Link>> {
         let Feed::Action(action) = self.keymap.feed(key) else {
             return None;

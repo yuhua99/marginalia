@@ -23,7 +23,6 @@ use ratatui::widgets::{Block, Clear};
 use crate::app::{Mouse, Outcome};
 use crate::theme::Theme;
 
-/// A bordered box; the focused one in the accent color.
 pub fn boxed<'a>(title: impl Into<Line<'a>>, focused: bool, theme: &Theme) -> Block<'a> {
     let color = if focused { theme.accent } else { theme.dim };
     Block::bordered()
@@ -31,18 +30,14 @@ pub fn boxed<'a>(title: impl Into<Line<'a>>, focused: bool, theme: &Theme) -> Bl
         .border_style(Style::new().fg(color))
 }
 
-/// Blanks `area` to the theme's background and default text.
 pub fn clear(f: &mut Frame, area: Rect, theme: &Theme) {
     f.render_widget(Clear, area);
     f.buffer_mut()
         .set_style(area, Style::new().fg(theme.text).bg(theme.bg));
 }
 
-/// Smallest width and height of a modal box, borders included.
 const MODAL_MIN: (u16, u16) = (40, 6);
 
-/// A box of `width` x `height` (at least `MODAL_MIN`, at most `area`) centered in `area`,
-/// cleared and framed in the accent color; returns its inner area.
 pub fn modal(
     f: &mut Frame,
     area: Rect,
@@ -66,7 +61,6 @@ pub fn modal(
     inner
 }
 
-/// Marks row `y` of `area` as the cursor: an accent bar across it, over any colors.
 pub fn cursor_bar(f: &mut Frame, area: Rect, y: u16, theme: &Theme) {
     bar(
         f,
@@ -76,12 +70,10 @@ pub fn cursor_bar(f: &mut Frame, area: Rect, y: u16, theme: &Theme) {
     );
 }
 
-/// The surface background on row `y` of `area`, under a checked row.
 pub fn checked_bar(f: &mut Frame, area: Rect, y: u16, theme: &Theme) {
     bar(f, area, y, Style::new().bg(theme.surface));
 }
 
-/// `style` across row `y` of `area`.
 fn bar(f: &mut Frame, area: Rect, y: u16, style: Style) {
     let rect = Rect {
         y,
@@ -91,18 +83,13 @@ fn bar(f: &mut Frame, area: Rect, y: u16, style: Style) {
     f.buffer_mut().set_style(rect, style);
 }
 
-/// How the text a click acts on is marked: the cursor and the pointer mark the same spans.
 #[derive(Clone, Copy, Default)]
 pub struct Mark {
-    /// The cursor's or the selection's accent block; a file view's linked lines' style.
     pub style: Style,
-    /// Under the pointer: underlined.
     pub hover: bool,
 }
 
 impl Mark {
-    /// The accent block when `on` the cursor or in the selection, underlined under the
-    /// pointer.
     pub fn new(theme: &Theme, on: bool, hover: bool) -> Mark {
         let style = if on {
             Style::new().bg(theme.accent).fg(theme.on_accent)
@@ -112,15 +99,12 @@ impl Mark {
         Mark { style, hover }
     }
 
-    /// `span` under the mark, its style over the span's own.
     pub fn lit(self, span: Span<'_>) -> Span<'_> {
         let span = span.patch_style(self.style);
         if self.hover { span.underlined() } else { span }
     }
 }
 
-/// A file's status letter: added green, deleted red, modified yellow, renamed blue,
-/// type changed mauve; others, like `Doc::file`'s ' ', keep the surrounding style.
 pub fn status_style(status: char, theme: &Theme) -> Style {
     let color = match status {
         'A' => theme.green,
@@ -133,8 +117,6 @@ pub fn status_style(status: char, theme: &Theme) -> Style {
     Style::new().fg(color)
 }
 
-/// Where movement `action` takes a cursor over `len` rows on a screen of `height` rows,
-/// a page being all of it and a half page half; None for other actions.
 pub fn step(cursor: usize, action: &str, len: usize, height: usize) -> Option<usize> {
     let half = (height / 2).max(1);
     let last = len.saturating_sub(1);
@@ -152,36 +134,22 @@ pub fn step(cursor: usize, action: &str, len: usize, height: usize) -> Option<us
     Some(to.min(last))
 }
 
-/// The row at screen line `y` of a list of `len` rows boxed over `area`, shown from `top`;
-/// None on the borders and below the last row.
 pub fn row_at(area: Rect, top: usize, len: usize, y: u16) -> Option<usize> {
     let line = y.checked_sub(area.y + 1).filter(|l| l + 2 < area.height)?;
     let row = top + line as usize;
     (row < len).then_some(row)
 }
 
-/// A screen of boxes, one focused, that the mouse focuses and moves in: the picker's
-/// and the review's.
 pub trait Panes<C> {
-    /// The boxes, as of the last render.
     fn panes(&self) -> &[Rect];
     fn focus(&mut self, pane: usize, ctx: &mut C);
-    /// Typing, which takes all keys and leaves the mouse alone.
     fn busy(&self) -> bool;
-    /// The key action `action` in the focused box.
     fn act(&mut self, action: &str, ctx: &mut C) -> Result<Outcome<C>>;
-    /// Scrolls the focused box a wheel turn down or up, its cursor left.
     fn scroll_focused(&mut self, down: bool, ctx: &mut C);
-    /// A press on screen line `y` of the focused `pane`: moves its cursor to the row
-    /// there, and acts on it or starts a drag from it.
     fn press(&mut self, pane: usize, y: u16, ctx: &mut C) -> Result<Outcome<C>>;
-    /// The button held over screen line `y` after a press in `pane`.
     fn drag(&mut self, pane: usize, y: u16, ctx: &mut C);
-    /// The button let go after a press in `pane`.
     fn release(&mut self, pane: usize, ctx: &mut C) -> Result<Outcome<C>>;
 
-    /// The wheel focuses the box under it and scrolls it; a press focuses the box and
-    /// presses in it; a drag and the letting go go to the box pressed in.
     fn mouse_at(&mut self, m: Mouse, at: Position, ctx: &mut C) -> Result<Outcome<C>> {
         let on = match m {
             Mouse::Drag { from } | Mouse::Release { from } => from,
@@ -205,7 +173,6 @@ pub trait Panes<C> {
         Ok(Outcome::Consumed)
     }
 
-    /// The box under `at`, unless typing.
     fn pane_at(&self, at: Position) -> Option<usize> {
         if self.busy() {
             return None;
@@ -214,7 +181,6 @@ pub trait Panes<C> {
     }
 }
 
-/// Space on row `i` of a contiguous check: extends it to `i`, or clears it when `i` is in it.
 pub fn check(checked: Option<(usize, usize)>, i: usize) -> Option<(usize, usize)> {
     match checked {
         None => Some((i, i)),
@@ -232,7 +198,6 @@ mod tests {
         assert_eq!(step(0, "half_page_down", 20, 10), Some(5));
         assert_eq!(step(0, "half_page_down", 3, 10), Some(2));
         assert_eq!(step(7, "half_page_up", 20, 10), Some(2));
-        // At least one row on a tiny screen.
         assert_eq!(step(0, "half_page_down", 5, 1), Some(1));
         assert_eq!(step(0, "page_down", 30, 10), Some(10));
         assert_eq!(step(12, "page_up", 30, 10), Some(2));

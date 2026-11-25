@@ -10,17 +10,12 @@ use toml_edit::{DocumentMut, Item, Table, Value};
 use crate::keymap::{self, Keys};
 use crate::store::xdg_dir;
 
-/// What the `s` popup changes, kept in `$XDG_CONFIG_HOME/marginalia/settings.toml`.
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// A theme name; empty or unknown means the default.
     pub theme: String,
-    /// Wrap long code lines; off cuts them at the edge.
     pub wrap: bool,
-    /// `[keys.<context>]`, which `s` leaves as written.
     pub keys: Keys,
-    /// `[forges]`: a host's forge, `github` or `gitlab`, past github.com and gitlab.com.
     pub forges: BTreeMap<String, String>,
 }
 
@@ -36,7 +31,6 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The defaults when there is no file yet, which writes them with the built-in keys.
     pub fn load() -> Result<Settings> {
         let path = path()?;
         let text = match read(&path)? {
@@ -50,7 +44,6 @@ impl Settings {
         toml_edit::de::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
 
-    /// Writes the fields into the file, keeping the rest of it and its comments.
     pub fn save(&self) -> Result<()> {
         let path = path()?;
         let mut doc: DocumentMut = read(&path)?
@@ -63,7 +56,6 @@ impl Settings {
     }
 }
 
-/// A new file: the default settings and the built-in keys.
 fn defaults() -> DocumentMut {
     let settings = Settings::default();
     let mut doc = DocumentMut::new();
@@ -88,7 +80,6 @@ pub fn path() -> Result<PathBuf> {
     Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("settings.toml"))
 }
 
-/// Sets `key` to `v`, keeping the comments around the old value.
 fn set(doc: &mut DocumentMut, key: &str, v: impl Into<Value>) {
     let mut v = v.into();
     if let Some(old) = doc.get(key).and_then(Item::as_value) {
@@ -97,7 +88,6 @@ fn set(doc: &mut DocumentMut, key: &str, v: impl Into<Value>) {
     doc[key] = Item::Value(v);
 }
 
-/// The file's text, or None when there is no file yet.
 fn read(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),

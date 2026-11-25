@@ -12,7 +12,6 @@ pub struct Store {
     dir: PathBuf,
 }
 
-/// `$var/marginalia`, or `~/fallback/marginalia` when `var` is unset.
 pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
     let base = match std::env::var_os(var).filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
@@ -22,7 +21,6 @@ pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
 }
 
 impl Store {
-    /// `marginalia/` in `git_dir`, the git dir the repo's worktrees share.
     pub fn open(git_dir: &Path) -> Result<Store> {
         let dir = git_dir.join("marginalia");
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
@@ -60,8 +58,6 @@ impl Store {
         Ok(())
     }
 
-    /// Sessions with their last update time (unix seconds), newest first; those that do
-    /// not load, as of an older mrg, are left out.
     pub fn list(&self) -> Result<Vec<(Session, u64)>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(&self.dir)? {
@@ -86,7 +82,6 @@ impl Store {
         Ok(out)
     }
 
-    /// Removes the session and what `repo` keeps for it.
     pub fn delete(&self, repo: &Repo, id: &str) -> Result<()> {
         repo.forget(id)?;
         fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))

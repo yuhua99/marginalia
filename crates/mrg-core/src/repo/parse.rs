@@ -2,7 +2,6 @@ use anyhow::{Context, Result, bail};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FileDiff {
-    /// Status letter from `git diff --raw`: A, D, M, R, T...
     pub status: char,
     pub old_path: String,
     pub new_path: String,
@@ -20,8 +19,6 @@ pub struct Hunk {
 }
 
 impl Hunk {
-    /// The first line of the old and the new side; an empty side's start is the line
-    /// before the change.
     pub fn firsts(&self) -> (u32, u32) {
         let first = |start, len| if len == 0 { start + 1 } else { start };
         (
@@ -44,12 +41,6 @@ pub enum Kind {
     Add,
 }
 
-/// Parses `git diff --raw -z --patch`.
-///
-/// Paths and status come from the NUL-separated raw records, so the patch headers
-/// (quoting, prefixes) are never interpreted. Each raw record has one patch block
-/// (two for a type change: deletion then addition), and hunk bodies are read by their declared line counts, so content lines that
-/// look like `--- a/x` or `+++ b/x` stay content.
 pub fn parse(out: &[u8]) -> Result<Vec<FileDiff>> {
     let mut files = Vec::new();
     let mut rest = out;
@@ -75,7 +66,6 @@ pub fn parse(out: &[u8]) -> Result<Vec<FileDiff>> {
         });
         rest = r;
     }
-    // An extra NUL separates the raw records from the patch.
     let patch = rest.strip_prefix(b"\0").unwrap_or(rest);
     let mut lines = patch.split(|&b| b == b'\n').peekable();
 
@@ -119,7 +109,6 @@ pub fn parse(out: &[u8]) -> Result<Vec<FileDiff>> {
                         String::from_utf8_lossy(line.get(1..).unwrap_or_default()).into_owned();
                     hunk.lines.push(Line { kind, text });
                 }
-                // "\ No newline at end of file" after the last line
                 while lines.next_if(|l| l.starts_with(b"\\")).is_some() {}
                 f.hunks.push(hunk);
             }
@@ -139,7 +128,6 @@ fn take_nul(s: &[u8]) -> Result<(String, &[u8])> {
     Ok((String::from_utf8_lossy(&s[..i]).into_owned(), &s[i + 1..]))
 }
 
-/// `@@ -a[,b] +c[,d] @@ ...`
 fn parse_header(line: &[u8]) -> Result<Hunk> {
     let line = String::from_utf8_lossy(line);
     let bad = || format!("bad hunk header: {line}");
@@ -186,7 +174,6 @@ mod tests {
         }
     }
 
-    /// Raw records followed by the patch, as `git diff --raw -z --patch` prints them.
     fn out(raw: &[&str], patch: &str) -> Vec<u8> {
         let mut v = Vec::new();
         for r in raw {
@@ -200,8 +187,6 @@ mod tests {
 
     #[test]
     fn real_git_output() {
-        // Captured from git 2.34: added, binary, rename with edit, header-like content
-        // with no newline at end, deleted non-ASCII path.
         let o = out(
             &[
                 ":000000 100644 0000000 3e75765 A\0add.txt",
@@ -339,13 +324,9 @@ diff --git a/b b/b\n@@ -1 +1 @@\n-1\n+2\n",
         let one: &[&str] = &[":100644 100644 1 2 M\0a"];
         let two: &[&str] = &[":100644 100644 1 2 M\0a", ":100644 100644 1 2 M\0b"];
         for (raw, patch) in [
-            // A hunk shorter than declared.
             (one, "diff --git a/a b/a\n@@ -1,3 +1,3 @@\n x\n"),
-            // A hunk longer than declared.
             (one, "diff --git a/a b/a\n@@ -1 +1,2 @@\n-x\n-y\n+z\n"),
-            // A malformed range.
             (one, "diff --git a/a b/a\n@@ -x +1 @@\n+z\n"),
-            // A raw record with no patch, and a patch with no raw record.
             (two, "diff --git a/a b/a\n@@ -1 +1 @@\n-1\n+2\n"),
             (
                 one,

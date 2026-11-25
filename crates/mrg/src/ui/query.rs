@@ -8,18 +8,14 @@ use crate::doc::{Doc, Row};
 use crate::session::Thread;
 use crate::theme::Theme;
 
-/// A line typed after `/`: a search, or a filter.
 #[derive(Default)]
 pub struct Query {
     pub text: String,
-    /// Keys go to the text.
     pub typing: bool,
-    /// `Doc::tally` of the text, for the doc version it is of.
     counted: Option<(u64, (Vec<usize>, usize))>,
 }
 
 impl Query {
-    /// A new line, typing.
     pub fn start() -> Query {
         Query {
             typing: true,
@@ -27,7 +23,6 @@ impl Query {
         }
     }
 
-    /// Takes `key` while typing; true when Enter ends a non-blank line. Esc clears it.
     pub fn key(&mut self, key: KeyEvent) -> bool {
         self.counted = None;
         match key.code {
@@ -45,13 +40,11 @@ impl Query {
         false
     }
 
-    /// Adds the first line of pasted `text`.
     pub fn paste(&mut self, text: &str) {
         self.counted = None;
         self.text.push_str(text.lines().next().unwrap_or(""));
     }
 
-    /// `/text ` for a box title while there is one.
     pub fn title(&self) -> String {
         if self.text.is_empty() && !self.typing {
             return String::new();
@@ -59,8 +52,6 @@ impl Query {
         format!("/{} ", self.text)
     }
 
-    /// `title` with, once typed, which of the rows with the text row `at` of `doc` is, of
-    /// all: `/text [3/8] `, or `[-/8]` off them. Counts again only when `doc` changes.
     pub fn search_title(&mut self, doc: &Doc, at: usize, threads: &[Thread]) -> String {
         if self.typing || self.text.is_empty() {
             return self.title();
@@ -77,8 +68,6 @@ impl Query {
         format!("/{} [{on}/{total}] ", self.text)
     }
 
-    /// Whether the text, any case, is in `row`: in a file path, a code line, or the
-    /// messages of `threads`.
     fn hit(&self, row: &Row, threads: &[Thread]) -> bool {
         let has = |s: &str| !hits(s, &self.text).is_empty();
         match row {
@@ -92,8 +81,6 @@ impl Query {
         }
     }
 
-    /// The next (or previous) row of `doc` from `from` with the text in it, any case:
-    /// a file path, a code line, or a message of `threads`. Expands a collapsed file it is in.
     pub fn find(
         &self,
         doc: &mut Doc,
@@ -105,19 +92,16 @@ impl Query {
     }
 }
 
-/// How a search match shows: yellow on the cursor row, teal elsewhere.
 pub fn hit_style(theme: &Theme, current: bool) -> Style {
     let bg = if current { theme.yellow } else { theme.teal };
     Style::new().fg(theme.bg).bg(bg)
 }
 
-/// Byte ranges of `query` in `text`, any case.
 pub fn hits(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() {
         return Vec::new();
     }
     let query = query.to_lowercase();
-    // Lowercased, with the byte of `text` each of its bytes comes from.
     let (mut lower, mut from) = (String::new(), Vec::new());
     for (at, c) in text.char_indices() {
         for l in c.to_lowercase() {
@@ -132,13 +116,10 @@ pub fn hits(text: &str, query: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// `spans` with the matches of `query` in their joined text patched with `style`,
-/// split where a match starts or ends inside one.
 pub fn mark(spans: Vec<Span<'static>>, query: &str, style: Style) -> Vec<Span<'static>> {
     let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
     let hits = hits(&joined, query);
     let mut out = Vec::new();
-    // Where the span starts in `joined`.
     let mut start = 0;
     for span in spans {
         let text = span.content.as_ref();
@@ -173,7 +154,6 @@ mod tests {
 
     #[test]
     fn titles_which_match_of_all() {
-        // The path, then "foo", "foo foo" and "bar": two rows with "foo".
         let doc = Doc::file("r".into(), "a".into(), "foo\nfoo foo\nbar");
         let mut q = Query::start();
         q.paste("foo");

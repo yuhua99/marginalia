@@ -8,7 +8,6 @@ use crate::ui::dialog;
 
 type Answer<C> = Box<dyn FnMut(&mut C) -> Result<Outcome<C>>>;
 
-/// A question answered by a key: the key of an answer runs it, Esc closes, other keys wait.
 pub struct Confirm<C> {
     title: &'static str,
     question: String,
@@ -26,7 +25,6 @@ impl<C> Confirm<C> {
         }
     }
 
-    /// Runs `answer` on `key`.
     pub fn on(
         mut self,
         key: char,

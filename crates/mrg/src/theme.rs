@@ -9,26 +9,17 @@ mod system;
 
 use contrast::{COLOR, DIM, TEXT, luminance, readable};
 
-/// Percent of red / green over the background of a changed line, and of the changed
-/// words in it.
 const LINE: u16 = 15;
 const WORDS: u16 = 30;
 
-/// Colors of the UI and of syntax tokens.
 #[derive(Clone)]
 pub struct Theme {
     pub name: &'static str,
-    /// The screen background.
     pub bg: Color,
-    /// Default text.
     pub text: Color,
-    /// Muted text: hints, line numbers.
     pub dim: Color,
-    /// Code comments, as in helix's theme of the same name.
     pub comment: Color,
-    /// Focused borders, marks, prompts.
     pub accent: Color,
-    /// Text on accent backgrounds.
     pub on_accent: Color,
     pub red: Color,
     pub green: Color,
@@ -37,9 +28,7 @@ pub struct Theme {
     pub mauve: Color,
     pub teal: Color,
     pub peach: Color,
-    /// Background of threads.
     pub surface: Color,
-    /// Backgrounds of deleted / added lines, and of the changed words in them.
     pub del_bg: Color,
     pub add_bg: Color,
     pub del_emph: Color,
@@ -62,7 +51,6 @@ impl Theme {
     }
 }
 
-/// The RGB themes, after `system`: the dark ones, then the light ones. Palettes as in herdr.
 const PALETTES: &[(&str, Palette)] = &[
     (
         "catppuccin",
@@ -355,9 +343,6 @@ const PALETTES: &[(&str, Palette)] = &[
     ),
 ];
 
-/// The built-in themes, the first the default: `system`, from the terminal's colors
-/// when it reports them, else tokyo-night's, then the RGB ones. The first call asks
-/// the terminal, so it comes before the TUI starts.
 pub fn themes() -> &'static [Theme] {
     static ALL: OnceLock<Vec<Theme>> = OnceLock::new();
     ALL.get_or_init(|| {
@@ -373,7 +358,6 @@ pub fn themes() -> &'static [Theme] {
     })
 }
 
-/// The theme named `name`, or the default.
 pub fn find(name: &str) -> &'static Theme {
     let themes = themes();
     themes.iter().find(|t| t.name == name).unwrap_or(&themes[0])
@@ -381,7 +365,6 @@ pub fn find(name: &str) -> &'static Theme {
 
 type Rgb = (u8, u8, u8);
 
-/// The colors an RGB theme is made of.
 #[derive(Clone, Copy)]
 struct Palette {
     bg: Rgb,
@@ -398,18 +381,14 @@ struct Palette {
     peach: Rgb,
 }
 
-/// Changed lines tint the background with red / green; changed words tint it more.
-/// Each color is moved in lightness until it reads on the backgrounds it is drawn on.
 fn palette(name: &'static str, p: Palette) -> Theme {
     let dark = luminance(p.bg) < luminance(p.text);
     let tint = |c, pct| mix(readable(c, &[p.bg], COLOR, dark), p.bg, pct);
     let (del_bg, add_bg) = (tint(p.red, LINE), tint(p.green, LINE));
     let (del_emph, add_emph) = (tint(p.red, WORDS), tint(p.green, WORDS));
     let surface = mix(p.text, p.bg, 15);
-    // Code is drawn on the background and on the tints of changed lines and words.
     let code_on = [p.bg, del_bg, add_bg, del_emph, add_emph];
     let code = |c, min| rgb(readable(c, &code_on, min, dark));
-    // Hints, marks and the cursor bar are drawn on threads and checked rows too.
     let ui = |c, min| rgb(readable(c, &[p.bg, surface], min, dark));
     Theme {
         name,
@@ -438,7 +417,6 @@ const fn rgb(c: Rgb) -> Color {
     Color::Rgb(c.0, c.1, c.2)
 }
 
-/// `pct` percent of `a` over `b`.
 const fn mix(a: Rgb, b: Rgb, pct: u16) -> Rgb {
     const fn channel(a: u8, b: u8, pct: u16) -> u8 {
         ((a as u16 * pct + b as u16 * (100 - pct)) / 100) as u8

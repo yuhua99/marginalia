@@ -16,33 +16,24 @@ pub struct Repo {
     root: String,
     common_dir: String,
     index: String,
-    /// Of `Repo::bare`: an upload, with no worktree or index.
     bare: bool,
-    /// `staged` / `unstaged` -> tree id, computed once until `refresh`.
     trees: HashMap<String, String>,
-    /// `base..tip` -> its commits, the tip pinned so a moved end lists again.
     ranges: HashMap<String, Vec<Commit>>,
-    /// (base, end, context), pinned -> `diff` between them.
     diffs: HashMap<(String, String, u32), Vec<FileDiff>>,
-    /// (from, to) -> `changes` between them.
     changes: HashMap<(String, String), Option<Vec<FileDiff>>>,
     blobs: Blobs,
 }
 
-/// A commit of `git log`.
 #[derive(Clone)]
 pub struct Commit {
     pub sha: String,
     pub subject: String,
     pub author: String,
-    /// Relative author date, as "3 days ago".
     pub when: String,
-    /// The refs on it, as `git log --decorate` names them: "HEAD -> main, tag: v1".
     pub refs: String,
 }
 
 impl Commit {
-    /// A line of `log`'s format.
     fn parse(line: &str) -> Commit {
         let mut fields = line.splitn(5, '\x1f').map(str::to_string);
         let mut next = || fields.next().unwrap_or_default();
@@ -56,8 +47,6 @@ impl Commit {
     }
 }
 
-/// Files of the repo through a `git cat-file --batch`, started on the first read; it
-/// ends when its input closes, with the `Blobs`.
 pub struct Blobs {
     root: String,
     bare: bool,
@@ -70,7 +59,6 @@ struct CatFile {
 }
 
 impl Blobs {
-    /// Content of `object`, as `Repo::blob` names it; None if absent or over `max` bytes.
     pub fn read(&mut self, object: &str, max: usize) -> Result<Option<String>> {
         if self.cat.is_none() {
             let mut child = git(&self.root, self.bare, &["cat-file", "--batch"])
@@ -90,14 +78,12 @@ impl Blobs {
         if header.ends_with(" missing\n") {
             return Ok(None);
         }
-        // "<oid> <type> <size>"
         let size: usize = header
             .trim_end()
             .rsplit(' ')
             .next()
             .and_then(|s| s.parse().ok())
             .with_context(|| format!("unexpected git cat-file output: {header:?}"))?;
-        // The content, then a newline.
         if size > max {
             io::copy(&mut (&mut cat.stdout).take(size as u64 + 1), &mut io::sink())?;
             return Ok(None);
@@ -114,7 +100,6 @@ impl Repo {
         Repo::at(Path::new("."))
     }
 
-    /// The repo containing `dir`.
     #[expect(clippy::disallowed_methods, reason = "Repo runs git")]
     pub fn at(dir: &Path) -> Result<Repo> {
         let out = run(Command::new("git").arg("-C").arg(dir).args([
@@ -146,9 +131,6 @@ impl Repo {
         })
     }
 
-    /// The bare repo at `dir`, of what a client uploaded: HEAD is the client's, and
-    /// `staged` / `unstaged` the trees of `refs/mrg/staged` / `refs/mrg/unstaged`.
-    /// Git reads no user or system config here, as that of the server is not the user's.
     pub fn bare(dir: &Path) -> Result<Repo> {
         let dir = fs::canonicalize(dir)?;
         let dir = dir.to_str().context("a path not in UTF-8")?.to_string();
@@ -169,23 +151,19 @@ impl Repo {
         })
     }
 
-    /// Writes the trees of `staged` / `unstaged` again on their next use, as they are then.
     pub fn refresh(&mut self) {
         self.trees.clear();
     }
 
-    /// The git dir the worktrees of the repo share.
     pub fn common_dir(&self) -> &Path {
         Path::new(&self.common_dir)
     }
 
-    /// Keeps `tree` from git gc while session `id` lasts, as `refs/mrg/<id>/<tree>`.
     pub fn keep(&self, id: &str, tree: &str) -> Result<()> {
         run(&mut self.git(&["update-ref", &format!("refs/mrg/{id}/{tree}"), tree]))?;
         Ok(())
     }
 
-    /// Drops what `keep` kept for session `id`.
     pub(crate) fn forget(&self, id: &str) -> Result<()> {
         let refs = run(&mut self.git(&[
             "for-each-ref",
@@ -210,16 +188,11 @@ impl Repo {
         Ok(())
     }
 
-    /// Splits `A..end` into the base commit sha (the empty tree when A is left out,
-    /// to start before the root commit; `staged` kept symbolic, before `unstaged`) and
-    /// the end (a commit sha, or `HEAD` / `staged` / `unstaged` / a full ref `refs/...`
-    /// kept symbolic, to follow it).
     pub fn resolve(&self, range: &str) -> Result<(String, String)> {
         let Some((base, end)) = range.split_once("..") else {
             bail!("range must look like A..END or ..END, got {range:?}");
         };
         let empty = self.empty_tree()?;
-        // The empty tree as well: the base `mrg show` prints for a range from before the root.
         let base = if base.is_empty() || base == empty {
             empty
         } else if base == "staged" {
@@ -230,7 +203,6 @@ impl Repo {
         let end = if end == "HEAD" || worktree(end) {
             end.to_string()
         } else if end.starts_with("refs/") {
-            // Checked now, not on the first load.
             self.commit(end)?;
             end.to_string()
         } else {
@@ -240,9 +212,7 @@ impl Repo {
         Ok((base, end))
     }
 
-    /// Fails when `base` is no longer an ancestor of the range tip (history rewritten).
     pub fn verify(&self, base: &str, end: &str) -> Result<()> {
-        // The index is no commit: only what is not staged comes after it.
         if base == "staged" {
             if end != "unstaged" {
                 bail!("a range from staged ends at unstaged, got {end:?}");
@@ -251,14 +221,12 @@ impl Repo {
         }
         let tip = tip(end);
         let ok = self.ancestor(base, tip)?;
-        // The empty tree (a range from before the root) is no commit; nothing to check.
         if !ok && base != self.empty_tree()? {
             bail!("{base} is not an ancestor of {tip} (history rewritten?)");
         }
         Ok(())
     }
 
-    /// Commit `a` is `b` or an ancestor of it.
     pub fn ancestor(&self, a: &str, b: &str) -> Result<bool> {
         Ok(self
             .git(&["merge-base", "--is-ancestor", a, b])
@@ -268,13 +236,10 @@ impl Repo {
             .success())
     }
 
-    /// Full sha of the commit `end` stands on now.
     pub fn tip_of(&self, end: &str) -> Result<String> {
         self.commit(tip(end))
     }
 
-    /// Files changed from `base` to `end`, with `context` lines around each change; kept
-    /// per pinned sides, so a moved `HEAD` or new `unstaged` tree diffs again.
     pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
         let key = (self.pin(base)?, self.pin(end)?, context);
         if !self.diffs.contains_key(&key) {
@@ -284,11 +249,8 @@ impl Repo {
         Ok(self.diffs[&key].clone())
     }
 
-    /// `diff` from `base` to `end` as it is now, in `paths` if any: `staged` and
-    /// `unstaged` are read in place, writing no tree.
     pub fn diff_now(&self, base: &str, end: &str, paths: &[String]) -> Result<Vec<FileDiff>> {
         let revs = match (base, end) {
-            // The index to the worktree; `verify` made the end `unstaged`.
             ("staged", _) => vec![],
             (_, "unstaged") => vec![base],
             (_, "staged") => vec!["--cached", base],
@@ -322,8 +284,6 @@ impl Repo {
         parse::parse(&out)
     }
 
-    /// `diff(from, to, 0)` of pinned revs, kept: what carries lines from one to the other.
-    /// None when objects it needs are gone, as blobs only ever staged, then collected.
     pub fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>> {
         let key = (from.to_string(), to.to_string());
         if !self.changes.contains_key(&key) {
@@ -337,11 +297,9 @@ impl Repo {
         Ok(self.changes[&key].as_deref())
     }
 
-    /// Paths of the files at `rev`, leaving out submodules.
     pub fn files(&mut self, rev: &str) -> Result<Vec<String>> {
         let object = self.object(rev)?;
         let out = run(&mut self.git(&["ls-tree", "-r", "-z", &object]))?;
-        // `<mode> <type> <object>\t<path>` per entry.
         Ok(out
             .split(|&b| b == 0)
             .filter_map(|entry| {
@@ -351,13 +309,11 @@ impl Repo {
             .collect())
     }
 
-    /// Content of `path` at `rev` (commit, `HEAD`, `staged` or `unstaged`); None if absent.
     pub fn read(&mut self, rev: &str, path: &str) -> Result<Option<String>> {
         let object = self.blob(rev, path)?;
         self.blobs.read(&object, usize::MAX)
     }
 
-    /// The name of `path` at `rev` that `Blobs::read` takes.
     pub fn blob(&mut self, rev: &str, path: &str) -> Result<String> {
         let object = format!("{}:{path}", self.object(rev)?);
         if object.contains('\n') {
@@ -366,7 +322,6 @@ impl Repo {
         Ok(object)
     }
 
-    /// Another reader of the repo's files, as for a thread.
     pub fn blobs(&self) -> Blobs {
         Blobs {
             root: self.root.clone(),
@@ -375,8 +330,6 @@ impl Repo {
         }
     }
 
-    /// An id for `rev` that does not move: the commit sha, or the tree of `staged` /
-    /// `unstaged` as of now; an id as is.
     pub fn pin(&mut self, rev: &str) -> Result<String> {
         if sha(rev) {
             Ok(rev.to_string())
@@ -387,8 +340,6 @@ impl Repo {
         }
     }
 
-    /// A tree-ish for `rev`: commits as is, `staged` / `unstaged` as a written tree, or
-    /// the uploaded one in a bare repo.
     fn object(&mut self, rev: &str) -> Result<String> {
         if !worktree(rev) {
             return Ok(rev.to_string());
@@ -406,10 +357,7 @@ impl Repo {
         Ok(tree)
     }
 
-    /// Writes a tree from a temporary copy of the index, leaving the real index untouched.
-    /// With `worktree`, tracked changes are added to the copy first; untracked files stay out.
     fn index_tree(&mut self, worktree: bool) -> Result<String> {
-        // Beside the index, as git stash's was.
         let tmp = format!("{}.mrg.{}", self.index, std::process::id());
         fs::copy(&self.index, &tmp).context("copy git index")?;
         let tree = self.write_tree(Path::new(&tmp), worktree);
@@ -429,13 +377,10 @@ impl Repo {
         text(run(&mut git(&["write-tree"]))?)
     }
 
-    /// Commits in `base..end`, oldest first.
     pub fn commits(&mut self, base: &str, end: &str) -> Result<Vec<Commit>> {
-        // From the index, there are none.
         if base == "staged" {
             return Ok(Vec::new());
         }
-        // A tree as base (before the root) is ignored by git log, listing all history.
         let range = format!("{base}..{}", self.commit(tip(end))?);
         if !self.ranges.contains_key(&range) {
             let commits = self.log(&["--reverse", &range])?;
@@ -444,11 +389,8 @@ impl Repo {
         Ok(self.ranges[&range].clone())
     }
 
-    /// `unstaged` when the worktree differs from the index, `staged` when the index
-    /// differs from HEAD; as `index_tree` builds them, or as uploaded in a bare repo.
     pub fn uncommitted(&self) -> Result<Vec<&'static str>> {
         if self.bare {
-            // Both are uploaded for an end of `unstaged`, the only one that asks.
             let tree = |rev: &str| self.tree(rev).with_context(|| format!("no {rev} uploaded"));
             let head = tree("HEAD")?;
             let staged = tree("refs/mrg/staged")?;
@@ -481,12 +423,10 @@ impl Repo {
         Ok(revs)
     }
 
-    /// Up to `n` first-parent commits back from `from` (included), newest first.
     pub fn recent(&self, from: &str, n: usize) -> Result<Vec<Commit>> {
         self.log(&["-n", &n.to_string(), from])
     }
 
-    /// First-parent `git log`.
     fn log(&self, args: &[&str]) -> Result<Vec<Commit>> {
         let mut log = vec![
             "log",
@@ -501,7 +441,6 @@ impl Repo {
             .collect())
     }
 
-    /// The first parent of `commit`; None for a root commit.
     pub fn parent(&self, commit: &str) -> Result<Option<String>> {
         let parents = text(run(&mut self.git(&["log", "-1", "--format=%P", commit]))?)?;
         Ok(parents
@@ -511,18 +450,14 @@ impl Repo {
             .map(str::to_string))
     }
 
-    /// The full message of `commit`.
     pub fn message(&self, commit: &str) -> Result<String> {
         text(run(&mut self.git(&["log", "-1", "--format=%B", commit]))?)
     }
 
-    /// The URL of origin.
     pub fn origin(&self) -> Result<String> {
         text(run(&mut self.git(&["remote", "get-url", "origin"]))?)
     }
 
-    /// Fetches `refspecs` from origin; with `prompt`, git and ssh may ask for a
-    /// password, else the terminal is the TUI's and they fail.
     pub fn fetch(&self, refspecs: &[String], prompt: bool) -> Result<()> {
         let mut cmd = self.git(&["fetch", "--quiet", "--no-tags", "origin"]);
         cmd.args(refspecs);
@@ -545,19 +480,16 @@ impl Repo {
         Ok(())
     }
 
-    /// The best common ancestor of commits `a` and `b`.
     pub fn merge_base(&self, a: &str, b: &str) -> Result<String> {
         text(run(&mut self.git(&["merge-base", a, b]))?)
     }
 
-    /// The empty tree, to diff a root commit against.
     pub fn empty_tree(&self) -> Result<String> {
         text(run(self
             .git(&["hash-object", "-t", "tree", "--stdin"])
             .stdin(Stdio::null()))?)
     }
 
-    /// Full sha of commit `rev`.
     pub fn commit(&self, rev: &str) -> Result<String> {
         run(&mut self.git(&[
             "rev-parse",
@@ -569,7 +501,6 @@ impl Repo {
         .with_context(|| format!("unknown commit {rev:?}"))
     }
 
-    /// The tree of `rev`.
     fn tree(&self, rev: &str) -> Result<String> {
         text(run(&mut self.git(&[
             "rev-parse",
@@ -630,32 +561,26 @@ impl Source for Repo {
     }
 }
 
-/// `staged` or `unstaged`: a state of the worktree on top of HEAD, not a commit.
 pub fn worktree(rev: &str) -> bool {
     matches!(rev, "staged" | "unstaged")
 }
 
-/// The ref origin's `branch` is fetched to.
 pub fn tracking(branch: &str) -> String {
     format!("refs/remotes/origin/{branch}")
 }
 
-/// The commit an end stands on: `staged` / `unstaged` stand on HEAD.
 fn tip(end: &str) -> &str {
     if worktree(end) { "HEAD" } else { end }
 }
 
-/// `rev` is a full object id, not a name like `HEAD` or `unstaged`.
 pub fn sha(rev: &str) -> bool {
     rev.len() >= 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// A commit sha shortened for display; other revs as is.
 pub fn short(rev: &str) -> &str {
     if sha(rev) { &rev[..7] } else { rev }
 }
 
-/// `e`, of a git run, is about an object it could not find.
 fn missing(e: &anyhow::Error) -> bool {
     let e = format!("{e:#}");
     e.contains("unable to read") || e.contains("bad object")
@@ -673,8 +598,6 @@ fn text(out: Vec<u8>) -> Result<String> {
     Ok(String::from_utf8(out)?.trim_end().to_string())
 }
 
-/// `files` with each line's old and new number, as `comment` takes them: a header per
-/// file, then its hunks, `...` between them.
 pub fn numbered(files: &[FileDiff]) -> String {
     let num = |n: Option<u32>| n.map_or(String::new(), |n| n.to_string());
     let mut out = String::new();
@@ -718,7 +641,6 @@ mod tests {
         assert_eq!(c.author, "Ann");
         assert_eq!(c.when, "2 days ago");
         assert_eq!(c.refs, "HEAD -> main, tag: v1");
-        // The subject is the rest of the line.
         assert_eq!(c.subject, "fix a\x1fb");
         let c = Commit::parse("abc\x1fAnn\x1f2 days ago\x1f\x1ffix");
         assert_eq!(c.refs, "");
@@ -755,7 +677,6 @@ mod tests {
                         line(Kind::Add, "y"),
                     ],
                 ),
-                // An addition only: the old side starts at the line before.
                 hunk(8, 0, 9, 1, vec![line(Kind::Add, "z")]),
             ],
         }];

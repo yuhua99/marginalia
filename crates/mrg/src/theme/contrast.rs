@@ -1,15 +1,9 @@
-//! Colors made readable: moved in OKLab lightness, keeping their hue, until they have
-//! the WCAG contrast their role needs on the backgrounds they are drawn on.
-
 use super::Rgb;
 
-/// WCAG contrast each role needs.
 pub const TEXT: f64 = 4.5;
 pub const COLOR: f64 = 3.0;
 pub const DIM: f64 = 2.5;
 
-/// `c`, made lighter on dark backgrounds or darker on light ones until it has `min`
-/// contrast on each of `on`; as it is when it already has.
 pub fn readable(c: Rgb, on: &[Rgb], min: f64, dark: bool) -> Rgb {
     let ok = |c: Rgb| on.iter().all(|s| contrast(c, *s) >= min);
     if ok(c) {
@@ -50,7 +44,6 @@ pub fn luminance(c: Rgb) -> f64 {
     0.2126 * linear(c.0) + 0.7152 * linear(c.1) + 0.0722 * linear(c.2)
 }
 
-/// WCAG 2 contrast ratio, 1 to 21.
 fn contrast(a: Rgb, b: Rgb) -> f64 {
     let (x, y) = (luminance(a), luminance(b));
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
@@ -68,7 +61,6 @@ fn oklab(c: Rgb) -> [f64; 3] {
     ]
 }
 
-/// The color at OKLab `[l, a, b]`, its chroma lowered until it fits in sRGB.
 fn from_oklab([l, a, b]: [f64; 3]) -> Rgb {
     let mut k = 1.0;
     loop {

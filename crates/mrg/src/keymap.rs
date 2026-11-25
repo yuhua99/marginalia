@@ -6,13 +6,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 type Key = (KeyCode, KeyModifiers);
 
-/// The keys as written, as parsed, and their action.
 type Binding = (String, Vec<Key>, &'static str);
 
-/// The `[keys.<context>]` tables of the settings: keys to an action, or `none` to unbind.
 pub type Keys = BTreeMap<String, BTreeMap<String, String>>;
 
-/// Maps key sequences such as `g g` to action names.
 pub struct Keymap {
     bindings: Vec<Binding>,
     pending: Vec<Key>,
@@ -65,7 +62,6 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("/", "filter"),
 ];
 
-/// Bindings over the defaults in each context; the user's `global` binds in all of them.
 const CONTEXTS: &[(&str, &[(&str, &str)])] = &[
     ("global", &[]),
     (
@@ -87,25 +83,19 @@ const CONTEXTS: &[(&str, &[(&str, &str)])] = &[
     ("popup", &[]),
 ];
 
-/// The built-in bindings per context, which a new settings file starts with; written
-/// under their own context, they bind as the built-ins do.
 pub fn defaults() -> impl Iterator<Item = (&'static str, &'static [(&'static str, &'static str)])> {
     [("global", DEFAULTS)]
         .into_iter()
         .chain(CONTEXTS.iter().copied().filter(|(_, b)| !b.is_empty()))
 }
 
-/// The user's bindings and their context, from `init`.
 static USER: OnceLock<Vec<(&'static str, Binding)>> = OnceLock::new();
 
-/// Takes the user's bindings, which every `Keymap::new` after lays over the defaults.
 pub fn init(keys: &Keys) -> Result<()> {
     assert!(USER.set(load(keys)?).is_ok(), "keymap::init twice");
     Ok(())
 }
 
-/// `keys` checked against the contexts, actions and key names, and for keys that
-/// hide a longer sequence in some context.
 fn load(keys: &Keys) -> Result<Vec<(&'static str, Binding)>> {
     let actions = DEFAULTS
         .iter()
@@ -146,8 +136,6 @@ impl Default for Keymap {
 }
 
 impl Keymap {
-    /// The defaults of `context`, then the user's `global` and `context` bindings; a
-    /// later binding replaces an earlier one on the same keys.
     pub fn new(context: &str) -> Keymap {
         assert!(CONTEXTS.iter().any(|(c, _)| *c == context), "{context}");
         Keymap::build(context, USER.get().map_or(&[], Vec::as_slice))
@@ -179,7 +167,6 @@ impl Keymap {
         }
     }
 
-    /// The keys bound to `action`, such as `g g`, or `j,J` for two bindings.
     pub fn keys(&self, action: &str) -> String {
         self.bindings
             .iter()
@@ -189,7 +176,6 @@ impl Keymap {
             .join(",")
     }
 
-    /// The keys of the first binding of `action`, such as `g g`.
     pub fn first_key(&self, action: &str) -> Option<&str> {
         self.bindings
             .iter()
@@ -200,7 +186,6 @@ impl Keymap {
     pub fn feed(&mut self, key: KeyEvent) -> Feed {
         let mut modifiers = key.modifiers;
         if matches!(key.code, KeyCode::Char(_) | KeyCode::BackTab) {
-            // The case of the char, or BackTab itself, already carries shift.
             modifiers.remove(KeyModifiers::SHIFT);
         }
         self.pending.push((key.code, modifiers));
@@ -215,14 +200,12 @@ impl Keymap {
         if prefix {
             return Feed::Pending;
         }
-        // A broken sequence: retry the last key on its own.
         let retry = self.pending.len() > 1;
         self.pending.clear();
         if retry { self.feed(key) } else { Feed::Unbound }
     }
 }
 
-/// Keys separated by spaces, such as `g g`.
 fn parse_seq(keys: &str) -> Result<Vec<Key>> {
     let seq = keys
         .split_whitespace()
@@ -234,8 +217,6 @@ fn parse_seq(keys: &str) -> Result<Vec<Key>> {
     Ok(seq)
 }
 
-/// `x`, `G`, `C-x`, `Esc`, `Enter`, `Space`, `Tab`, `S-Tab`, `Up`, `Down`, `Left`, `Right`,
-/// `PageUp`, `PageDown`, `Home` or `End`.
 fn parse(key: &str) -> Result<Key> {
     let none = KeyModifiers::NONE;
     Ok(match key {

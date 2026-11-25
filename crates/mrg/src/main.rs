@@ -182,7 +182,6 @@ fn need_terminal() -> Result<()> {
     Ok(())
 }
 
-/// OSC 52: the terminal sets its clipboard, which outlives this process.
 #[expect(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -195,9 +194,6 @@ fn copy(md: &str) -> Result<()> {
     Ok(())
 }
 
-/// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
-/// `Q` in the review does the same and goes back to the picker. `on_quit` is for the
-/// first session only.
 fn tui(
     mut store: Store,
     mut repo: Repo,

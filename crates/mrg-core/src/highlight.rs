@@ -12,13 +12,9 @@ use syntect::util::LinesWithEndings;
 
 use crate::repo::{Blobs, Repo};
 
-/// Larger files are not colored.
 const MAX_BYTES: usize = 1 << 20;
-/// Coloring stops at the first longer line.
 const MAX_LINE: usize = 2000;
 
-/// A palette color by role. Syntax tokens are stored as slots, so switching
-/// themes needs no re-coloring.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Slot {
     Text,
@@ -46,23 +42,18 @@ impl Slot {
     ];
 }
 
-/// Per line, runs of (palette slot, byte length).
 pub type Colors = Vec<Vec<(Slot, usize)>>;
 type Key = (String, String);
 
-/// Syntax colors of whole files per (rev, path), computed on a background thread.
 pub struct Highlighter {
-    /// Each file to color, and its name for `Blobs::read` unless it has none.
     jobs: Sender<(Key, Option<String>)>,
     done: Receiver<(Key, Colors)>,
     cache: HashMap<Key, Colors>,
-    /// Asked for while rendering; sent by `flush`.
     wanted: RefCell<HashSet<Key>>,
     sent: HashSet<Key>,
 }
 
 impl Highlighter {
-    /// Files are read from `blobs`, on the background thread.
     pub fn new(mut blobs: Blobs) -> Highlighter {
         let (jobs, rx) = mpsc::channel::<(Key, Option<String>)>();
         let (tx, done) = mpsc::channel();
@@ -88,7 +79,6 @@ impl Highlighter {
         }
     }
 
-    /// Colors of `path` at `rev`; None until ready, and then they are asked for.
     pub fn get(&self, rev: &str, path: &str) -> Option<&Colors> {
         let key = (rev.to_string(), path.to_string());
         let colors = self.cache.get(&key);
@@ -98,8 +88,6 @@ impl Highlighter {
         colors
     }
 
-    /// Hands the files asked for to the background thread, named as `Blobs::read` takes.
-    /// Colors are optional: a file that can't be read is just not colored.
     pub fn flush(&mut self, repo: &mut Repo) {
         for key in self.wanted.take() {
             let object = repo.blob(&key.0, &key.1).ok();
@@ -108,7 +96,6 @@ impl Highlighter {
         }
     }
 
-    /// Takes the finished files; true if any arrived.
     pub fn receive(&mut self) -> bool {
         let mut any = false;
         loop {
@@ -118,7 +105,6 @@ impl Highlighter {
                     any = true;
                 }
                 Err(TryRecvError::Empty) => return any,
-                // The thread died: what it had left goes uncolored.
                 Err(TryRecvError::Disconnected) => {
                     for key in &self.sent {
                         self.cache.entry(key.clone()).or_default();
@@ -134,7 +120,6 @@ impl Highlighter {
     }
 }
 
-/// Token colors as palette slots: the index into `Slot::ALL` in `r`.
 fn slot_theme() -> Theme {
     let slot = |s: Slot| syntect::highlighting::Color {
         r: Slot::ALL.iter().position(|a| *a == s).expect("slot in ALL") as u8,
