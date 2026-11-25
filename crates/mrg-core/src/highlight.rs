@@ -10,7 +10,7 @@ use syntect::highlighting::{ScopeSelectors, StyleModifier, Theme, ThemeItem, The
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
-use crate::repo::Repo;
+use crate::repo::{Blobs, Repo};
 
 /// Larger files are not colored.
 const MAX_BYTES: usize = 1 << 20;
@@ -52,28 +52,27 @@ type Key = (String, String);
 
 /// Syntax colors of whole files per (rev, path), computed on a background thread.
 pub struct Highlighter {
-    jobs: Sender<(Key, String)>,
+    /// Each file to color, and its name for `Blobs::read` unless it has none.
+    jobs: Sender<(Key, Option<String>)>,
     done: Receiver<(Key, Colors)>,
     cache: HashMap<Key, Colors>,
-    /// Asked for while rendering; read and sent by `flush`.
+    /// Asked for while rendering; sent by `flush`.
     wanted: RefCell<HashSet<Key>>,
     sent: HashSet<Key>,
 }
 
-impl Default for Highlighter {
-    fn default() -> Highlighter {
-        Highlighter::new()
-    }
-}
-
 impl Highlighter {
-    pub fn new() -> Highlighter {
-        let (jobs, rx) = mpsc::channel::<(Key, String)>();
+    /// Files are read from `blobs`, on the background thread.
+    pub fn new(mut blobs: Blobs) -> Highlighter {
+        let (jobs, rx) = mpsc::channel::<(Key, Option<String>)>();
         let (tx, done) = mpsc::channel();
         thread::spawn(move || {
             let syntaxes = SyntaxSet::load_defaults_newlines();
             let theme = &slot_theme();
-            for (key, text) in rx {
+            for (key, object) in rx {
+                let text = object
+                    .and_then(|o| blobs.read(&o, MAX_BYTES).ok().flatten())
+                    .unwrap_or_default();
                 let colors = highlight(&syntaxes, theme, &key.1, &text);
                 if tx.send((key, colors)).is_err() {
                     return;
@@ -99,13 +98,13 @@ impl Highlighter {
         colors
     }
 
-    /// Reads the files asked for and hands them to the background thread.
+    /// Hands the files asked for to the background thread, named as `Blobs::read` takes.
     /// Colors are optional: a file that can't be read is just not colored.
     pub fn flush(&mut self, repo: &mut Repo) {
         for key in self.wanted.take() {
-            let text = repo.read(&key.0, &key.1).ok().flatten().unwrap_or_default();
+            let object = repo.blob(&key.0, &key.1).ok();
             self.sent.insert(key.clone());
-            let _ = self.jobs.send((key, text));
+            let _ = self.jobs.send((key, object));
         }
     }
 
@@ -179,9 +178,6 @@ fn slot_theme() -> Theme {
 }
 
 fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Colors {
-    if text.len() > MAX_BYTES {
-        return Vec::new();
-    }
     let path = Path::new(path);
     let syntax = [path.extension(), path.file_name()]
         .into_iter()

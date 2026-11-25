@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileDiff {
     /// Status letter from `git diff --raw`: A, D, M, R, T...
     pub status: char,
@@ -10,7 +10,7 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Hunk {
     pub old_start: u32,
     pub old_len: u32,
@@ -31,7 +31,7 @@ impl Hunk {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Line {
     pub kind: Kind,
     pub text: String,

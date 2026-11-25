@@ -55,12 +55,13 @@ impl Ctx {
         let mut review = review::Review::new(session, repo, store)?;
         let end = review.session().end.clone();
         let files = Files::new(review.repo.files(&end)?);
+        let highlighter = Highlighter::new(review.repo.blobs());
         Ok(Ctx {
             review,
             copy: false,
             back: false,
             on_quit: None,
-            highlighter: Highlighter::new(),
+            highlighter,
             look,
             files,
         })

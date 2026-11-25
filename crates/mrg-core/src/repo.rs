@@ -2,7 +2,7 @@ mod parse;
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 
@@ -22,9 +22,11 @@ pub struct Repo {
     trees: HashMap<String, String>,
     /// `base..tip` -> its commits, the tip pinned so a moved end lists again.
     ranges: HashMap<String, Vec<Commit>>,
+    /// (base, end, context), pinned -> `diff` between them.
+    diffs: HashMap<(String, String, u32), Vec<FileDiff>>,
     /// (from, to) -> `changes` between them.
     changes: HashMap<(String, String), Option<Vec<FileDiff>>>,
-    cat: Option<CatFile>,
+    blobs: Blobs,
 }
 
 /// A commit of `git log`.
@@ -54,10 +56,57 @@ impl Commit {
     }
 }
 
-/// A `git cat-file --batch`; it ends when its input closes, with the repo.
+/// Files of the repo through a `git cat-file --batch`, started on the first read; it
+/// ends when its input closes, with the `Blobs`.
+pub struct Blobs {
+    root: String,
+    bare: bool,
+    cat: Option<CatFile>,
+}
+
 struct CatFile {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+}
+
+impl Blobs {
+    /// Content of `object`, as `Repo::blob` names it; None if absent or over `max` bytes.
+    pub fn read(&mut self, object: &str, max: usize) -> Result<Option<String>> {
+        if self.cat.is_none() {
+            let mut child = git(&self.root, self.bare, &["cat-file", "--batch"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("run git cat-file")?;
+            let stdin = child.stdin.take().expect("piped");
+            let stdout = BufReader::new(child.stdout.take().expect("piped"));
+            self.cat = Some(CatFile { stdin, stdout });
+        }
+        let cat = self.cat.as_mut().expect("started above");
+        writeln!(cat.stdin, "{object}")?;
+        cat.stdin.flush()?;
+        let mut header = String::new();
+        cat.stdout.read_line(&mut header)?;
+        if header.ends_with(" missing\n") {
+            return Ok(None);
+        }
+        // "<oid> <type> <size>"
+        let size: usize = header
+            .trim_end()
+            .rsplit(' ')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .with_context(|| format!("unexpected git cat-file output: {header:?}"))?;
+        // The content, then a newline.
+        if size > max {
+            io::copy(&mut (&mut cat.stdout).take(size as u64 + 1), &mut io::sink())?;
+            return Ok(None);
+        }
+        let mut buf = vec![0; size + 1];
+        cat.stdout.read_exact(&mut buf)?;
+        buf.pop();
+        Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+    }
 }
 
 impl Repo {
@@ -87,8 +136,13 @@ impl Repo {
             bare: false,
             trees: HashMap::new(),
             ranges: HashMap::new(),
+            diffs: HashMap::new(),
             changes: HashMap::new(),
-            cat: None,
+            blobs: Blobs {
+                root: root.into(),
+                bare: false,
+                cat: None,
+            },
         })
     }
 
@@ -99,14 +153,19 @@ impl Repo {
         let dir = fs::canonicalize(dir)?;
         let dir = dir.to_str().context("a path not in UTF-8")?.to_string();
         Ok(Repo {
+            blobs: Blobs {
+                root: dir.clone(),
+                bare: true,
+                cat: None,
+            },
             root: dir.clone(),
             common_dir: dir,
             index: String::new(),
             bare: true,
             trees: HashMap::new(),
             ranges: HashMap::new(),
+            diffs: HashMap::new(),
             changes: HashMap::new(),
-            cat: None,
         })
     }
 
@@ -214,11 +273,15 @@ impl Repo {
         self.commit(tip(end))
     }
 
-    /// Files changed from `base` to `end`, with `context` lines around each change.
+    /// Files changed from `base` to `end`, with `context` lines around each change; kept
+    /// per pinned sides, so a moved `HEAD` or new `unstaged` tree diffs again.
     pub fn diff(&mut self, base: &str, end: &str, context: u32) -> Result<Vec<FileDiff>> {
-        let from = self.object(base)?;
-        let to = self.object(end)?;
-        self.diff_of(&[&from, &to], context, &[])
+        let key = (self.pin(base)?, self.pin(end)?, context);
+        if !self.diffs.contains_key(&key) {
+            let files = self.diff_of(&[&key.0, &key.1], context, &[])?;
+            self.diffs.insert(key.clone(), files);
+        }
+        Ok(self.diffs[&key].clone())
     }
 
     /// `diff` from `base` to `end` as it is now, in `paths` if any: `staged` and
@@ -264,7 +327,7 @@ impl Repo {
     pub fn changes(&mut self, from: &str, to: &str) -> Result<Option<&[FileDiff]>> {
         let key = (from.to_string(), to.to_string());
         if !self.changes.contains_key(&key) {
-            let files = match self.diff(from, to, 0) {
+            let files = match self.diff_of(&[from, to], 0, &[]) {
                 Ok(files) => Some(files),
                 Err(e) if missing(&e) => None,
                 Err(e) => return Err(e),
@@ -290,40 +353,26 @@ impl Repo {
 
     /// Content of `path` at `rev` (commit, `HEAD`, `staged` or `unstaged`); None if absent.
     pub fn read(&mut self, rev: &str, path: &str) -> Result<Option<String>> {
+        let object = self.blob(rev, path)?;
+        self.blobs.read(&object, usize::MAX)
+    }
+
+    /// The name of `path` at `rev` that `Blobs::read` takes.
+    pub fn blob(&mut self, rev: &str, path: &str) -> Result<String> {
         let object = format!("{}:{path}", self.object(rev)?);
         if object.contains('\n') {
             bail!("invalid path {path:?}");
         }
-        if self.cat.is_none() {
-            let mut child = self
-                .git(&["cat-file", "--batch"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .context("run git cat-file")?;
-            let stdin = child.stdin.take().expect("piped");
-            let stdout = BufReader::new(child.stdout.take().expect("piped"));
-            self.cat = Some(CatFile { stdin, stdout });
+        Ok(object)
+    }
+
+    /// Another reader of the repo's files, as for a thread.
+    pub fn blobs(&self) -> Blobs {
+        Blobs {
+            root: self.root.clone(),
+            bare: self.bare,
+            cat: None,
         }
-        let cat = self.cat.as_mut().expect("started above");
-        writeln!(cat.stdin, "{object}")?;
-        cat.stdin.flush()?;
-        let mut header = String::new();
-        cat.stdout.read_line(&mut header)?;
-        if header.ends_with(" missing\n") {
-            return Ok(None);
-        }
-        // "<oid> <type> <size>"
-        let size: usize = header
-            .trim_end()
-            .rsplit(' ')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .with_context(|| format!("unexpected git cat-file output: {header:?}"))?;
-        let mut buf = vec![0; size + 1];
-        cat.stdout.read_exact(&mut buf)?;
-        buf.pop();
-        Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
     }
 
     /// An id for `rev` that does not move: the commit sha, or the tree of `staged` /
@@ -530,18 +579,22 @@ impl Repo {
         ]))?)
     }
 
-    #[expect(clippy::disallowed_methods, reason = "Repo runs git")]
     fn git(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&self.root).args(args);
-        if self.bare {
-            // GIT_DIR: a broken repo there fails, rather than git finding one around it.
-            cmd.env("GIT_DIR", &self.root)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1");
-        }
-        cmd
+        git(&self.root, self.bare, args)
     }
+}
+
+#[expect(clippy::disallowed_methods, reason = "Repo runs git")]
+fn git(root: &str, bare: bool, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(args);
+    if bare {
+        // GIT_DIR: a broken repo there fails, rather than git finding one around it.
+        cmd.env("GIT_DIR", root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+    }
+    cmd
 }
 
 impl Source for Repo {

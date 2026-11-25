@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
@@ -88,8 +91,8 @@ pub struct Pick {
 
 enum Reviews {
     Unlisted,
-    /// To list after the next draw, which shows it: listing waits on gh / glab.
-    Listing,
+    /// gh / glab listing them on a thread.
+    Listing(Receiver<Result<(Forge, Vec<Request>)>>),
     Listed(Forge, Vec<Request>),
     /// Why there is no list, for the user to act on.
     Failed(String),
@@ -144,18 +147,25 @@ pub fn run(terminal: &mut DefaultTerminal, pick: &mut Pick) -> Result<()> {
                 );
             }
         })?;
-        if matches!(pick.reviews, Reviews::Listing) {
-            let listed = Forge::of(&pick.repo, &pick.forges).and_then(|f| Ok((f.requests()?, f)));
-            pick.reviews = match listed {
-                Ok((requests, forge)) => Reviews::Listed(forge, requests),
-                Err(e) => Reviews::Failed(format!("{e:#}")),
-            };
-            continue;
-        }
         let shown = pick.error.is_some();
         let quit = layers.wait(pick, |pick| {
             // An error cleared by an event that changed nothing else: draw its going.
             if shown && pick.error.is_none() {
+                return Ok(None);
+            }
+            // Wait for an event, drawing the requests once listed.
+            while let Reviews::Listing(rx) = &pick.reviews
+                && !event::poll(Duration::from_millis(30))?
+            {
+                let listed = match rx.try_recv() {
+                    Ok(listed) => listed,
+                    Err(TryRecvError::Empty) => continue,
+                    Err(TryRecvError::Disconnected) => Err(anyhow!("listing requests stopped")),
+                };
+                pick.reviews = match listed {
+                    Ok((forge, requests)) => Reviews::Listed(forge, requests),
+                    Err(e) => Reviews::Failed(format!("{e:#}")),
+                };
                 return Ok(None);
             }
             let event = event::read()?;
@@ -361,6 +371,19 @@ impl Picker {
     }
 }
 
+/// Starts listing the open requests of origin's forge on a thread.
+fn list(repo: &Repo, forges: &BTreeMap<String, String>) -> Reviews {
+    let forge = match Forge::of(repo, forges) {
+        Ok(forge) => forge,
+        Err(e) => return Reviews::Failed(format!("{e:#}")),
+    };
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(forge.requests().map(|requests| (forge, requests)));
+    });
+    Reviews::Listing(rx)
+}
+
 /// Opens session `id`, its request fetched again first.
 fn resume(id: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     match forge::resume(&mut ctx.repo, &ctx.store, id, false) {
@@ -485,7 +508,7 @@ impl Panes<Pick> for Picker {
         self.focused = pane;
         let failed = matches!(ctx.reviews, Reviews::Failed(_));
         if pane == REVIEWS && (matches!(ctx.reviews, Reviews::Unlisted) || entering && failed) {
-            ctx.reviews = Reviews::Listing;
+            ctx.reviews = list(&ctx.repo, &ctx.forges);
         }
     }
 
@@ -710,7 +733,7 @@ impl Picker {
                 }
                 Reviews::Listed(..) => vec![Line::styled("no open requests", theme.dim)],
                 Reviews::Failed(e) => e.lines().map(|l| Line::styled(l, theme.red)).collect(),
-                Reviews::Unlisted | Reviews::Listing => {
+                Reviews::Unlisted | Reviews::Listing(_) => {
                     vec![Line::styled("listing…", theme.dim)]
                 }
             },
