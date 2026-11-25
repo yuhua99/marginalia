@@ -83,6 +83,7 @@ enum Cmd {
     List,
 }
 
+#[expect(clippy::print_stdout, reason = "the CLI's output")]
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut repo = Repo::open()?;
@@ -181,6 +182,19 @@ fn need_terminal() -> Result<()> {
     Ok(())
 }
 
+/// OSC 52: the terminal sets its clipboard, which outlives this process.
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "called once the TUI has ended"
+)]
+fn copy(md: &str) -> Result<()> {
+    print!("\x1b]52;c;{}\x07", STANDARD.encode(md));
+    std::io::stdout().flush()?;
+    eprintln!("sent threads waiting on the agent to the terminal clipboard (OSC 52)");
+    Ok(())
+}
+
 /// Opens `session` in the TUI, or the picker first when None; then copies or runs the hook.
 /// `Q` in the review does the same and goes back to the picker. `on_quit` is for the
 /// first session only.
@@ -248,12 +262,10 @@ fn tui(
         if ctx.copy
             && let Some(md) = s.markdown(&ctx.review.doc.thread_order())
         {
-            // OSC 52: the terminal sets its clipboard, which outlives this process.
-            print!("\x1b]52;c;{}\x07", STANDARD.encode(md));
-            std::io::stdout().flush()?;
-            eprintln!("sent threads waiting on the agent to the terminal clipboard (OSC 52)");
+            copy(&md)?;
         }
         if let Some(cmd) = &ctx.on_quit {
+            #[expect(clippy::disallowed_methods, reason = "the on-quit hook")]
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(cmd)

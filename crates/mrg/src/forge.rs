@@ -198,6 +198,7 @@ pub fn resume(repo: &mut Repo, store: &Store, id: &str, prompt: bool) -> Result<
 }
 
 /// The output of `cli args`; its error is the cli's, which says how to sign in.
+#[expect(clippy::disallowed_methods, reason = "gh / glab")]
 fn tool(cli: &str, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new(cli)
         .args(args)

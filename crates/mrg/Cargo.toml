@@ -21,3 +21,6 @@ textwrap = "0.16.4"
 toml_edit = { version = "0.22.27", features = ["serde"] }
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
+
+[lints]
+workspace = true

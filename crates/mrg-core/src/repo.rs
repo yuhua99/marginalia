@@ -67,6 +67,7 @@ impl Repo {
     }
 
     /// The repo containing `dir`.
+    #[expect(clippy::disallowed_methods, reason = "Repo runs git")]
     pub fn at(dir: &Path) -> Result<Repo> {
         let out = run(Command::new("git").arg("-C").arg(dir).args([
             "rev-parse",
@@ -530,6 +531,7 @@ impl Repo {
         ]))?)
     }
 
+    #[expect(clippy::disallowed_methods, reason = "Repo runs git")]
     fn git(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&self.root).args(args);
