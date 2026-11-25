@@ -129,8 +129,19 @@ pub struct NewComment {
 }
 
 impl Session {
-    /// `tip`: the commit `end` stands on.
-    pub fn new(id: String, range: String, base: String, end: String, tip: String) -> Session {
+    /// A new session of `base..end`, on the commit `end` stands on now.
+    pub fn start(
+        repo: &Repo,
+        id: String,
+        range: String,
+        base: String,
+        end: String,
+    ) -> Result<Session> {
+        let tip = repo.tip_of(&end)?;
+        Ok(Session::new(id, range, base, end, tip))
+    }
+
+    fn new(id: String, range: String, base: String, end: String, tip: String) -> Session {
         Session {
             id,
             name: None,

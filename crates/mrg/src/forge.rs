@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::repo::{Repo, tracking};
 use crate::session::Session;
 use crate::settings;
+use crate::store::Store;
 
 /// Requests listed, at most.
 const LIMIT: &str = "100";
@@ -177,7 +178,7 @@ fn target(branch: &str) -> String {
 /// target fetched again, a rewritten head taken too; then the range followed
 /// (`Session::follow`). Returns whether the session changed, to save.
 /// `prompt`: the terminal is free to ask for a password.
-pub fn refresh(repo: &mut Repo, session: &mut Session, prompt: bool) -> Result<bool> {
+fn refresh(repo: &mut Repo, session: &mut Session, prompt: bool) -> Result<bool> {
     let end = &session.end;
     if end.starts_with("refs/pull/") || end.starts_with("refs/merge-requests/") {
         let mut refspecs = vec![format!("+{end}:{end}")];
@@ -185,6 +186,15 @@ pub fn refresh(repo: &mut Repo, session: &mut Session, prompt: bool) -> Result<b
         repo.fetch(&refspecs, prompt)?;
     }
     session.follow(repo)
+}
+
+/// Session `id`, readied to open (`refresh`) and saved when that changed it.
+pub fn resume(repo: &mut Repo, store: &Store, id: &str, prompt: bool) -> Result<Session> {
+    let mut session = store.load(id)?;
+    if refresh(repo, &mut session, prompt)? {
+        store.save(&session)?;
+    }
+    Ok(session)
 }
 
 /// The output of `cli args`; its error is the cli's, which says how to sign in.

@@ -94,8 +94,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::New { range, name }) => {
             let (base, end) = repo.resolve(&range)?;
-            let tip = repo.tip_of(&end)?;
-            let mut session = Session::new(store.new_id(), range, base, end, tip);
+            let mut session = Session::start(&repo, store.new_id(), range, base, end)?;
             if let Some(name) = name {
                 session.set_name(&name)?;
             }
@@ -136,10 +135,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Resume { session, on_quit }) => {
             need_terminal()?;
-            let mut session = store.load(&session)?;
-            if forge::refresh(&mut repo, &mut session, true)? {
-                store.save(&session)?;
-            }
+            let session = forge::resume(&mut repo, &store, &session, true)?;
             tui(store, repo, Some(session), on_quit)
         }
         Some(Cmd::Delete { session, threads }) => {

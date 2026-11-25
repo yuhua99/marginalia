@@ -127,7 +127,7 @@ impl Repo {
     }
 
     /// Drops what `keep` kept for session `id`.
-    pub fn forget(&self, id: &str) -> Result<()> {
+    pub(crate) fn forget(&self, id: &str) -> Result<()> {
         let refs = run(&mut self.git(&[
             "for-each-ref",
             "--format=delete %(refname)",

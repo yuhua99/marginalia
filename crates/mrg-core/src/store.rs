@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
+use crate::repo::Repo;
 use crate::session::Session;
 
 pub struct Store {
@@ -82,8 +83,9 @@ impl Store {
         Ok(out)
     }
 
-    /// Removes the session; `Repo::forget` drops what the repo keeps for it.
-    pub fn delete(&self, id: &str) -> Result<()> {
+    /// Removes the session and what `repo` keeps for it.
+    pub fn delete(&self, repo: &Repo, id: &str) -> Result<()> {
+        repo.forget(id)?;
         fs::remove_file(self.path(id)).with_context(|| format!("delete session {id}"))
     }
 

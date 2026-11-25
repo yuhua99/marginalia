@@ -349,8 +349,7 @@ impl Picker {
                     short(&resolved)
                 };
                 let range = format!("{from}..{}", short(&end));
-                let tip = ctx.repo.tip_of(&end)?;
-                let session = Session::new(ctx.store.new_id(), range, resolved, end, tip);
+                let session = Session::start(&ctx.repo, ctx.store.new_id(), range, resolved, end)?;
                 ctx.open = Some(session);
                 Ok(Outcome::Quit)
             }
@@ -364,17 +363,16 @@ impl Picker {
 
 /// Opens session `id`, its request fetched again first.
 fn resume(id: &str, ctx: &mut Pick) -> Result<Outcome<Pick>> {
-    let mut session = ctx.store.load(id)?;
-    match forge::refresh(&mut ctx.repo, &mut session, false) {
-        Ok(true) => ctx.store.save(&session)?,
-        Ok(false) => {}
+    match forge::resume(&mut ctx.repo, &ctx.store, id, false) {
+        Ok(session) => {
+            ctx.open = Some(session);
+            Ok(Outcome::Quit)
+        }
         Err(e) => {
             ctx.error = Some(format!("{e:#}"));
-            return Ok(Outcome::Consumed);
+            Ok(Outcome::Consumed)
         }
     }
-    ctx.open = Some(session);
-    Ok(Outcome::Quit)
 }
 
 /// Enter on request `i`: resumes its newest session, or fetches it and starts one from
@@ -397,8 +395,7 @@ fn review(i: usize, ctx: &mut Pick) -> Result<Outcome<Pick>> {
     let started = forge.fetch(&ctx.repo, &r).and_then(|base| {
         let (base, end) = ctx.repo.resolve(&format!("{base}..{head}"))?;
         let range = format!("{}..{end}", short(&base));
-        let tip = ctx.repo.tip_of(&end)?;
-        let mut session = Session::new(ctx.store.new_id(), range, base, end, tip);
+        let mut session = Session::start(&ctx.repo, ctx.store.new_id(), range, base, end)?;
         session.target = Some(r.target.clone());
         // A name is one line.
         let title = r.title.replace(char::is_control, " ");
@@ -441,8 +438,7 @@ impl Panes<Pick> for Picker {
                     return Ok(Outcome::Push(Box::new(
                         Confirm::new("Delete", "delete this session?", "y delete  n/Esc cancel")
                             .on('y', move |ctx: &mut Pick| {
-                                ctx.repo.forget(&id)?;
-                                ctx.store.delete(&id)?;
+                                ctx.store.delete(&ctx.repo, &id)?;
                                 ctx.sessions = ctx.store.list()?;
                                 Ok(Outcome::Close)
                             })
