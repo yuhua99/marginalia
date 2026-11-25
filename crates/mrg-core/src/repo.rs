@@ -85,7 +85,10 @@ impl Blobs {
             .and_then(|s| s.parse().ok())
             .with_context(|| format!("unexpected git cat-file output: {header:?}"))?;
         if size > max {
-            io::copy(&mut (&mut cat.stdout).take(size as u64 + 1), &mut io::sink())?;
+            io::copy(
+                &mut (&mut cat.stdout).take(size as u64 + 1),
+                &mut io::sink(),
+            )?;
             return Ok(None);
         }
         let mut buf = vec![0; size + 1];
