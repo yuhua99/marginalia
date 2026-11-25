@@ -630,6 +630,25 @@ impl Doc {
         })
     }
 
+    pub fn line_at(&self, row: usize) -> Option<(&str, &str, u32)> {
+        let right = |file: usize, n| (self.right_rev.as_str(), self.paths[file].1.as_str(), n);
+        let left = |file: usize, n| (self.left_rev.as_str(), self.paths[file].0.as_str(), n);
+        self.rows.iter().take(row + 1).rev().find_map(|r| match r {
+            Row::Code {
+                file,
+                left: old,
+                right: new,
+            } => Some(
+                new.as_ref()
+                    .map(|s| right(*file, s.lineno))
+                    .or_else(|| old.as_ref().map(|s| left(*file, s.lineno))),
+            ),
+            Row::Fold { file, new, .. } => Some(Some(right(*file, *new))),
+            Row::Thread { .. } => None,
+            _ => Some(None),
+        })?
+    }
+
     pub fn file_row(&self, file: usize) -> usize {
         self.rows
             .iter()

@@ -299,15 +299,19 @@ impl Component for Review {
         let file = self.diff.current_file(ctx);
         self.files
             .render(f, left, ctx, self.focus == FILES, pointer, file);
+        let search = self.diff.search_title(ctx);
+        let stat = stat(ctx, file);
+        let room =
+            (right.width as usize).saturating_sub(stat.width() + Span::raw(&search).width() + 2);
         let block = boxed(
             Span::styled(
-                header(ctx, file) + &self.diff.search_title(ctx),
+                header(ctx, file, &self.diff.scope(ctx), room) + &search,
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             self.focus == DIFF,
             ctx.look.theme,
         )
-        .title_top(stat(ctx, file).right_aligned());
+        .title_top(stat.right_aligned());
         f.render_widget(block, right);
     }
 
@@ -316,12 +320,26 @@ impl Component for Review {
     }
 }
 
-fn header(ctx: &Ctx, file: Option<usize>) -> String {
+fn header(ctx: &Ctx, file: Option<usize>, scope: &[&str], room: usize) -> String {
     let name = match file {
         Some(file) => Some(&ctx.review.doc.paths()[file].1),
         None => ctx.review.session().name.as_ref(),
     };
-    name.map_or(String::new(), |n| format!(" {n} "))
+    let Some(name) = name else {
+        return String::new();
+    };
+    for skip in 0..scope.len() {
+        let parts: Vec<&str> = [name.as_str()]
+            .into_iter()
+            .chain((skip > 0).then_some("…"))
+            .chain(scope[skip..].iter().copied())
+            .collect();
+        let title = format!(" {} ", parts.join(" › "));
+        if Span::raw(&title).width() <= room {
+            return title;
+        }
+    }
+    format!(" {name} ")
 }
 
 fn stat(ctx: &Ctx, file: Option<usize>) -> Line<'static> {

@@ -43,12 +43,37 @@ impl Slot {
 }
 
 pub type Colors = Vec<Vec<(Slot, usize)>>;
+
+#[derive(Default)]
+pub struct Outline(Vec<Option<(usize, Option<String>)>>);
+
+impl Outline {
+    pub fn scope(&self, line: u32) -> Vec<&str> {
+        if line as usize > self.0.len() {
+            return Vec::new();
+        }
+        let mut indent = usize::MAX;
+        let mut out = Vec::new();
+        for (i, name) in self.0.iter().take(line as usize).rev().flatten() {
+            if *i < indent {
+                indent = *i;
+                out.extend(name.as_deref());
+            }
+            if indent == 0 {
+                break;
+            }
+        }
+        out.reverse();
+        out
+    }
+}
+
 type Key = (String, String);
 
 pub struct Highlighter {
     jobs: Sender<(Key, Option<String>)>,
-    done: Receiver<(Key, Colors)>,
-    cache: HashMap<Key, Colors>,
+    done: Receiver<(Key, (Colors, Outline))>,
+    cache: HashMap<Key, (Colors, Outline)>,
     wanted: RefCell<HashSet<Key>>,
     sent: HashSet<Key>,
 }
@@ -64,8 +89,8 @@ impl Highlighter {
                 let text = object
                     .and_then(|o| blobs.read(&o, MAX_BYTES).ok().flatten())
                     .unwrap_or_default();
-                let colors = highlight(&syntaxes, theme, &key.1, &text);
-                if tx.send((key, colors)).is_err() {
+                let done = highlight(&syntaxes, theme, &key.1, &text);
+                if tx.send((key, done)).is_err() {
                     return;
                 }
             }
@@ -80,12 +105,20 @@ impl Highlighter {
     }
 
     pub fn get(&self, rev: &str, path: &str) -> Option<&Colors> {
+        self.entry(rev, path).map(|e| &e.0)
+    }
+
+    pub fn outline(&self, rev: &str, path: &str) -> Option<&Outline> {
+        self.entry(rev, path).map(|e| &e.1)
+    }
+
+    fn entry(&self, rev: &str, path: &str) -> Option<&(Colors, Outline)> {
         let key = (rev.to_string(), path.to_string());
-        let colors = self.cache.get(&key);
-        if colors.is_none() && !self.sent.contains(&key) {
+        let entry = self.cache.get(&key);
+        if entry.is_none() && !self.sent.contains(&key) {
             self.wanted.borrow_mut().insert(key);
         }
-        colors
+        entry
     }
 
     pub fn flush(&mut self, repo: &mut Repo) {
@@ -100,8 +133,8 @@ impl Highlighter {
         let mut any = false;
         loop {
             match self.done.try_recv() {
-                Ok((key, colors)) => {
-                    self.cache.insert(key, colors);
+                Ok((key, done)) => {
+                    self.cache.insert(key, done);
                     any = true;
                 }
                 Err(TryRecvError::Empty) => return any,
@@ -121,22 +154,24 @@ impl Highlighter {
 }
 
 fn slot_theme() -> Theme {
-    let slot = |s: Slot| syntect::highlighting::Color {
+    let slot = |s: Slot, def: bool| syntect::highlighting::Color {
         r: Slot::ALL.iter().position(|a| *a == s).expect("slot in ALL") as u8,
-        g: 0,
+        g: def as u8,
         b: 0,
         a: 0,
     };
-    let item = |scope: &str, s| ThemeItem {
+    let styled = |scope: &str, s, def| ThemeItem {
         scope: ScopeSelectors::from_str(scope).expect("scope selector"),
         style: StyleModifier {
-            foreground: Some(slot(s)),
+            foreground: Some(slot(s, def)),
             ..StyleModifier::default()
         },
     };
+    let item = |scope, s| styled(scope, s, false);
+    let def = |scope, s| styled(scope, s, true);
     Theme {
         settings: ThemeSettings {
-            foreground: Some(slot(Slot::Text)),
+            foreground: Some(slot(Slot::Text, false)),
             ..ThemeSettings::default()
         },
         scopes: vec![
@@ -144,16 +179,13 @@ fn slot_theme() -> Theme {
             item("string", Slot::Green),
             item("constant", Slot::Peach),
             item("keyword, storage", Slot::Mauve),
-            item("entity.name, support.type, support.class", Slot::Teal),
+            item("support.type, support.class", Slot::Teal),
+            def("entity.name", Slot::Teal),
             // More specific than `entity.name`, so they win.
-            item(
-                "entity.name.function, support.function, support.macro",
-                Slot::Blue,
-            ),
-            item(
-                "entity.name.tag, entity.name.section, markup.heading",
-                Slot::Blue,
-            ),
+            def("entity.name.function", Slot::Blue),
+            item("support.function, support.macro", Slot::Blue),
+            item("entity.name.tag, markup.heading", Slot::Blue),
+            def("entity.name.section", Slot::Blue),
             item("entity.other.attribute-name", Slot::Yellow),
             item("markup.inserted", Slot::Green),
             item("markup.deleted", Slot::Red),
@@ -162,7 +194,7 @@ fn slot_theme() -> Theme {
     }
 }
 
-fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Colors {
+fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> (Colors, Outline) {
     let path = Path::new(path);
     let syntax = [path.extension(), path.file_name()]
         .into_iter()
@@ -170,10 +202,11 @@ fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Col
         .find_map(|s| syntaxes.find_syntax_by_extension(&s.to_string_lossy()))
         .or_else(|| syntaxes.find_syntax_by_first_line(text.lines().next().unwrap_or("")));
     let Some(syntax) = syntax else {
-        return Vec::new();
+        return Default::default();
     };
     let mut lines = HighlightLines::new(syntax, theme);
     let mut out = Vec::new();
+    let mut outline = Vec::new();
     for line in LinesWithEndings::from(text) {
         if line.len() > MAX_LINE {
             break;
@@ -181,11 +214,52 @@ fn highlight(syntaxes: &SyntaxSet, theme: &Theme, path: &str, text: &str) -> Col
         let Ok(runs) = lines.highlight_line(line, syntaxes) else {
             break;
         };
+        let (mut end, mut def) = (0, None);
         out.push(
             runs.into_iter()
-                .map(|(s, t)| (Slot::ALL[s.foreground.r as usize], t.len()))
+                .map(|(s, t)| {
+                    end += t.len();
+                    if s.foreground.g == 1 {
+                        def = Some(end);
+                    }
+                    (Slot::ALL[s.foreground.r as usize], t.len())
+                })
                 .collect(),
         );
+        let body = line.trim_start();
+        let indent = line.len() - body.len();
+        let opens = !body.trim_end().is_empty() && !body.starts_with([')', '}', ']', '{']);
+        outline.push(opens.then(|| {
+            let name = def.and_then(|d| line.get(indent..d)).map(str::to_string);
+            (indent, name)
+        }));
     }
-    out
+    (out, Outline(outline))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scope(path: &str, text: &str, line: u32) -> Vec<String> {
+        let syntaxes = SyntaxSet::load_defaults_newlines();
+        let (_, outline) = highlight(&syntaxes, &slot_theme(), path, text);
+        outline
+            .scope(line)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn scope_skips_blocks_and_closers() {
+        let rust = "impl Bar {\n    fn render(\n        &self,\n    ) -> u32 {\n        if x {\n            y();\n        }\n\n    }\n}\n";
+        assert_eq!(scope("a.rs", rust, 6), ["impl Bar", "fn render"]);
+        assert_eq!(scope("a.rs", rust, 9), ["impl Bar", "fn render"]);
+        assert_eq!(scope("a.rs", rust, 1), ["impl Bar"]);
+        let python = "class Order:\n    def total(self):\n        return 1\n";
+        assert_eq!(scope("a.py", python, 3), ["class Order", "def total"]);
+        assert!(scope("a.txt", "a\n  b\n", 2).is_empty());
+        assert_eq!(scope("a.c", "void f()\n{\n    g();\n}\n", 3), ["void f"]);
+    }
 }

@@ -69,8 +69,20 @@ impl DiffView {
     }
 
     pub fn current_file(&self, ctx: &Ctx) -> Option<usize> {
-        let row = self.scroll.shown().unwrap_or(self.scroll.top().0);
-        ctx.review.doc.file_at(row)
+        ctx.review.doc.file_at(self.current_row())
+    }
+
+    pub fn scope<'a>(&self, ctx: &'a Ctx) -> Vec<&'a str> {
+        let Some((rev, path, line)) = ctx.review.doc.line_at(self.current_row()) else {
+            return Vec::new();
+        };
+        ctx.highlighter
+            .outline(rev, path)
+            .map_or_else(Vec::new, |o| o.scope(line))
+    }
+
+    fn current_row(&self) -> usize {
+        self.scroll.shown().unwrap_or(self.scroll.top().0)
     }
 
     pub fn start(&mut self, row: usize, input: Input) {
