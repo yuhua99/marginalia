@@ -1,7 +1,6 @@
 mod parse;
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -141,7 +140,7 @@ impl Repo {
             .stderr(Stdio::piped())
             .spawn()
             .context("run git update-ref")?;
-        child.stdin.take().unwrap().write_all(&refs)?;
+        child.stdin.take().expect("piped").write_all(&refs)?;
         let out = child.wait_with_output()?;
         if !out.status.success() {
             bail!(
@@ -302,11 +301,11 @@ impl Repo {
                 .stdout(Stdio::piped())
                 .spawn()
                 .context("run git cat-file")?;
-            let stdin = child.stdin.take().unwrap();
-            let stdout = BufReader::new(child.stdout.take().unwrap());
+            let stdin = child.stdin.take().expect("piped");
+            let stdout = BufReader::new(child.stdout.take().expect("piped"));
             self.cat = Some(CatFile { stdin, stdout });
         }
-        let cat = self.cat.as_mut().unwrap();
+        let cat = self.cat.as_mut().expect("started above");
         writeln!(cat.stdin, "{object}")?;
         cat.stdin.flush()?;
         let mut header = String::new();
@@ -628,9 +627,9 @@ pub fn numbered(files: &[FileDiff]) -> String {
     let mut out = String::new();
     for f in files {
         if f.old_path == f.new_path {
-            writeln!(out, "{} {}", f.status, f.new_path).unwrap();
+            out.push_str(&format!("{} {}\n", f.status, f.new_path));
         } else {
-            writeln!(out, "{} {} -> {}", f.status, f.old_path, f.new_path).unwrap();
+            out.push_str(&format!("{} {} -> {}\n", f.status, f.old_path, f.new_path));
         }
         if f.binary {
             out.push_str("  (binary)\n");
@@ -648,7 +647,7 @@ pub fn numbered(files: &[FileDiff]) -> String {
                 };
                 old += o.is_some() as u32;
                 new += n.is_some() as u32;
-                writeln!(out, "{:>5} {:>5} {sign} {}", num(o), num(n), l.text).unwrap();
+                out.push_str(&format!("{:>5} {:>5} {sign} {}\n", num(o), num(n), l.text));
             }
         }
     }

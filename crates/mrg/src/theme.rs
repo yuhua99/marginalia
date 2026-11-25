@@ -362,7 +362,10 @@ pub fn themes() -> &'static [Theme] {
     static ALL: OnceLock<Vec<Theme>> = OnceLock::new();
     ALL.get_or_init(|| {
         let system = system::query().unwrap_or_else(|| {
-            let (_, p) = PALETTES.iter().find(|(n, _)| *n == "tokyo-night").unwrap();
+            let (_, p) = PALETTES
+                .iter()
+                .find(|(n, _)| *n == "tokyo-night")
+                .expect("a built-in palette");
             palette("system", *p)
         });
         let rgb = PALETTES.iter().map(|&(name, p)| palette(name, p));

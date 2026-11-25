@@ -69,7 +69,10 @@ impl Store {
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            let id = path.file_stem().unwrap().to_string_lossy();
+            let Some(stem) = path.file_stem() else {
+                continue;
+            };
+            let id = stem.to_string_lossy();
             let updated = fs::metadata(&path)?
                 .modified()?
                 .duration_since(UNIX_EPOCH)?

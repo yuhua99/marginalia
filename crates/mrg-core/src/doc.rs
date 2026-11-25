@@ -429,8 +429,8 @@ impl Doc {
             return Anchor::Lines {
                 rev: rev.clone(),
                 file: path.clone(),
-                start: *lines.iter().min().unwrap(),
-                end: *lines.iter().max().unwrap(),
+                start: *lines.iter().min().expect("a code row has a side"),
+                end: *lines.iter().max().expect("a code row has a side"),
                 old,
                 commit: None,
             };

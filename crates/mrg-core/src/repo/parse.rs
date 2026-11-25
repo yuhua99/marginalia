@@ -58,9 +58,7 @@ pub fn parse(out: &[u8]) -> Result<Vec<FileDiff>> {
         let status = meta
             .rsplit(' ')
             .next()
-            .unwrap()
-            .chars()
-            .next()
+            .and_then(|s| s.chars().next())
             .context("empty raw status")?;
         let (old_path, r) = take_nul(r)?;
         let (new_path, r) = if matches!(status, 'R' | 'C') {

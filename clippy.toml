@@ -1,3 +1,4 @@
+allow-unwrap-in-tests = true
 disallowed-methods = [
     { path = "std::process::exit", reason = "skips restoring the terminal; return an error from main" },
     { path = "std::thread::sleep", reason = "the TUI waits on events: event::poll with a timeout" },
