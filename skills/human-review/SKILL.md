@@ -25,6 +25,8 @@ Ask once if the scope is missing.
 A range over 5 commits: split it along feature boundaries into consecutive sub-ranges of at most 5 commits, one session each, and run the workflow per session, one at a time.
 
 ## Workflow
+Write for the human in the session only; after each `review-tab`, reply here in one line with the session id.
+
 1. Read the scope with `mrg diff RANGE`, each commit with `mrg diff REV^..REV` (the numbers comments take), its commit messages with `git log`, and surrounding code.
    Act as the change's author walking a human through the implementation, rather than conducting a separate defect review.
    Done when you can explain the old and new behavior of each meaningful changed block.
